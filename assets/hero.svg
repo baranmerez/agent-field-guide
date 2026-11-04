@@ -21,7 +21,7 @@
     @media (prefers-reduced-motion:reduce){.w,.sub{animation:none;opacity:1}.stream,.cursor{animation:none}}
   </style>
   <rect class="bg" x="1" y="1" width="898" height="298" rx="18"/>
-  <text class="kick" x="48" y="62">AGENT ROADMAP · A HANDS-ON COURSE FOR DEVELOPERS · EN / TR</text>
+  <text class="kick" x="48" y="62">AGENT FIELD GUIDE · A HANDS-ON COURSE FOR DEVELOPERS · EN / TR</text>
   <g transform="translate(48 140)">
     <text class="w agent d1" x="0" y="0">Agent</text>
     <text class="w op d2" x="196" y="0">=</text>

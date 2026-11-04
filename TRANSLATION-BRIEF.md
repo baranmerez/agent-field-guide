@@ -1,6 +1,6 @@
 # Translation brief: Turkish → English level files
 
-This repository is a static, interactive course ("Agent Roadmap: Model, Harness, Agent"). Use this brief for any new language too: replace `en` with the target language code and add its UI strings to `src/i18n.json`.
+This repository is a static, interactive course ("Agent Field Guide: Model, Harness, Agent"). Use this brief for any new language too: replace `en` with the target language code and add its UI strings to `src/i18n.json`.
 Source files: `src/levels/tr/*.html`. Target: `src/levels/en/<same file name>`.
 Read `WRITING-GUIDE.md` (component and widget rules) and `src/core.js` (Edu API) first.
 

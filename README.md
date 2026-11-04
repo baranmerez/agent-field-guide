@@ -1,13 +1,13 @@
 <p align="center">
-  <a href="https://baranmerez.github.io/agent-roadmap/"><img src="assets/hero.svg" alt="Agent = Model + Harness" width="900"></a>
+  <a href="https://baranmerez.github.io/agent-field-guide/"><img src="assets/hero.svg" alt="Agent = Model + Harness" width="900"></a>
 </p>
 
 <p align="center">
   <b>A hands-on, interactive course on LLMs and coding agents for software developers.</b><br>
-  <a href="https://baranmerez.github.io/agent-roadmap/en/"><b>Open the course →</b></a> &nbsp;·&nbsp; <a href="https://baranmerez.github.io/agent-roadmap/tr/"><b>Türkçe →</b></a>
+  <a href="https://baranmerez.github.io/agent-field-guide/en/"><b>Open the course →</b></a> &nbsp;·&nbsp; <a href="https://baranmerez.github.io/agent-field-guide/tr/"><b>Türkçe →</b></a>
 </p>
 
-When you work with Claude Code or Codex, every behaviour comes from one of three places: the **model**, the **harness** around it, or the **context** it sees. This course teaches you to tell them apart. Each lesson explains one mechanism and lets you poke at it in an interactive diagram. No quizzes, no memorising.
+When you work with Claude Code or Codex, every behavior comes from one of three places: the **model**, the **harness** around it, or the **context** it sees. This course teaches you to tell them apart. Each lesson explains one mechanism and lets you poke at it in an interactive diagram. No quizzes, no memorizing.
 
 <p align="center"><img src="assets/loop.svg" alt="Agent loop: the model requests a tool, the harness runs it, the result goes back to the model" width="900"></p>
 
@@ -24,7 +24,7 @@ When you work with Claude Code or Codex, every behaviour comes from one of three
 
 ## Türkçe
 
-Yazılımcılar için Türkçe, etkileşimli bir LLM ve coding agent eğitimi. Claude Code ya da Codex ile çalışırken bir davranışın modelden mi, harness’tan mı, yoksa context’ten mi geldiğini ayırt etmeyi öğretiyor. Her konu bir mekanizmayı anlatıyor ve onu kurcalayabileceğin bir şemayla gösteriyor. **[Eğitimi aç →](https://baranmerez.github.io/agent-roadmap/tr/)**
+Yazılımcılar için Türkçe, etkileşimli bir LLM ve coding agent eğitimi. Claude Code ya da Codex ile çalışırken bir davranışın modelden mi, harness’tan mı, yoksa context’ten mi geldiğini ayırt etmeyi öğretiyor. Her konu bir mekanizmayı anlatıyor ve onu kurcalayabileceğin bir şemayla gösteriyor. **[Eğitimi aç →](https://baranmerez.github.io/agent-field-guide/tr/)**
 
 ## Development
 

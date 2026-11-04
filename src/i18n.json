@@ -1,6 +1,6 @@
 {
   "tr": {
-    "brand": "Agent Roadmap",
+    "brand": "Agent Field Guide",
     "brandSub": "Model, Harness, Agent · yazılımcılar için",
     "metaDesc": "Yazılımcılar için LLM, harness ve coding agent eğitim seti: sıfırdan ileri seviyeye, etkileşimli.",
     "progTitle": "İlerleme: tıkla, sıfırlama seçeneği açılır",
@@ -101,7 +101,7 @@
     ]
   },
   "en": {
-    "brand": "Agent Roadmap",
+    "brand": "Agent Field Guide",
     "brandSub": "Model, Harness, Agent · for developers",
     "metaDesc": "A hands-on course on LLMs, harnesses and coding agents for software developers, from first principles to advanced practice.",
     "progTitle": "Progress: click for the reset option",
