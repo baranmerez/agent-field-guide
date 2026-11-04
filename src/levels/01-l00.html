@@ -1,0 +1,847 @@
+<section class="level" data-no="0" data-short="LLM nedir" data-title="LLM: sonraki token’ı tahmin eden fonksiyon"
+  data-accent="model" data-time="75 dk"
+  data-lede="Sohbet, kod yazma, dosya düzenleme: hepsinin altında tek bir işlem var. Bir metne bakıp sonraki parça için olasılık üretmek. Bu seviyede o işlemi token’ından KV cache’ine kadar söküp takıyoruz.">
+<style>
+.l0-two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.9rem;margin-top:.8rem}
+.l0-box{border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem;background:var(--paper);min-width:0}
+.l0-box h4{margin:0 0 .4rem;font-size:.9rem}
+.l0-box textarea{min-height:5.2rem}
+.l0-chips .chip{font-size:.76rem}
+.l0-chips .chip.sfx{background:var(--model-bg);border-color:color-mix(in srgb,var(--model) 45%,transparent)}
+.l0-big{font-family:var(--sans);font-weight:800;font-size:1.6rem;line-height:1.1;color:var(--acc)}
+.l0-gen{font-family:var(--mono);font-size:.86rem;background:var(--code-bg);border:1px solid var(--line);border-radius:9px;padding:.7rem .85rem;white-space:pre-wrap;word-break:break-word;min-height:3.2rem;line-height:1.6}
+.l0-gen .new{background:var(--ctx-bg);color:var(--ctx);border-radius:4px;padding:0 .15em;font-weight:700}
+.l0-gen .dim{color:var(--faint)}
+.l0-vec{font-family:var(--mono);font-size:.76rem;color:var(--muted);overflow-wrap:anywhere}
+.l0-layers{display:flex;gap:3px;flex-wrap:wrap;margin:.5rem 0}
+.l0-layers i{width:14px;height:26px;border-radius:3px;background:var(--soft);border:1px solid var(--line);transition:background .25s}
+.l0-layers i.on{background:var(--model)}
+.l0-bar .track{position:relative}
+.l0-bar.cut .fill{opacity:.18}
+.l0-bar.cut .lab{text-decoration:line-through;color:var(--faint)}
+.l0-tbl table{min-width:0}
+.l0-tbl td,.l0-tbl th{padding:.35rem .55rem;font-size:.82rem}
+.l0-tl{position:relative;height:46px;border-radius:8px;background:var(--soft);overflow:hidden;display:flex;border:1px solid var(--line)}
+.l0-tl .pf{background:repeating-linear-gradient(0deg,var(--harness) 0 3px,color-mix(in srgb,var(--harness) 70%,var(--surface)) 3px 5px);height:100%}
+.l0-tl .dc{background:repeating-linear-gradient(90deg,var(--model) 0 2px,color-mix(in srgb,var(--model) 25%,var(--surface)) 2px 6px);height:100%}
+.l0-tl .ch{background:repeating-linear-gradient(0deg,var(--ok) 0 3px,color-mix(in srgb,var(--ok) 55%,var(--surface)) 3px 5px);height:100%}
+.l0-tl .cur{position:absolute;top:0;bottom:0;width:2px;background:var(--ink);left:0;transition:none}
+.l0-grid{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden;width:max-content;max-width:100%}
+.l0-grid span{width:18px;height:18px;display:block}
+.l0-toks{display:flex;flex-wrap:wrap;gap:4px;margin:.6rem 0}
+.l0-toks button{font-family:var(--mono);font-size:.8rem;border:1px solid var(--line);border-radius:6px;padding:.2rem .4rem;cursor:pointer;color:var(--ink);background:var(--paper);white-space:pre}
+.l0-toks button[aria-pressed="true"]{outline:2px solid var(--ink);outline-offset:1px}
+.l0-tree{width:100%;height:auto;display:block;margin-top:.6rem}
+.l0-feat{display:inline-flex;align-items:center;gap:.35rem;font-family:var(--mono);font-size:.8rem;border-radius:999px;padding:.15rem .6rem;margin:.15rem;border:1px solid var(--line);background:var(--paper)}
+.l0-feat i{display:inline-block;height:8px;border-radius:4px;background:var(--model)}
+.l0-frame{border:1px dashed var(--line);border-radius:10px;padding:.7rem .85rem;margin-top:.6rem;background:var(--paper)}
+.l0-frame b{font-family:var(--sans)}
+.l0-sum{font-family:var(--mono);font-size:.82rem;overflow-wrap:anywhere}
+.l0-sym{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.55rem}
+.l0-sym button{text-align:left;font-weight:500;font-family:var(--body);line-height:1.4;padding:.7rem .8rem;white-space:normal}
+</style>
+
+  <!-- ============ 1. TANIM ============ -->
+  <div class="lesson" data-tab="Tek cümlelik tanım">
+    <h2>Bütün sihrin altındaki tek işlem</h2>
+    <p class="lead">Büyük dil modeli (LLM), bir token dizisini alıp <em>bir sonraki</em> token için olasılık dağılımı döndüren devasa bir fonksiyondur. Bu cümle basit görünüyor ama Claude Code’un bir hatayı bulup düzeltmesinden, bir sohbetin “unutmasına” kadar karşılaşacağın her davranışın kökü burada.</p>
+<pre data-title="Mühendis gözüyle LLM"><code>f(token_1, token_2, …, token_n)  →  P(token_n+1)
+
+// f: eğitimi bitmiş, donmuş milyarlarca sayı (ağırlık).
+// Girdi: o ana kadarki metnin TAMAMI (system prompt, konuşma, araç sonuçları).
+// Çıktı: sözlükteki her token için bir olasılık; toplamı 1.</code></pre>
+    <p>Burada iki ayrı parça var ve bu ayrım setin geri kalanı için çok önemli. Birincisi <span class="m">model</span>: ağırlıklardan oluşan, eğitim bittikten sonra hiç değişmeyen fonksiyon. Ona bir metin verirsin, o da sözlüğündeki her aday için bir puan üretir. İkincisi bu fonksiyonu <em>çağıran</em> kod: puanlardan bir token seçer, metnin sonuna ekler, fonksiyonu yeniden çağırır, ne zaman duracağına karar verir. Bu dış katmanın genel adı <span class="h">harness</span>. API’ye bir istek attığında sağlayıcının sunucusundaki harness bu döngüyü senin için çalıştırır; Claude Code gibi bir agent ise bunun üstüne bir döngü daha kurar.</p>
+
+    <h3>“Sohbet” aslında bir belgedir</h3>
+    <p>Model rol, oturum ya da kullanıcı kavramlarını bir veri yapısı olarak görmez. Gördüğü tek şey uzun bir token dizisi. “Kullanıcı şunu dedi, asistan şunu dedi, araç şunu döndürdü” bilgisi bu diziye özel işaret token’larıyla gömülür. Model eğitim sırasında bu işaretlerin olduğu belgeleri “devam ettirmeyi” öğrendiği için, asistan işaretinden sonra gelen kısmı asistan gibi yazar. Yani bir sohbette modelin yaptığı şey hâlâ belge tamamlamaktır; belge, bir asistanla konuşma transkripti biçiminde.</p>
+    <p>Bu yüzden 500 token’lık bir cevap, fonksiyonun yaklaşık 500 kez çağrılması demektir. Her çağrıda girdi bir token uzar. Bir agent’ın tek bir “düşünüp dosya düzenlemesi” onlarca model isteğinden, her istek de yüzlerce ya da binlerce <span class="g" data-g="Forward pass">ileri geçişten (forward pass)</span> oluşur. Her token’ın kendinden öncekilere bakılarak tek tek üretildiği bu yönteme <span class="g" data-g="Autoregressive">autoregressive</span> üretim denir.</p>
+
+    <div class="fig" data-widget="l0-loop">
+      <p class="fig-title">Bir cevabın doğuşu: metinden token’a, token’dan metne</p>
+      <p class="fig-cap">Önce tek bir turu adım adım izle: metin nasıl sayıya dönüyor, model ne üretiyor, seçimi kim yapıyor. Sonra alttaki düğmeyle döngüyü sonuna kadar çalıştır. Token ID’leri ve olasılıklar temsilidir; akış gerçektir.</p>
+      <div class="l0-loop-st"></div>
+      <div class="ctrl"><button class="btn" type="button" data-act="run">Döngüyü sonuna kadar çalıştır</button><button class="btn ghost" type="button" data-act="stop">Durdur</button></div>
+      <div class="l0-gen l0-loop-out" aria-live="polite"></div>
+      <div class="bars l0-loop-bars"></div>
+      <div class="stats"><span>İleri geçiş (model çağrısı)<b class="l0-loop-n">0</b></span><span>Girdi uzunluğu<b class="l0-loop-len">0</b></span><span>stop_reason<b class="l0-loop-stop">–</b></span></div>
+    </div>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Model, saf (pure) bir fonksiyona çok benzer: aynı girdiye matematiksel olarak aynı puanları üretir, yan etkisi yoktur, kendi içinde durum tutmaz. Rastgelelik, fonksiyonun <em>dışında</em> duran örnekleyiciden (sampler) gelir; tıpkı deterministik bir iş kuralının üstüne bir rastgele sayı üretecinin eklenmesi gibi. 4. konuda “matematiksel olarak” sözcüğünün neden önemli olduğunu göreceksin: donanımda bu saflık bile tam korunmuyor.</div>
+
+    <h3>Fonksiyonun içinde ne var?</h3>
+    <p>“Ağırlık” dediğimiz şey, matris çarpımlarında kullanılan sayılar. Açık ağırlıklı modellerde bu sayılar indirilebilir: örneğin Meta’nın Llama 3 ailesinin en büyüğü 405 milyar parametreli. Claude ya da GPT modellerinin parametre sayıları yayımlanmıyor. Sayının kendisi seni çok ilgilendirmiyor; ilgilendiren, bu sayıların eğitimle bir kez belirlenip sonra donması. Sen konuşurken hiçbir ağırlık değişmez. Modelin “öğrendiğini” hissettiğin her an, aslında bilginin o anki girdi metninde durmasıdır. Bu, 2. seviyenin konusu.</p>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Sadece sonraki kelimeyi tahmin ediyor, demek ki ileriyi düşünemez, istatistiksel papağandır.” Mekanizmanın arayüzü gerçekten “sonraki token” ama bu, içeride plan yapılmadığı anlamına gelmiyor. Bir sonraki token’ı iyi tahmin etmek için modelin metnin nereye gittiğini temsil etmesi gerekir. Anthropic’in yorumlanabilirlik çalışması, Claude’un bir şiirde kafiye kelimesini satırı yazmaya başlamadan <em>önce</em> seçtiğini gösterdi (5. konuda kurcalayacaksın). Tersi de folklor: “Anlıyor, demek ki insan gibi biliyor.” Bilgisi kayıplı ve bazen kendi içinde tutarsız; doğruluğu dışarıdan doğrulanmalı.</div>
+
+    <h3>Bunun sana günlük etkisi</h3>
+    <ul>
+      <li><b>Girdiyi sen değil, metin belirler.</b> Model senin niyetini değil, context’teki token’ları görür. Kafandaki varsayımları yazmazsan model onları bilmez.</li>
+      <li><b>Her token bir karar.</b> Erken yapılan küçük bir seçim (yanlış bir tablo adı) sonraki bütün token’ları koşullar. Model geri dönüp silemez; yalnızca devam eder. Agent’ların test ve derleyici gibi geri bildirimlere bu yüzden ihtiyacı var.</li>
+      <li><b>Uzun çıktı yavaş ve pahalı.</b> Çıktı token’ları tek tek üretilir; fiyatlandırma da bunu yansıtır (4. konu).</li>
+    </ul>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>LLM = metni alıp sonraki token için olasılık dağılımı döndüren, donmuş bir fonksiyon.</li>
+      <li>Seçimi, eklemeyi ve durmayı fonksiyonun etrafındaki kod yapar. Model + bu kod = üretim döngüsü.</li>
+      <li>Sohbet, rol işaretleri olan bir belgedir; model o belgeyi devam ettirir.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://arxiv.org/html/2407.21783v3">The Llama 3 Herd of Models (Meta, 2024)</a></li>
+      <li><a href="https://www.anthropic.com/research/tracing-thoughts-language-model">Anthropic: Tracing the thoughts of a large language model (Mart 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. TOKEN ============ -->
+  <div class="lesson" data-tab="Token ve tokenizer">
+    <h2>Model harf görmez, token görür</h2>
+    <p>Model metni harf harf ya da kelime kelime değil, <span class="g" data-g="Token">token</span> denen parçalarla işler. Bir token bazen tam bir kelime (“ the”), bazen bir kelime parçası (“ler”), bazen tek bir noktalama işareti ya da bir bayttır. Metni token’lara bölen ve her parçaya bir tamsayı kimlik (ID) veren bileşene <span class="g" data-g="Tokenizer">tokenizer</span> denir. Model yalnızca bu ID’leri görür.</p>
+    <p>Neden harf değil? Harf düzeyinde çalışırsan sözlük küçük olur ama diziler çok uzar; her ileri geçişin maliyeti dizi uzunluğuyla büyüdüğü için bu pahalıdır. Neden kelime değil? Kelime düzeyinde sözlük sonsuza gider; “siparişlerimizdekilerden” gibi bir kelimeyi hiç görmemiş bir model onu temsil edemez. Token, ikisinin arasında bir uzlaşmadır: sık geçen parçalar tek token, nadir olanlar birkaç parça.</p>
+
+    <h3>BPE: sözlük nasıl öğrenilir?</h3>
+    <p>Bugünkü tokenizer’ların çoğu <span class="g" data-g="BPE">BPE</span> (byte-pair encoding) ailesinden. Algoritma şaşırtıcı derecede basit:</p>
+    <ol class="steps">
+      <li>Başlangıç sözlüğü 256 bayttır. Her UTF-8 metin bu baytlarla yazılabildiği için “bilinmeyen karakter” diye bir şey olmaz; nadir bir alfabe yalnızca çok sayıda bayt token’ına düşer.</li>
+      <li>Önce bir düzenli ifade metni kelimelere, sayılara ve noktalamaya ayırır (pre-tokenization). Birleştirmeler bu parçaların içinde kalır.</li>
+      <li>Eğitim derleminde yan yana en sık geçen iki sembol bulunur ve tek bir yeni sembolde birleştirilir. Bu bir “merge” kuralıdır.</li>
+      <li>Hedef sözlük boyutuna ulaşana kadar adım 3 tekrarlanır. Kurallar bir kez öğrenilir ve donar; model eğitimi bu donmuş sözlükle yapılır.</li>
+    </ol>
+    <p>Aşağıdaki şemada bu algoritmanın gerçek bir uygulaması çalışıyor. Derlem küçük ve Türkçe; birleştirmeleri tek tek yap ve “ler”, “lar”, “yor” gibi eklerin kendiliğinden token’a dönüşmesini izle.</p>
+
+    <div class="fig" data-widget="l0-bpe">
+      <p class="fig-title">BPE’yi sıfırdan çalıştır</p>
+      <p class="fig-cap">Küçük bir Türkçe derlem (kelime ve tekrar sayısı). Her adımda en sık komşu çift birleşir. Sonra kutuya derlemde olmayan bir kelime yaz: öğrenilen kurallar ona da uygulanır.</p>
+    </div>
+
+    <p>Bu mekanizmanın iki önemli sonucu var. Birincisi, sözlük <em>eğitim derleminin</em> dağılımını yansıtır. Derlemin büyük kısmı İngilizce ve kodsa, İngilizce kelimeler ve kod kalıpları tek token’a iner; Türkçe ekler daha parçalı kalır. İkincisi, token sınırları dilbilgisi sınırlarıyla örtüşmek zorunda değildir: “ler” bir token olabilir ama “değerlendir” köküyle “ebil” eki keyfi yerlerden bölünebilir.</p>
+
+    <h3>Sözlük boyutu ve sıkıştırma</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Tokenizer / model</th><th>Sözlük boyu</th><th>Not</th></tr></thead>
+      <tbody>
+        <tr><td>GPT-2</td><td>50.257</td><td>Eski nesil, İngilizce ağırlıklı</td></tr>
+        <tr><td>cl100k_base (GPT-4 dönemi)</td><td>~100 bin</td><td>OpenAI tiktoken</td></tr>
+        <tr><td>Llama 3</td><td>128.000</td><td>100 bin tiktoken + 28 bin İngilizce dışı token</td></tr>
+        <tr><td>Qwen3</td><td>151.669</td><td>Bayt düzeyinde BPE</td></tr>
+        <tr><td>Gemma 3 / Gemini 2.0 tokenizer’ı</td><td>262.144</td><td>SentencePiece, rakamlar tek tek</td></tr>
+        <tr><td>Claude</td><td>yayımlanmıyor</td><td>Sayım için token counting API’si var</td></tr>
+      </tbody>
+    </table></div>
+    <p>Büyük sözlük daha iyi sıkıştırır: Llama 3’ün tokenizer’ı İngilizcede token başına karakteri Llama 2’ye göre 3,17’den 3,94’e çıkardı. Ama sözlük büyüdükçe çıktı katmanı da büyür; her adımda o kadar adaya puan üretilir. Yine bir uzlaşma.</p>
+
+    <h3>Türkçenin token vergisi</h3>
+    <p>Petrov ve arkadaşlarının NeurIPS 2023 çalışması, aynı anlamdaki cümlenin dile göre çok farklı sayıda token tuttuğunu ölçtü: GPT-4 tokenizer’ında Fransızca ve Almanca İngilizcenin yaklaşık 1,6 katı, bazı diller 15 katına kadar. Bunun üç somut sonucu var: aynı içerik için daha çok para, daha yüksek gecikme ve context penceresine daha az içerik.</p>
+    <p>Türkçe için çerçeveli tek bir çarpan vermek zor. Sınır modellerin tokenizer’larında Türkçe/İngilizce oranını ölçen birincil bir kaynak yok; uygulamada dolaşan “1,3–2 kat” gibi rakamlar doğrulanmış değil. Doğrulanmış olan şu: Türkçe MMLU metni üzerinde yapılan 2025 tarihli bir çalışmada (Bayram ve ark.) aynı metin Qwen2.5 tokenizer’ında aya-expanse’e göre yaklaşık %29 daha fazla token tuttu ve token’ların yalnızca %40–51’i geçerli Türkçe birimlere denk geldi. Aynı çalışma, geçerli Türkçe token oranının model başarısıyla, dilbilimsel saflıktan daha iyi ilişkili olduğunu buldu.</p>
+
+    <div class="fig" data-widget="l0-tok">
+      <p class="fig-title">Türkçe ve İngilizce yan yana</p>
+      <p class="fig-cap">Aynı anlamdaki iki metin, aynı yaklaşık tokenizer’dan geçiyor. <b>Yaklaşık:</b> bu şema tarayıcıda çalışan basit bir kural tabanlı bölücü kullanıyor; gerçek bir BPE sözlüğü değil. Kesin sayıları vermez ama eklemeli dillerin neden daha çok parçaya bölündüğünü gösterir. Metinleri değiştirebilirsin.</p>
+    </div>
+
+    <h3>Aynı model ailesi, yeni tokenizer, yeni fatura</h3>
+    <p>Token sayısı sadece dile değil, tokenizer’ın sürümüne de bağlı. Anthropic, Opus 4.7 ile yeni bir tokenizer’a geçti. Dokümana göre güncel tokenizer’da 1 milyon token yaklaşık 555 bin İngilizce kelimeye denk geliyor; önceki modellerde bu yaklaşık 750 bindi. Bu, aynı İngilizce metnin yaklaşık 1,35 kat daha fazla token tutması demek (bu oran dokümandaki iki rakamdan hesaplandı). Token başına fiyat değişmese bile aynı prompt daha pahalıya gelir ve context daha hızlı dolar.</p>
+    <div class="callout tip"><span class="ct">Pratikte</span>Token tahmininde “4 karakter = 1 token” kuralını Türkçe metin ve kod için kullanma. Bir bütçe ya da maliyet hesabı yapacaksan gerçek sayıyı sağlayıcının token sayma uç noktasıyla (Anthropic’te token counting API’si) ya da yanıttaki <code>usage</code> alanından ölç. Model değiştirdiğinde ölçümü tekrarla.</div>
+
+    <h3>Tokenizasyon kaynaklı tuhaflıklar</h3>
+    <p>Karpathy, tokenizer’ı sıfırdan kurduğu dersinde birçok garip davranışı tokenizasyona bağlar. Model harfleri değil token ID’lerini gördüğü için “strawberry kelimesinde kaç r var?” sorusu zordu: kelime model için belki iki üç opak parçadır. Sayılar da keyfi bölünür (“12345” → “123” + “45”), bu yüzden basamak hizalaması gerektiren işlemler kırılgan olur. Kodda boşluk ve girinti, dizilerin nasıl token’landığını etkiler. Yine de her aritmetik hatayı tokenizer’a yüklemek doğru değil: 5. konuda modelin toplama işlemini içeride nasıl yaptığını göreceksin, o hikâye daha ilginç.</p>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Türkçe yazarsam model daha az anlar, her şeyi İngilizce sormalıyım.” Asıl kesin maliyet token: Türkçe metin daha çok token tutar. Anlama tarafında ise Anthropic’in yorumlanabilirlik bulgusu, kavramların diller arasında büyük ölçüde ortak özelliklerle temsil edildiğini gösteriyor; bir dilde öğrenilen bilgi diğerine taşınıyor. Pratik orta yol: talimatı rahat ettiğin dilde yaz, ama tablo, sınıf ve fonksiyon adları gibi tanımlayıcıları birebir, kodda nasılsa öyle ver.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Model token ID’leri görür; tokenizer, derlemden öğrenilmiş ve donmuş birleştirme kurallarıdır.</li>
+      <li>Türkçe gibi eklemeli diller daha çok token tutar: daha çok maliyet, gecikme ve context kullanımı.</li>
+      <li>Tokenizer sürümü de token sayısını değiştirir (Opus 4.7 ile ~1,35×). Tahmin etme, ölç.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://arxiv.org/abs/2305.15425">Petrov ve ark., Language Model Tokenizers Introduce Unfairness Between Languages (NeurIPS 2023)</a></li>
+      <li><a href="https://arxiv.org/html/2502.07057v2">Bayram ve ark., Tokenization Standards for Linguistic Integrity: Turkish as a Benchmark (2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/models/opus-4-7/overview">Anthropic: Opus 4.7 genel bakış (tokenizer notu)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/token-counting">Anthropic: Token counting</a></li>
+      <li><a href="https://simonwillison.net/2024/Feb/20/lets-build-the-gpt-tokenizer">Karpathy, Let’s build the GPT Tokenizer (Simon Willison özeti)</a></li>
+      <li><a href="https://arxiv.org/html/2407.21783v3">Llama 3 makalesi (sözlük ve sıkıştırma)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. SAMPLING ============ -->
+  <div class="lesson" data-tab="Sampling">
+    <h2>Puandan olasılığa, olasılıktan seçime</h2>
+    <p>Modelin son katmanı, sözlükteki her token için bir ham puan üretir. Bu puanlara <span class="g" data-g="Logit">logit</span> denir. Sözlük 200 bin token’sa, her adımda 200 bin sayılık bir vektör çıkar. Logit’ler negatif de olabilir, toplamları da bir şey ifade etmez. Onları olasılığa çeviren işlem <span class="g" data-g="Softmax">softmax</span>:</p>
+<pre data-title="softmax ve temperature"><code>p_i = exp(z_i / T) / Σ_j exp(z_j / T)
+
+T → 0   : en yüksek logit’e yığılır (greedy, argmax)
+T = 1   : modelin ham dağılımı
+T > 1   : dağılım düzleşir, düşük puanlı adaylar şans bulur</code></pre>
+    <p>Üstel fonksiyon farkları büyütür: iki logit arasında 1 puanlık fark, olasılıkta yaklaşık 2,7 katlık fark demektir. <span class="g" data-g="Temperature">Temperature</span> (T) logit’leri bölerek bu farkı büyütür ya da küçültür. Sonra iki kesme yöntemi gelir. <span class="g" data-g="Top-k">Top-k</span> en olası k adayı tutar. <span class="g" data-g="Top-p">Top-p</span> (nucleus) olasılığa göre sıralanmış adaylardan, toplam olasılığı p’ye ulaşan en küçük kümeyi tutar. Kalan adayların olasılıkları yeniden 1’e normalize edilir ve bu dağılımdan rastgele bir token çekilir. Yaygın uygulama sırası: temperature → top-k → top-p → örnekleme. Bütün bu sürecin adı <span class="g" data-g="Sampling">sampling</span>.</p>
+
+    <div class="fig" data-widget="l0-temp">
+      <p class="fig-title">Sampling laboratuvarı</p>
+      <p class="fig-cap">Bağlam: “Bu fonksiyon null dönerse uygulama ___”. Logit’ler sabit (temsili); formül gerçek. Kaydırıcıları oynat: soluk çubuklar kesilen adaylar. Sonra tek tek ya da 100 kez örnekle ve dağılımın sonucu nasıl şekillendirdiğini gör.</p>
+    </div>
+
+    <h3>Neden hep en olasıyı seçmiyoruz?</h3>
+    <p>Greedy seçim (her adımda argmax) sezgisel olarak “en doğru” görünür, ama uzun metinlerde kendini tekrar eden döngülere ve donuk, kalıp cümlelere yol açar. Bir token’ın tek başına en olası olması, onunla başlayan <em>dizinin</em> en iyi dizi olduğu anlamına gelmez. Biraz rastgelelik, modelin dağılımındaki zenginliği metne taşır. Bu yüzden sohbet ve kod modelleri tarihsel olarak 1’e yakın bir temperature ve 1’in biraz altında bir top-p ile çalıştırıldı.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Örnekleme, ağırlıklı rastgele seçimdir: ağırlıklı round-robin yük dengeleyici ya da genetik algoritmalardaki rulet tekerleği seçimi. Temperature, ağırlıkları üs alarak keskinleştiren ya da yumuşatan bir ayar; top-k ve top-p ise “şu eşiğin altındaki sunuculara hiç trafik verme” kuralı.</div>
+
+    <h3>API gerçeği: bu düğmeler artık sağlayıcının elinde</h3>
+    <p>Kasım 2026 itibarıyla güncel Claude modellerinde <code>temperature</code>, <code>top_p</code> ya da <code>top_k</code> için varsayılan dışında bir değer gönderirsen API HTTP 400 döndürür. <code>2026-10-21</code> API sürümünden itibaren bu parametreleri hangi değerle olursa olsun göndermek, bütün modellerde 400 hatasıdır. Yani bu konuyu bir ayar düğmesi olarak değil, <em>mekanizma</em> olarak öğreniyorsun: modelin neden aynı soruya farklı cevaplar verdiğini, neden “yaratıcı” ya da “tutarlı” davrandığını açıklayan şey bu.</p>
+    <p>Bunun arkasındaki mantık şu: reasoning (düşünen) modeller uzun düşünme zincirleri üretiyor ve bu zincirlerin kalitesi örnekleme ayarlarına duyarlı. Sağlayıcı, modelin eğitildiği ayarlarla çalışmasını istiyor. Sen davranışı prompt’la ve bir sonraki seviyede göreceğin <code>effort</code> ayarıyla yönlendiriyorsun.</p>
+<pre data-title="Güncel Claude modelinde reddedilen istek (şekil)"><code>POST /v1/messages
+{
+  "model": "claude-opus-5-5",
+  "max_tokens": 1024,
+  "temperature": 0,          // ← 400 invalid_request_error
+  "messages": [{ "role": "user", "content": "..." }]
+}</code></pre>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Temperature 0 yaparsam cevap hem deterministik hem daha doğru olur.” İki yanlış birden. Doğruluk: T=0 sadece dağılımın tepesini seçer; tepe yanlışsa her seferinde aynı yanlışı alırsın. Determinizm: sunucu tarafındaki hesaplama yüzünden T=0 bile bit bit aynı çıktıyı garanti etmez (sonraki konu). Üstelik güncel Claude modellerinde bu ayarı göndermek zaten hata.</div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Tutarlılık gerekiyorsa bunu örnekleme ayarından değil, sistemden al: çıktıyı şemaya bağla (structured output), sonucu derleyici, test ya da doğrulayıcıyla kontrol et, kritik işlerde birden fazla koşum yapıp karşılaştır. Tek bir koşum, ne iyi ne kötü bir şeyi kanıtlar.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Model logit üretir; softmax olasılığa, sampler da olasılığı tek bir token’a çevirir.</li>
+      <li>Temperature dağılımı keskinleştirir ya da düzleştirir; top-k ve top-p kuyruğu keser.</li>
+      <li>Güncel Claude modellerinde bu parametreler reddedilir. Davranışı prompt ve effort yönlendirir.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/thinking">Anthropic: Thinking dokümanı (örnekleme parametreleri notu)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. ÜRETİM ============ -->
+  <div class="lesson" data-tab="Üretim döngüsü">
+    <h2>Prefill, decode ve KV cache</h2>
+    <p>Bir isteği işlemek iki çok farklı aşamadan oluşur ve bu fark, hem gecikmeyi hem fiyatlandırmayı belirler.</p>
+    <div class="cols">
+      <div class="card h"><h4><span class="g" data-g="Prefill">Prefill</span></h4>Prompt’taki <em>bütün</em> token’lar tek seferde, paralel işlenir. Ağırlıklar bir kez okunur, binlerce token için matris-matris çarpımı yapılır: GPU’nun hesap gücü sınırdır. Bu aşama <span class="g" data-g="TTFT">TTFT</span>’yi (ilk token’a kadar geçen süre) belirler.</div>
+      <div class="card m"><h4><span class="g" data-g="Decode">Decode</span></h4>Cevap token’ları <em>tek tek</em> üretilir. Her adımda tüm ağırlıklar ve geçmişin KV cache’i bellekten yeniden okunur ama yalnızca bir token hesaplanır: sınır, bellek bant genişliğidir. Token’lar arası gecikmeyi bu aşama belirler.</div>
+      <div class="card c"><h4><span class="g" data-g="KV cache">KV cache</span></h4>Attention her token için bir “anahtar” ve “değer” vektörü üretir. Bunlar saklanır ki her yeni token’da geçmiş baştan hesaplanmasın. Uzun context’in bellek maliyeti buradan gelir.</div>
+    </div>
+    <p>Bu asimetri fiyat listesinde birebir görünür: Kasım 2026 itibarıyla Claude, OpenAI ve Gemini 4 modellerinde çıktı token’ı, girdi token’ının yaklaşık 5 katı fiyatlı. Örneğin Claude Opus 5.5’te milyon girdi token’ı 4 dolar, milyon çıktı token’ı 20 dolar. Girdi paralel ve verimli işlenir; çıktı sıralı ve bellek bağımlı.</p>
+
+    <div class="fig" data-widget="l0-timeline">
+      <p class="fig-title">Bir isteğin zaman çizelgesi</p>
+      <p class="fig-cap">Prompt ve cevap uzunluğunu değiştir, prompt’un ne kadarının cache’ten geldiğini ayarla. Hız değerleri <b>varsayımdır</b>: sağlayıcıya, modele ve yüke göre çok değişir; kendi ölçtüğün değerleri girebilirsin. Şekil ise her durumda aynı: geniş, paralel bir prefill bloğu ve ardından uzun, sıralı decode adımları.</p>
+    </div>
+
+    <h3>KV cache neden bu kadar önemli?</h3>
+    <p>Bir sequence için KV cache boyutu şu formülle hesaplanır: <code>2 × katman × KV head × head boyutu × dizi uzunluğu × bayt</code>. Baştaki 2, anahtar ve değer içindir. Llama-3-70B benzeri bir yapı (80 katman, 8 KV head, 128 boyut, bf16 yani 2 bayt) için bu token başına yaklaşık 0,33 MB eder; 128 bin token’lık tek bir sequence yaklaşık 40 GB bellek tutar. Uzun context’i servis etmenin pahalı olmasının ve sağlayıcıların prompt caching sunmasının sebebi bu. Prompt caching, kelimenin tam anlamıyla bir önekin KV cache’ini saklamaktır. OpenAI dokümanı da cache’in orijinal token’ları değil, anahtar-değer tensörlerini sakladığını söyler. Bunu 2. seviyede ayrıntılı işleyeceğiz.</p>
+
+    <div class="fig" data-widget="l0-kv">
+      <p class="fig-title">KV cache hesaplayıcı</p>
+      <p class="fig-cap">Mimari parametreleri ve dizi uzunluğunu değiştir. Varsayılanlar Llama-3-70B benzeri bir yapı (yayımlanmış açık model ayarları); Claude’un mimarisi yayımlanmıyor.</p>
+    </div>
+
+    <h3>T=0 bile neden deterministik değil?</h3>
+    <p>Yaygın açıklama “GPU’lar paralel çalışır, atomik işlemler sırayı karıştırır” idi. Thinking Machines Lab’in Eylül 2025 tarihli çalışması bunun büyük ölçüde yanlış olduğunu gösterdi: tek bir ileri geçiş, aynı koşullarda tekrar çalıştırıldığında deterministiktir. Asıl sebep <span class="g" data-g="Batch invariance">batch invariance</span> eksikliği. Sunucu, aynı anda gelen istekleri bir grup (batch) hâlinde işler. RMSNorm, matris çarpımı ve attention çekirdekleri, batch boyutuna göre toplama stratejisini değiştirir. Kayan nokta toplaması birleşmeli (associative) olmadığı için farklı sırayla yapılan toplama farklı son basamaklar üretir. Batch boyutu da o an sunucuyu kimlerin kullandığına bağlıdır. Yani <b>senin cevabın, başkalarının yüküne bağlı</b>.</p>
+    <p>Deney çarpıcı: Qwen3-235B, T=0, “Tell me about Richard Feynman”, 1.000 koşum, 1.000’er token. Sonuç 80 farklı tamamlama. Bütün koşumlar ilk 102 token’da aynıydı; 103. token’da 992’si “Queens, New York”, 8’i “New York City” dedi. Küçük bir sayısal fark, en yüksek iki logit’in yer değiştirmesine yetti; sonrası tamamen farklı bir yol. Batch’ten bağımsız çekirdeklerle 1.000 koşumun hepsi aynı çıktı, ama bedeli var: Qwen3-8B üzerinde vLLM varsayılanı 26 saniye, saf deterministik sürüm 55, optimize edilmiş deterministik sürüm 42 saniye sürdü.</p>
+
+    <div class="fig" data-widget="l0-nondet">
+      <p class="fig-title">Kayan nokta, batch ve 1.000 koşum</p>
+      <p class="fig-cap">Önce JavaScript’in kendi kayan nokta aritmetiğinde birleşme özelliğinin bozulmasını gör. Sonra aynı 1.000 sayıyı farklı parça boyutlarıyla topla: parça boyu, sunucudaki batch boyutunun benzeri. En altta deneyin sonucu.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Agent’ları ve LLM tabanlı özellikleri test ederken tek koşuma güvenme. Değerlendirme setlerini birden fazla koşumla çalıştır, oranlara bak, “bir kere geçti” ile “güvenilir geçiyor” arasındaki farkı ayır. Bir hatayı yeniden üretemiyorsan bunun sebebi kodun değil, örneklemenin ve sunucu yükünün olabilir.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Prefill paraleldir ve TTFT’yi belirler; decode sıralıdır, bellek bağımlıdır ve toplam süreyi belirler.</li>
+      <li>Çıktı token’ı bu yüzden girdinin ~5 katı fiyatlı. Uzun cevap = yavaş ve pahalı cevap.</li>
+      <li>KV cache uzun context’in bellek maliyetidir; prompt caching onu saklamaktır.</li>
+      <li>T=0 bile batch boyutuna bağlı sayısal farklar yüzünden aynı çıktıyı garanti etmez.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">Thinking Machines Lab: Defeating Nondeterminism in LLM Inference (Eylül 2025)</a></li>
+      <li><a href="https://simonwillison.net/2025/Sep/11/defeating-nondeterminism">Simon Willison’ın özeti</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI: Prompt caching (KV tensörleri notu)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Fiyatlandırma</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. TRANSFORMER ============ -->
+  <div class="lesson" data-tab="Transformer sezgisi">
+    <h2>Fonksiyonun içine kısa bir bakış</h2>
+    <p>Bu set seni bir model mimarı yapmayı hedeflemiyor. Ama birkaç sezgi, ileride karşılaşacağın “context rot”, “attention bütçesi” gibi kavramları ezber olmaktan çıkarır.</p>
+    <ol class="steps">
+      <li><b><span class="g" data-g="Embedding">Embedding</span>.</b> Her token ID’si binlerce boyutlu bir vektöre çevrilir. Konum bilgisi de eklenir; modern modellerde genellikle RoPE denen döndürme tabanlı bir yöntemle.</li>
+      <li><b><span class="g" data-g="Attention">Attention</span>.</b> Her token bir “sorgu” (query) vektörü üretir ve bunu önceki her token’ın “anahtarı” (key) ile karşılaştırır (nokta çarpımı). Skorlar softmax’tan geçer ve önceki token’ların “değer” (value) vektörleri bu ağırlıklarla toplanır. Bunu bağlam üzerinde yumuşak, öğrenilmiş bir arama olarak düşün: “şu an benim için hangi önceki token’lar önemli?”</li>
+      <li><b>Çok başlı yapı.</b> Bu işlem aynı katmanda onlarca “head” ile paralel yapılır. Her head farklı bir ilişki türüne bakmayı öğrenir: biri bir önceki token’a, biri zamirin gösterdiği isme, biri ekin bağlandığı köke.</li>
+      <li><b>MLP ve katmanlar.</b> Attention’dan sonra her token kendi başına bir ileri beslemeli ağdan geçer. Attention + MLP bloğu onlarca kez üst üste konur. Erken katmanlar yüzey özellikleriyle, geç katmanlar soyut kavramlarla ilgilenir. Son katman, sözlük boyutunda logit vektörüne yansıtılır.</li>
+    </ol>
+
+    <div class="fig" data-widget="l0-attn">
+      <p class="fig-title">Attention haritası</p>
+      <p class="fig-cap">Bir Türkçe cümle ve üç farklı head. Bir token’a tıkla: o token’ın önceki token’lara ne kadar “baktığını” renk yoğunluğu gösterir. Ağırlıklar elle tasarlandı (gerçek bir modelden alınmadı) ama her satır gerçek bir softmax ve modeller yalnızca geçmişe bakabildiği için üçgen bir maske kullanıyor. Alttaki kaydırıcı, dizi uzadıkça skor sayısının nasıl patladığını gösteriyor.</p>
+    </div>
+
+    <h3>n² ve attention bütçesi</h3>
+    <p>n token’lık bir dizide her token önceki her token’a baktığı için yaklaşık n² skor hesaplanır. 1.000 token bir milyon skor, 1 milyon token bir trilyon skor demektir (her katman ve her head için). Anthropic bunu sınırlı bir “attention bütçesi” olarak çerçeveliyor: context’e eklenen her token, bu bütçeden pay alır. Bir toplantı düşün: herkes konuşmadan önce herkesin notuna göz atıyor. On kişiyle sorun yok; on bin kişiyle bakışlar patlar ve önemli not kalabalıkta kaybolur. 2. seviyedeki “context rot” bu sezginin ölçülmüş hâli.</p>
+
+    <h2>Yorumlanabilirlik: içeride gerçekten ne oluyor?</h2>
+    <p>Anthropic’in Mart 2025’te yayımladığı “Tracing the thoughts of a large language model” çalışması, Claude 3.5 Haiku üzerinde “attribution graph” denen bir yöntemle modelin içindeki hesaplama yollarını izledi. <span class="g" data-g="Interpretability">Yorumlanabilirlik</span> bulguları, “sonraki token tahmini” cümlesinin ne kadar çok şeyi gizlediğini gösteriyor:</p>
+    <div class="cols">
+      <div class="card m"><h4>İleriyi planlama</h4>Kafiyeli bir dizede model, ikinci satırı yazmaya başlamadan önce satırın biteceği kelimeyi seçiyor. O kelimenin temsili bastırılınca başka bir kafiyeye, başka bir kavram enjekte edilince ona uygun tutarlı bir satıra geçiyor.</div>
+      <div class="card m"><h4>Ortak kavramlar</h4>“Küçüğün zıttı” sorusu İngilizce, Fransızca ve Çincede aynı “küçüklük” ve “zıtlık” özelliklerini harekete geçiriyor. Büyük model, küçük modele göre diller arasında iki kattan fazla oranda ortak özellik paylaşıyor.</div>
+      <div class="card m"><h4>İçeride toplama</h4>36+59’da bir yol sonucun büyüklüğünü kabaca hesaplarken, diğeri son basamağı (6+9 → 5) buluyor; ikisi birleşip 95 ediyor. Ama “nasıl hesapladın?” diye sorulunca model okulda öğretilen elde yöntemini anlatıyor.</div>
+      <div class="card m"><h4>Çok adımlı çıkarım</h4>“Dallas’ın bulunduğu eyaletin başkenti” sorusunda Dallas → Teksas → Austin ara adımları içeride görünüyor. Teksas temsili Kaliforniya ile değiştirilince cevap Sacramento oluyor.</div>
+      <div class="card r"><h4>Halüsinasyon devresi</h4>Varsayılan yol “cevap veremem”. “Tanıdık varlık” özelliği bu yolu bastırıyor. İsim tanıdık geliyor ama hakkında bilgi yoksa bu özellik yanlış ateşleniyor ve model uyduruyor.</div>
+      <div class="card r"><h4>Sadakatsiz gerekçe</h4>Büyük bir sayının kosinüsü sorulunca model hesapladığını söylüyor ama içeride hesaplama izi yok. Bir ipucu verilince, ipucuna ulaşacak şekilde geriye doğru gerekçe kuruyor.</div>
+    </div>
+
+    <div class="fig" data-widget="l0-rabbit">
+      <p class="fig-title">Kafiye deneyi: plan satırdan önce gelir</p>
+      <p class="fig-cap">Anthropic’in deneyinin canlandırması. İlk satır “…grab it” ile bitiyor. Müdahaleyi seç ve ikinci satır başlamadan önce içeride hangi özelliklerin aktif olduğunu, satırın nasıl kurulduğunu izle. Aktivasyon çubukları temsilidir.</p>
+    </div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Toplama örneğindeki ders, bir yazılımcı için altın değerinde: <b>modelin kendi süreci hakkındaki açıklaması, sürecin kendisi değildir.</b> Agent “testleri çalıştırdım, hepsi geçti” ya da “bu sonucu şöyle hesapladım” dediğinde bu bir anlatıdır. Kanıt, araç çıktısında, log’da ve diff’tedir.</div>
+
+    <p>Yöntemin sınırlarını da bilmek gerek: bu teknik, hesaplamanın yalnızca bir kısmını yakalıyor ve onlarca kelimelik bir prompt’u izlemek saatlerce insan emeği istiyor. Yani bu bulgular bir pencere; modelin tam haritası değil.</p>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Attention, bağlam üzerinde öğrenilmiş yumuşak bir aramadır; maliyeti dizi uzunluğunun karesiyle büyür.</li>
+      <li>“Sadece sonraki token” arayüzünün arkasında planlama, çok adımlı çıkarım ve diller arası ortak kavramlar var.</li>
+      <li>Modelin kendini açıklaması mekanizmasının kaydı değildir. Kanıtı araç çıktısında ara.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/research/tracing-thoughts-language-model">Anthropic: Tracing the thoughts of a large language model (Mart 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents (attention bütçesi)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. NE DEĞİL ============ -->
+  <div class="lesson" data-tab="Bu fonksiyon ne değil">
+    <h2>Mühendis gözüyle: yanlış zihinsel modeller</h2>
+    <p>Bir aracı iyi kullanmanın yarısı, onu neyle karıştırmaman gerektiğini bilmektir. Bu seviyede gördüğün mekanizmalar, aşağıdaki yaygın yanlış modellerin her birini doğrudan çürütüyor.</p>
+
+    <h3>Bir veritabanı değil</h3>
+    <p>Model eğitim verisini kayıt kayıt saklamaz; onu ağırlıklara sıkıştırılmış, kayıplı bir temsile dönüştürür. Sık görülen kalıpları (yaygın bir framework’ün API’si, SQL sözdizimi) çok iyi bilir. Nadir görülen bir ayrıntıyı (az kullanılan bir paketin belirli bir sürümündeki metot imzası) “akıcı ama yanlış” biçimde yeniden üretebilir. Sorgu yok, indeks yok, “kayıt bulunamadı” hatası yok; yalnızca makul bir devam var. Doğru bilgiyi garanti altına almanın yolu, onu context’e koymaktır: dokümanı okutmak, kodu açtırmak, aracı çağırtmak.</p>
+
+    <h3>Çalışırken öğrenen bir sistem değil</h3>
+    <p>Ağırlıklar donuktur. Konuşma sırasında modele bir şey “öğrettiğinde” öğrenilen şey ağırlıklarda değil, konuşma metninde durur. Konuşma kapanınca, ya da uzun bir oturumda metin sıkıştırılınca, o bilgi gider. “Hafıza” diye sunulan her özellik (kalıcı kural dosyaları, notlar, oturum özetleri) harness’ın metni bir sonraki isteğe geri koymasıdır.</p>
+
+    <h3>Deterministik değil</h3>
+    <p>Örnekleme bilinçli bir rastgelelik katar; ona müdahale edemesen bile sunucudaki batch etkisi var. Aynı prompt’un iki koşumu farklı yollara sapabilir. Bir agent oturumunun “dün çalıştı, bugün çalışmadı” demesi her zaman kodun değiştiği anlamına gelmez.</p>
+
+    <h3>Hesap makinesi ya da yazım denetleyicisi değil</h3>
+    <p>Harfleri değil token’ları görür, aritmetiği içeride yaklaşık ve paralel yollarla yapar. Uzun sayılarla, harf sayma ve dizgi tersine çevirme gibi işlerde kırılgandır. Bunun için kod çalıştırma aracı var: modeli hesaplatmak yerine hesaplayan kodu yazdır.</p>
+
+    <h3>Kendi iç işleyişinin tanığı değil</h3>
+    <p>Model nasıl düşündüğünü anlatabilir ama bu anlatı, eğitim verisindeki “insanlar böyle anlatır” kalıbından gelir. Ne bildiğini ve ne bilmediğini de güvenilir biçimde bilmez: halüsinasyon devresi tam olarak bu sınırın yanlış ateşlenmesi.</p>
+
+    <h3>Sabit bir ürün değil</h3>
+    <p>Aynı ağırlıklar, farklı bir sistem prompt’u, farklı araç seti ve farklı context ile çok farklı davranır. Claude Code’daki Claude ile sohbet arayüzündeki Claude aynı model olabilir ama aynı “agent” değildir. Bir davranışı yorumlarken her zaman sor: bu modelden mi, harness’tan mı, context’ten mi geliyor?</p>
+
+    <div class="fig" data-widget="l0-symptom">
+      <p class="fig-title">Belirtiden mekanizmaya</p>
+      <p class="fig-cap">Gerçek hayatta karşılaşacağın belirtiler. Birine tıkla: bu seviyedeki hangi mekanizmadan geldiğini ve mühendis olarak ne yapacağını gör.</p>
+      <div class="l0-sym"></div>
+      <div class="panel live l0-sym-out" aria-live="polite"><span class="muted">Bir belirtiye tıkla.</span></div>
+    </div>
+
+    <div class="vs">
+      <div class="bad" data-label="Yanlış zihinsel model">“Model projemi biliyor, geçen hafta anlattım.” “Temperature’ı sıfırlarsam tutarlı olur.” “Testlerin geçtiğini söyledi, demek ki geçti.” “Bu hesabı yaptı, sonuç doğrudur.”</div>
+      <div class="good" data-label="Mekanizmaya dayalı model">Proje bilgisi her istekte context’e girmeli. Tutarlılık doğrulayıcıdan gelir. Test sonucu araç çıktısında görülür. Hesap için kod çalıştırılır, model sonucu yorumlar.</div>
+    </div>
+
+    <div class="keep"><h3>Seviye 0: Akılda kalsın</h3><ul>
+      <li>LLM, token dizisinden sonraki token için olasılık üreten donmuş bir fonksiyondur; cevap bu fonksiyonun döngüde çağrılmasıyla oluşur.</li>
+      <li>Token sayısı dil ve tokenizer sürümüyle değişir; maliyetin, hızın ve context’in birimi token’dır.</li>
+      <li>Örnekleme ve sunucu tarafı sayısal farklar yüzünden çıktı deterministik değildir; tutarlılık doğrulamayla sağlanır.</li>
+      <li>Prefill paralel, decode sıralıdır; KV cache uzun context’in bellek bedelidir.</li>
+      <li>İçeride planlama ve kavramsal temsil var, ama modelin kendini anlatması kanıt değildir.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/research/tracing-thoughts-language-model">Anthropic: Tracing the thoughts of a large language model</a></li>
+      <li><a href="https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/">Thinking Machines Lab: Defeating Nondeterminism in LLM Inference</a></li>
+      <li><a href="https://www.fast.ai/posts/2025-10-16-karpathy-tokenizers">fast.ai: Karpathy ve tokenizer’lar</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+(() => {
+Edu.glossary({
+  "Token": "Modelin işlediği metin birimi: bir kelime, kelime parçası, noktalama ya da bayt. Maliyet, hız ve context sınırı token cinsinden ölçülür.",
+  "Tokenizer": "Metni token’lara bölüp her birine tamsayı kimlik veren bileşen. Kuralları eğitim derleminden bir kez öğrenilir ve donar.",
+  "BPE": "Byte-pair encoding. Baytlardan başlayıp en sık yan yana gelen sembol çiftlerini adım adım birleştirerek sözlük oluşturan tokenizer algoritması.",
+  "Logit": "Modelin son katmanının sözlükteki her token için ürettiği ham puan. Softmax ile olasılığa çevrilir.",
+  "Softmax": "Puan vektörünü olasılık dağılımına çeviren fonksiyon: p_i = exp(z_i) / Σ exp(z_j). Farkları üstel olarak büyütür.",
+  "Temperature": "Logit’leri softmax’tan önce bölen sayı. Küçükse dağılım tepede yığılır, büyükse düzleşir. Güncel Claude modellerinde API’den ayarlanamaz.",
+  "Top-k": "Örneklemeden önce yalnızca en olası k adayı tutan kesme yöntemi.",
+  "Top-p": "Nucleus sampling. Toplam olasılığı p’ye ulaşan en küçük aday kümesini tutup gerisini kesen yöntem.",
+  "Sampling": "Olasılık dağılımından bir sonraki token’ı seçme işlemi. Temperature, top-k ve top-p bu adımın ayarlarıdır.",
+  "Autoregressive": "Her çıktı token’ının, ondan önceki bütün token’lara bakılarak tek tek üretildiği yöntem. Üretilen token bir sonraki adımın girdisine eklenir.",
+  "Forward pass": "Modelin bir girdiyi bütün katmanlardan geçirip logit ürettiği tek hesaplama. Her yeni token bir ileri geçiş demektir.",
+  "Prefill": "Prompt’taki bütün token’ların paralel işlendiği ilk aşama. Hesap gücü sınırlıdır ve ilk token’a kadar geçen süreyi belirler.",
+  "Decode": "Cevap token’larının tek tek üretildiği aşama. Her adımda ağırlıklar ve KV cache yeniden okunur; bellek bant genişliği sınırlıdır.",
+  "KV cache": "Geçmiş token’ların attention anahtar ve değer vektörlerinin saklandığı bellek. Her yeni token’da geçmişin yeniden hesaplanmasını önler; prompt caching bunu istekler arasında saklar.",
+  "TTFT": "Time to first token. İsteği gönderdiğin andan ilk çıktı token’ının geldiği ana kadar geçen süre; büyük ölçüde prefill süresi.",
+  "Batch invariance": "Bir hesaplamanın sonucunun, sunucuda birlikte işlenen istek sayısından (batch boyutundan) bağımsız olması. Çoğu çıkarım çekirdeğinde yoktur; T=0’da bile farklı çıktıların asıl sebebi budur.",
+  "Embedding": "Token ID’sinin modelin içinde temsil edildiği, binlerce boyutlu sayı vektörü.",
+  "Attention": "Her token’ın önceki token’lara ne kadar bakacağını sorgu-anahtar benzerliğiyle hesaplayan mekanizma. Maliyeti dizi uzunluğunun karesiyle büyür.",
+  "Interpretability": "Yorumlanabilirlik. Modelin iç hesaplamalarını (özellikler, devreler) inceleyip hangi davranışın nasıl oluştuğunu anlamaya çalışan araştırma alanı."
+});
+
+/* ---------- ortak küçük yardımcılar (seviye 0) ---------- */
+const L0 = {
+  bar(lab, p, opt={}){
+    const { h } = Edu;
+    return h("div", { class:"bar" + (opt.pick ? " pick" : "") + (opt.cut ? " l0-bar cut" : "") },
+      h("span", { class:"lab", title: lab }, lab),
+      h("span", { class:"track" }, h("span", { class:"fill", style:{ width: Math.max(0, Math.min(100, p*100)).toFixed(1) + "%", background: opt.color || null } })),
+      h("span", { class:"pct" }, opt.txt != null ? opt.txt : (p*100).toFixed(p < 0.01 && p > 0 ? 2 : 1) + "%"));
+  },
+  fakeId(s){ let x = 2166136261; for (const ch of s){ x ^= ch.codePointAt(0); x = Math.imul(x, 16777619) >>> 0; } return x % 200000; },
+  fmt(n, d=0){ return Number(n).toLocaleString("tr-TR", { maximumFractionDigits:d, minimumFractionDigits:d }); },
+  range(label, id, min, max, step, val){
+    const { h } = Edu;
+    const inp = h("input", { type:"range", id, min, max, step, value: val });
+    const out = h("output", { for: id });
+    return { wrap: h("div", { class:"range" }, h("label", { for: id }, label), inp, out), inp, out };
+  },
+  rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+};
+
+/* ---------- 1. Bir cevabın doğuşu ---------- */
+Edu.widget("l0-loop", el => {
+  const { h, $, $$, esc, stepper, sleep, runner, tokenize } = Edu;
+  const prompt = "Kullanıcı: example.orders tablosundan en son siparişi getiren SQL’i yaz.\nAsistan:";
+  const ptoks = tokenize(prompt);
+  const seq = [
+    { t:" SELECT", c:[[" SELECT",.62],[" İşte",.21],[" ```",.11]] },
+    { t:" order", c:[[" order",.48],[" *",.31],[" o",.09]] },
+    { t:"_id", c:[["_id",.93],["_date",.03],["s",.02]] },
+    { t:",", c:[[",",.88],[" FROM",.09],[" AS",.01]] },
+    { t:" customer", c:[[" customer",.44],[" amount",.39],[" created",.12]] },
+    { t:"_id", c:[["_id",.97],["_name",.02],["s",.01]] },
+    { t:",", c:[[",",.81],[" FROM",.17],[" AS",.01]] },
+    { t:" amount", c:[[" amount",.57],[" created",.33],[" status",.06]] },
+    { t:" FROM", c:[[" FROM",.86],[",",.13],[" AS",.01]] },
+    { t:" example", c:[[" example",.95],[" orders",.04],[" public",.01]] },
+    { t:".orders", c:[[".orders",.98],[".order",.01],[".customers",.01]] },
+    { t:" ORDER", c:[[" ORDER",.83],[" WHERE",.12],["⏎",.04]] },
+    { t:" BY", c:[[" BY",.99],[" by",.006],[" B",.004]] },
+    { t:" created", c:[[" created",.79],[" order",.18],[" amount",.01]] },
+    { t:"_at", c:[["_at",.97],["_date",.02],["At",.01]] },
+    { t:" DESC", c:[[" DESC",.95],[" ASC",.03],["⏎",.02]] },
+    { t:" LIMIT", c:[[" LIMIT",.90],[";",.07],[" FETCH",.03]] },
+    { t:" 1", c:[[" 1",.99],[" 10",.006],[" ?",.004]] },
+    { t:";", c:[[";",.93],["⏎",.06],[" OFFSET",.01]] },
+    { t:"⟨son⟩", c:[["⟨son⟩",.71],["⏎⏎",.25],[" Bu",.04]], stop:true }
+  ];
+  const vec = id => { const r = L0.rng(id); return "[" + Array.from({length:6}, () => (r()*2-1).toFixed(2)).join(", ") + ", … ]"; };
+  const r = runner();
+  const steps = [
+    { title:"1. Girdi bir metindir", html:() => `<p>Harness, system prompt’u, konuşmayı ve senin mesajını tek bir metinde birleştirir. Rol işaretleri de bu metnin parçasıdır.</p><div class="l0-gen">${esc(prompt)}</div>` },
+    { title:"2. Tokenizer metni ID’lere çevirir", html:() => `<p>${ptoks.length} parça. Model yalnızca alttaki sayıları görür (ID’ler temsilidir).</p><div class="chips l0-chips">${ptoks.map(t => `<span class="chip" title="ID ${L0.fakeId(t)}">${esc(t.replace(/\n/g,"⏎"))}<sub class="muted"> ${L0.fakeId(t)}</sub></span>`).join("")}</div>` },
+    { title:"3. Her ID bir vektöre dönüşür (embedding)", html:() => `<p>ID’ler, binlerce boyutlu sayı vektörlerine çevrilir; konum bilgisi eklenir. İlk üç token için ilk altı boyut:</p>${ptoks.slice(0,3).map(t => `<div class="l0-vec"><b>${esc(t)}</b> → ${vec(L0.fakeId(t))}</div>`).join("")}` },
+    { title:"4. Katmanlardan geçiş (forward pass)", html:() => `<p>Vektörler onlarca attention + MLP katmanından geçer. Her katmanda her token önceki token’lara bakar ve temsilini günceller.</p><div class="l0-layers">${"<i></i>".repeat(32)}</div><p class="hint">Prompt’un tamamı bu aşamada paralel işlenir: prefill.</p>`, anim:true },
+    { title:"5. Son katman: logit vektörü", html:() => `<p>Son token’ın temsili, sözlüğün tamamına yansıtılır: her aday için bir ham puan.</p><div class="tbl l0-tbl"><table><thead><tr><th>Aday</th><th>Logit</th></tr></thead><tbody>${[[" SELECT",8.4],[" İşte",7.3],[" ```",6.7],[" Aşağıdaki",5.9],[" Tabii",5.2]].map(x => `<tr><td class="mono">${esc(x[0])}</td><td class="mono">${x[1]}</td></tr>`).join("")}<tr><td colspan="2" class="muted">… sözlükteki diğer yüz binlerce aday</td></tr></tbody></table></div>` },
+    { title:"6. Softmax ve seçim", html:() => "", bars:true },
+    { title:"7. Ekle ve yeniden çağır", html:() => `<p>Seçilen token metnin sonuna eklenir ve fonksiyon <b>yeniden</b> çağrılır. KV cache sayesinde eski token’ların ara sonuçları tekrar hesaplanmaz; yalnızca yeni token işlenir: decode.</p><div class="l0-gen"><span class="dim">${esc(prompt)}</span><span class="new">${esc(seq[0].t)}</span></div>` },
+    { title:"8. Ne zaman durur?", html:() => `<p>Döngüyü model değil, harness bitirir. Yanıttaki <code>stop_reason</code> nedenini söyler:</p><ul><li><code>end_turn</code>: model “bitti” anlamına gelen özel token’ı seçti.</li><li><code>max_tokens</code>: istekteki çıktı sınırına ulaşıldı; cevap yarıda kesildi.</li><li><code>stop_sequence</code>: senin tanımladığın bir dizi üretildi.</li><li><code>tool_use</code>: model bir araç çağrısı üretti; harness aracı çalıştırıp sonucu yeni bir istekle geri verecek.</li></ul>` }
+  ];
+  stepper($(".l0-loop-st", el), { steps, auto: 3200, render(i, s, { body }){
+    const cancelled = r.start();
+    body.innerHTML = `<h4 style="margin-top:0">${s.title}</h4>` + s.html();
+    if (s.bars){
+      body.append(h("p", null, "Logit’ler olasılığa çevrilir, sampler bu dağılımdan çeker. Bu kez “ SELECT” geldi; başka bir koşumda “ İşte” gelebilirdi."));
+      const b = h("div", { class:"bars" });
+      seq[0].c.forEach(([t, p], k) => b.append(L0.bar(t, p, { pick: k === 0 })));
+      b.append(L0.bar("diğer", 1 - seq[0].c.reduce((a, x) => a + x[1], 0), { color:"var(--faint)" }));
+      body.append(b);
+    }
+    if (s.anim){
+      const ls = $$(".l0-layers i", body);
+      (async () => { for (let k = 0; k < ls.length; k++){ if (cancelled()) return; ls[k].classList.add("on"); await sleep(45); } })();
+    }
+  }});
+
+  const out = $(".l0-loop-out", el), bars = $(".l0-loop-bars", el);
+  const nEl = $(".l0-loop-n", el), lenEl = $(".l0-loop-len", el), stEl = $(".l0-loop-stop", el);
+  const gr = runner();
+  function paint(k){
+    out.innerHTML = `<span class="dim">${esc(prompt)}</span>` + seq.slice(0, k).map((s, j) => `<span class="${j === k-1 ? "new" : ""}">${esc(s.stop ? "" : s.t)}</span>`).join("");
+    nEl.textContent = k; lenEl.textContent = (ptoks.length + Math.min(k, seq.length - 1)) + " token";
+  }
+  async function run(){
+    const cancelled = gr.start();
+    stEl.textContent = "…"; bars.innerHTML = "";
+    for (let k = 1; k <= seq.length; k++){
+      if (cancelled()) return;
+      const s = seq[k-1];
+      bars.innerHTML = "";
+      s.c.forEach(([t, p], j) => bars.append(L0.bar(t.replace(/\n/g, "⏎"), p, { pick: j === 0 })));
+      paint(k);
+      await sleep(420);
+    }
+    stEl.textContent = "end_turn";
+  }
+  $("[data-act=run]", el).onclick = run;
+  $("[data-act=stop]", el).onclick = () => { gr.stop(); stEl.textContent = "durduruldu"; };
+  paint(0);
+});
+
+/* ---------- 2a. BPE ---------- */
+Edu.widget("l0-bpe", el => {
+  const { h, $, esc } = Edu;
+  const corpus = [["evler",6],["evlerde",4],["evlerden",3],["kitaplar",5],["kitaplarda",3],["masalar",3],["geliyor",6],["geliyorlar",3],["gidiyor",5],["yapıyor",5],["okuyor",4],["okuyorlar",2],["siparişler",5],["siparişlerde",3],["müşteriler",4],["müşterilerden",3],["kalemler",3],["defterler",3]];
+  let words, merges;
+  const SEP = "\u0001";
+  const initVocab = new Set(corpus.flatMap(([w]) => [...w])).size;
+  const merge = (sym, a, b) => { const o = []; for (let i = 0; i < sym.length; i++){ if (i < sym.length-1 && sym[i] === a && sym[i+1] === b){ o.push(a+b); i++; } else o.push(sym[i]); } return o; };
+  const pairs = () => { const m = new Map(); words.forEach(({sym, f}) => { for (let i = 0; i < sym.length-1; i++){ const k = sym[i] + SEP + sym[i+1]; m.set(k, (m.get(k) || 0) + f); } }); return [...m].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)); };
+  const step = () => { const ps = pairs(); if (!ps.length) return false; const [a, b] = ps[0][0].split(SEP); words.forEach(w => w.sym = merge(w.sym, a, b)); merges.push([a, b, ps[0][1]]); return true; };
+  const apply = word => { let s = [...word]; merges.forEach(([a, b]) => s = merge(s, a, b)); return s; };
+
+  const ctrl = h("div", { class:"ctrl" });
+  const b1 = h("button", { class:"btn", type:"button" }, "Bir birleştirme");
+  const b10 = h("button", { class:"btn ghost", type:"button" }, "10 birleştirme");
+  const b0 = h("button", { class:"btn ghost", type:"button" }, "↺ Baştan");
+  ctrl.append(b1, b10, b0);
+  const stats = h("div", { class:"stats" });
+  const two = h("div", { class:"l0-two" });
+  const pairBox = h("div", { class:"l0-box" }), wordBox = h("div", { class:"l0-box" });
+  two.append(pairBox, wordBox);
+  const mergesBox = h("div", { class:"chips", "aria-live":"polite" });
+  const inp = h("input", { class:"field", id:"l0-bpe-in", value:"kalemlerden", autocomplete:"off", spellcheck:"false" });
+  const tryOut = h("div", { class:"chips l0-chips" });
+  el.append(ctrl, stats, two, h("h4", null, "Öğrenilen kurallar (sırayla)"), mergesBox,
+    h("div", { style:{ marginTop:".9rem" } }, h("label", { for:"l0-bpe-in", class:"mono" }, "Derlemde olmayan bir kelime dene:"), inp), tryOut,
+    h("p", { class:"hint" }, "Birkaç birleştirmeden sonra “ler”, “lar”, “yor” birer token olur. Yeni kelime de bu parçalarla bölünür: tokenizer kelimeyi hiç görmemiş olsa bile."));
+
+  function render(){
+    const total = words.reduce((a, w) => a + w.sym.length * w.f, 0);
+    stats.innerHTML = `<span>Birleştirme<b>${merges.length}</b></span><span>Sözlük boyu<b>${initVocab + merges.length}</b></span><span>Derlemin token sayısı<b>${total}</b></span>`;
+    const ps = pairs().slice(0, 6);
+    pairBox.innerHTML = `<h4>Sıradaki en sık çiftler</h4>` + (ps.length ? `<div class="tbl l0-tbl" style="margin:0"><table><thead><tr><th>Çift</th><th>Frekans</th></tr></thead><tbody>${ps.map(([k, f], i) => `<tr${i === 0 ? ' style="background:var(--model-bg)"' : ""}><td class="mono">${esc(k.split(SEP).join(" + "))}</td><td class="mono">${f}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Birleştirilecek çift kalmadı.</p>`);
+    wordBox.innerHTML = `<h4>Derlem şu an nasıl bölünüyor?</h4>` + words.slice(0, 18).map(w => `<div class="chips l0-chips" style="margin:.2rem 0">${w.sym.map(s => `<span class="chip${s.length > 1 ? " sfx" : ""}">${esc(s)}</span>`).join("")}<span class="muted mono" style="font-size:.72rem"> ×${w.f}</span></div>`).join("");
+    mergesBox.innerHTML = merges.length ? merges.map(([a, b, f], i) => `<span class="chip" title="frekans ${f}">${i+1}. ${esc(a)}+${esc(b)} → ${esc(a+b)}</span>`).join("") : `<span class="muted">Henüz kural yok: sözlük yalnızca tek harflerden oluşuyor.</span>`;
+    const w = (inp.value || "").trim().toLocaleLowerCase("tr").slice(0, 40);
+    tryOut.innerHTML = w ? apply(w).map(s => `<span class="chip${s.length > 1 ? " sfx" : ""}">${esc(s)}</span>`).join("") + `<span class="muted mono" style="font-size:.75rem"> ${apply(w).length} token</span>` : "";
+  }
+  function reset(){ words = corpus.map(([w, f]) => ({ sym:[...w], f })); merges = []; render(); }
+  b1.onclick = () => { step(); render(); };
+  b10.onclick = () => { for (let i = 0; i < 10; i++) if (!step()) break; render(); };
+  b0.onclick = reset;
+  inp.addEventListener("input", render);
+  reset();
+});
+
+/* ---------- 2b. Türkçe / İngilizce ---------- */
+Edu.widget("l0-tok", el => {
+  const { h, $, esc, tokenize, seg } = Edu;
+  const P = {
+    review:{ l:"Kod inceleme yorumu", tr:"Bu fonksiyon null dönebilir; çağıran tarafta kontrol etmediğimiz için uygulama çökebilir.", en:"This function can return null; since we don't check it on the caller side, the application may crash." },
+    err:{ l:"Hata mesajı", tr:"Sipariş kaydedilemedi: müşteri bulunamadı (customer_id = 42). Bağlantı ayarlarını kontrol et.", en:"Could not save the order: customer not found (customer_id = 42). Check the connection settings." },
+    req:{ l:"Gereksinim", tr:"Kullanıcılarımızın siparişlerini görüntüleyebilmeleri için yetkilendirme kontrollerini güncellememiz gerekiyor.", en:"We need to update the authorization checks so that our users can view their orders." },
+    sql:{ l:"SQL", tr:"SELECT order_id, amount FROM example.orders WHERE status_code = 'NEW' ORDER BY created_at DESC;", en:"SELECT order_id, amount FROM example.orders WHERE status_code = 'NEW' ORDER BY created_at DESC;" },
+    sfx:{ l:"Ek yığını", tr:"değerlendirebileceklerimizden", en:"from among those we will be able to evaluate", morph:"değer · len · dir · ebil · ecek · ler · imiz · den" }
+  };
+  const sg = h("div", { class:"seg", role:"group", "aria-label":"Örnek metin" }, ...Object.entries(P).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.l)));
+  const mk = (id, title) => {
+    const ta = h("textarea", { class:"field", id, rows:3, spellcheck:"false" });
+    const chips = h("div", { class:"chips l0-chips" });
+    const st = h("div", { class:"stats" });
+    const box = h("div", { class:"l0-box" }, h("h4", null, h("label", { for:id }, title)), ta, chips, st);
+    return { ta, chips, st, box };
+  };
+  const A = mk("l0-tok-tr", "Türkçe"), B = mk("l0-tok-en", "İngilizce");
+  const panel = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sg), h("div", { class:"l0-two" }, A.box, B.box), panel);
+  let cur = "review";
+  function one(S){
+    const toks = tokenize(S.ta.value);
+    S.chips.innerHTML = toks.map(t => `<span class="chip">${esc(t)}</span>`).join("");
+    const chars = [...S.ta.value].length;
+    S.st.innerHTML = `<span>Karakter<b>${chars}</b></span><span>Yaklaşık token<b>${toks.length}</b></span><span>Karakter / token<b>${toks.length ? (chars / toks.length).toFixed(2) : "–"}</b></span>`;
+    return toks.length;
+  }
+  function upd(){
+    const a = one(A), b = one(B);
+    const ratio = b ? a / b : 0;
+    let html = `<div class="l0-big">TR / EN ≈ ${ratio ? ratio.toFixed(2) + "×" : "–"}</div><p style="margin:.3rem 0 0">Bu yaklaşık bölücüye göre aynı anlam Türkçede <b>${ratio ? ratio.toFixed(2) : "–"} kat</b> token tutuyor. Aynı bütçeyle Türkçede İngilizcenin ${ratio ? "yaklaşık %" + Math.round(100 / ratio) : "–"} kadar içerik gönderebilirsin; çıktı da aynı oranda daha uzun sürer.</p>`;
+    if (P[cur].morph) html += `<p class="hint">Dilbilimsel bölünme: <span class="mono">${esc(P[cur].morph)}</span>. Tokenizer sınırları biçimbirim sınırlarıyla örtüşmek zorunda değil; Bayram ve ark. bunu “geçerli Türkçe token oranı” ile ölçüyor.</p>`;
+    if (cur === "sql") html += `<p class="hint">Kod ve SQL iki dilde de aynı: tanımlayıcılar dilden bağımsız. Türkçe vergisi doğal dil kısmında ödeniyor.</p>`;
+    html += `<p class="hint">Gerçek sayılar için sağlayıcının token sayma uç noktasını kullan. Claude’un tokenizer’ı yayımlanmıyor; bu bölücü onu taklit etmiyor.</p>`;
+    panel.innerHTML = html;
+  }
+  seg(sg, v => { cur = v; A.ta.value = P[v].tr; B.ta.value = P[v].en; upd(); });
+  A.ta.addEventListener("input", upd); B.ta.addEventListener("input", upd);
+});
+
+/* ---------- 3. Sampling laboratuvarı ---------- */
+Edu.widget("l0-temp", el => {
+  const { h, $, esc } = Edu;
+  const C = [["çöker",6.1],["hata",5.4],["NullReferenceException",4.9],["durur",4.2],["donar",3.6],["patlar",3.3],["kilitlenir",3.0],["beklenmedik",2.8],["sessizce",2.5],["log",2.0],["yeniden",1.2],["muz",-1.0]];
+  const sent = h("div", { class:"l0-gen", "aria-live":"polite" });
+  const rT = L0.range("Temperature", "l0-T", 0, 2, 0.05, 1);
+  const rK = L0.range("Top-k", "l0-K", 1, 12, 1, 12);
+  const rP = L0.range("Top-p", "l0-P", 0.5, 1, 0.01, 1);
+  const bars = h("div", { class:"bars" });
+  const stats = h("div", { class:"stats" });
+  const form = h("div", { class:"panel mono", style:{ fontSize:".78rem" } });
+  const hist = h("div", { class:"panel live", "aria-live":"polite" });
+  const b1 = h("button", { class:"btn", type:"button" }, "1 kez örnekle");
+  const b100 = h("button", { class:"btn ghost", type:"button" }, "100 kez örnekle");
+  const b0 = h("button", { class:"btn ghost", type:"button" }, "Varsayılanlar");
+  el.append(sent, h("div", { class:"ctrl" }, rT.wrap, rK.wrap, rP.wrap), bars, stats, h("div", { class:"ctrl" }, b1, b100, b0), hist, form,
+    h("p", { class:"hint" }, "Hatırlatma: Kasım 2026 itibarıyla güncel Claude modellerinde bu üç ayarı API’den değiştirmek HTTP 400 döndürür. Burada mekanizmayı görmek için kendi örnekleyicimizi çalıştırıyoruz."));
+  let last = null;
+  function dist(){
+    const T = +rT.inp.value, k = +rK.inp.value, P = +rP.inp.value;
+    const z = C.map(c => c[1]);
+    let p;
+    if (T < 0.01){ const a = z.indexOf(Math.max(...z)); p = z.map((_, i) => i === a ? 1 : 0); }
+    else { const zz = z.map(v => v / T), m = Math.max(...zz), e = zz.map(v => Math.exp(v - m)), s = e.reduce((a, b) => a + b, 0); p = e.map(v => v / s); }
+    const order = p.map((v, i) => i).sort((a, b) => p[b] - p[a]);
+    const keptK = order.slice(0, k);
+    const sK = keptK.reduce((a, i) => a + p[i], 0);
+    const keep = new Set(); let cum = 0;
+    for (const i of keptK){ keep.add(i); cum += p[i] / sK; if (cum >= P - 1e-9) break; }
+    const sF = [...keep].reduce((a, i) => a + p[i], 0);
+    const f = p.map((v, i) => keep.has(i) ? v / sF : 0);
+    return { T, k, P, p, f, keep };
+  }
+  function draw(){
+    const d = dist();
+    rT.out.textContent = d.T < 0.01 ? "0 (greedy)" : d.T.toFixed(2); rK.out.textContent = d.k; rP.out.textContent = d.P.toFixed(2);
+    bars.innerHTML = "";
+    C.forEach(([t], i) => bars.append(L0.bar(t, d.f[i], { cut: !d.keep.has(i), pick: last === i, txt: d.keep.has(i) ? (d.f[i]*100).toFixed(d.f[i] < .01 ? 2 : 1) + "%" : "kesildi" })));
+    const H = -d.f.reduce((a, v) => a + (v > 0 ? v * Math.log2(v) : 0), 0);
+    stats.innerHTML = `<span>Entropi<b>${H.toFixed(2)} bit</b></span><span>Etkin aday sayısı (2^H)<b>${Math.pow(2, H).toFixed(1)}</b></span><span>Kalan aday<b>${d.keep.size} / ${C.length}</b></span>`;
+    if (d.T < 0.01){ form.innerHTML = "T → 0: softmax’a gerek kalmadan en yüksek logit (çöker, 6.1) seçilir. Her seferinde aynı aday."; }
+    else {
+      const e = C.map(c => Math.exp(c[1] / d.T)), s = e.reduce((a, b) => a + b, 0);
+      form.innerHTML = `p(çöker) = e^(6.1/${d.T.toFixed(2)}) / Σ e^(z/${d.T.toFixed(2)}) = ${e[0].toExponential(2)} / ${s.toExponential(2)} = ${(e[0]/s*100).toFixed(1)}%<br>p(muz) = e^(−1.0/${d.T.toFixed(2)}) / Σ = ${(e[11]/s*100).toExponential(1)}%` + (d.keep.size < C.length ? `<br>Kesmeden sonra kalan ${d.keep.size} adayın olasılıkları toplamı 1 olacak şekilde yeniden ölçeklenir.` : "");
+    }
+    sent.innerHTML = `Bu fonksiyon null dönerse uygulama <span class="new">${last == null ? "___" : esc(C[last][0])}</span>`;
+  }
+  function sample(){ const d = dist(); let r = Math.random(), acc = 0; for (let i = 0; i < C.length; i++){ acc += d.f[i]; if (r <= acc) return i; } return d.f.findIndex(v => v > 0); }
+  b1.onclick = () => { last = sample(); draw(); hist.innerHTML = `Seçilen: <b>${esc(C[last][0])}</b>. Tekrar bas; aynı ayarlarla farklı sonuçlar gelebilir.`; };
+  b100.onclick = () => {
+    const cnt = new Array(C.length).fill(0); for (let i = 0; i < 100; i++) cnt[sample()]++;
+    last = cnt.indexOf(Math.max(...cnt)); draw();
+    hist.innerHTML = "<b>100 örneğin dağılımı:</b> " + cnt.map((c, i) => c ? `<span class="chip" style="margin:2px">${esc(C[i][0])} ×${c}</span>` : "").join("") ;
+  };
+  b0.onclick = () => { rT.inp.value = 1; rK.inp.value = 12; rP.inp.value = 1; last = null; hist.innerHTML = ""; draw(); };
+  [rT, rK, rP].forEach(r => r.inp.addEventListener("input", draw));
+  hist.innerHTML = `<span class="muted">Temperature’ı 0,3’e indir, sonra 1,8’e çıkar; her seferinde 100 örnek çek. Top-p’yi 0,8’e çekince kuyruğun nasıl kesildiğine bak.</span>`;
+  draw();
+});
+
+/* ---------- 4a. Zaman çizelgesi ---------- */
+Edu.widget("l0-timeline", el => {
+  const { h, $, sleep, runner } = Edu;
+  const PL = [1000,2000,5000,10000,20000,50000,100000,200000,500000];
+  const rIn = L0.range("Prompt token’ı", "l0-tl-in", 0, PL.length-1, 1, 4);
+  const rOut = L0.range("Çıktı token’ı", "l0-tl-out", 50, 4000, 50, 600);
+  const rC = L0.range("Cache’ten gelen önek %", "l0-tl-c", 0, 100, 5, 0);
+  const rD = L0.range("Varsayım: decode hızı (token/sn)", "l0-tl-d", 10, 200, 5, 60);
+  const rPf = L0.range("Varsayım: prefill hızı (token/sn)", "l0-tl-p", 1000, 50000, 1000, 10000);
+  const tl = h("div", { class:"l0-tl", "aria-hidden":"true" });
+  const pf = h("div", { class:"pf" }), dc = h("div", { class:"dc" }), cur = h("div", { class:"cur" });
+  tl.append(pf, dc, cur);
+  const leg = h("div", { class:"legend-row" },
+    h("span", null, h("i", { class:"sw", style:{ background:"var(--harness)" } }), "prefill (paralel)"),
+    h("span", null, h("i", { class:"sw", style:{ background:"var(--model)" } }), "decode (token token)"));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const live = h("div", { class:"hint live", "aria-live":"polite" });
+  const play = h("button", { class:"btn", type:"button" }, "▶ İsteği oynat");
+  el.append(h("div", { class:"ctrl" }, rIn.wrap, rOut.wrap, rC.wrap), h("div", { class:"ctrl" }, rD.wrap, rPf.wrap), tl, leg, stats, h("div", { class:"ctrl" }, play), live);
+  const r = runner();
+  let T = {};
+  function calc(){
+    const pin = PL[+rIn.inp.value], out = +rOut.inp.value, c = +rC.inp.value / 100, ds = +rD.inp.value, ps = +rPf.inp.value;
+    rIn.out.textContent = L0.fmt(pin); rOut.out.textContent = L0.fmt(out); rC.out.textContent = "%" + Math.round(c*100); rD.out.textContent = ds; rPf.out.textContent = L0.fmt(ps);
+    const ttft = pin * (1 - c) / ps, dec = out / ds, tot = ttft + dec;
+    T = { pin, out, ttft, dec, tot };
+    pf.style.width = (ttft / tot * 100) + "%"; dc.style.width = (dec / tot * 100) + "%"; cur.style.left = "0";
+    stats.innerHTML = `<span>TTFT (≈ prefill)<b>${ttft.toFixed(2)} sn</b></span><span>Decode<b>${dec.toFixed(1)} sn</b></span><span>Toplam<b>${tot.toFixed(1)} sn</b></span><span>Sürenin decode payı<b>%${Math.round(dec/tot*100)}</b></span>`;
+    live.textContent = `${L0.fmt(pin)} girdi token’ı tek blokta işleniyor; ${L0.fmt(out)} çıktı token’ı için ${L0.fmt(out)} ayrı adım gerekiyor. Cache oranını artırınca yalnızca prefill kısalıyor; decode aynı kalıyor.`;
+  }
+  play.onclick = async () => {
+    const cancelled = r.start(); calc();
+    const frames = 80;
+    for (let f = 0; f <= frames; f++){
+      if (cancelled()) return;
+      const t = T.tot * f / frames; cur.style.left = (f / frames * 100) + "%";
+      live.textContent = t < T.ttft ? `Prefill: ${L0.fmt(T.pin)} token paralel işleniyor… (${t.toFixed(2)} sn)` : `Decode: ${L0.fmt(Math.min(T.out, Math.round((t - T.ttft) / T.dec * T.out)))} / ${L0.fmt(T.out)} token üretildi (${t.toFixed(1)} sn)`;
+      await sleep(40);
+    }
+  };
+  [rIn, rOut, rC, rD, rPf].forEach(x => x.inp.addEventListener("input", () => { r.stop(); calc(); }));
+  calc();
+});
+
+/* ---------- 4b. KV cache ---------- */
+Edu.widget("l0-kv", el => {
+  const { h, seg } = Edu;
+  const NL = [1000,8000,32000,128000,200000,500000,1000000];
+  const rL = L0.range("Katman (L)", "l0-kv-l", 16, 128, 8, 80);
+  const rH = L0.range("KV head", "l0-kv-h", 1, 64, 1, 8);
+  const rN = L0.range("Dizi uzunluğu", "l0-kv-n", 0, NL.length-1, 1, 3);
+  const rU = L0.range("Eşzamanlı sequence", "l0-kv-u", 1, 32, 1, 1);
+  const sd = h("div", { class:"seg", role:"group", "aria-label":"Head boyutu" }, ...[64,128,256].map(v => h("button", { type:"button", "data-v":v, "aria-pressed": v === 128 ? "true" : "false" }, "d=" + v)));
+  const sb = h("div", { class:"seg", role:"group", "aria-label":"Sayı biçimi" }, h("button", { type:"button", "data-v":"2", "aria-pressed":"true" }, "bf16 (2 bayt)"), h("button", { type:"button", "data-v":"1", "aria-pressed":"false" }, "fp8 (1 bayt)"));
+  const formula = h("div", { class:"panel mono", style:{ fontSize:".8rem" } });
+  const meter = h("div", { class:"meter", style:{ height:"18px", marginTop:".6rem" } }, h("i", { style:{ background:"var(--ctx)" } }));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl" }, rL.wrap, rH.wrap), h("div", { class:"ctrl" }, sd, sb), h("div", { class:"ctrl" }, rN.wrap, rU.wrap), formula, meter, stats,
+    h("p", { class:"hint" }, "Çubuk, 80 GB belleğe sahip tek bir veri merkezi GPU’suna göre doluluğu gösterir (ağırlıklar hariç). Taşma, aynı anda daha az kullanıcıya hizmet ya da daha fazla GPU demek."));
+  let d = 128, b = 2;
+  function upd(){
+    const L = +rL.inp.value, H = +rH.inp.value, n = NL[+rN.inp.value], u = +rU.inp.value;
+    rL.out.textContent = L; rH.out.textContent = H; rN.out.textContent = L0.fmt(n); rU.out.textContent = u;
+    const per = 2 * L * H * d * b, tot = per * n * u;
+    formula.innerHTML = `2 × ${L} × ${H} × ${d} × ${b} bayt = ${L0.fmt(per)} bayt ≈ <b>${(per/1e6).toFixed(3)} MB / token</b><br>× ${L0.fmt(n)} token × ${u} sequence = <b>${(tot/1e9).toFixed(1)} GB</b>`;
+    const pct = tot / 80e9 * 100;
+    meter.firstChild.style.width = Math.min(100, pct) + "%";
+    meter.firstChild.style.background = pct > 100 ? "var(--risk)" : "var(--ctx)";
+    stats.innerHTML = `<span>Token başına<b>${(per/1e6).toFixed(2)} MB</b></span><span>Toplam KV cache<b>${(tot/1e9).toFixed(1)} GB</b></span><span>80 GB’lık GPU’ya göre<b>${pct >= 100 ? (pct/100).toFixed(1) + " GPU dolusu" : "%" + pct.toFixed(1)}</b></span>`;
+  }
+  seg(sd, v => { d = +v; upd(); }); seg(sb, v => { b = +v; upd(); });
+  [rL, rH, rN, rU].forEach(x => x.inp.addEventListener("input", upd));
+  upd();
+});
+
+/* ---------- 4c. Determinizm ---------- */
+Edu.widget("l0-nondet", el => {
+  const { h, $, seg, esc } = Edu;
+  const a1 = (0.1 + 1e20) - 1e20, a2 = 0.1 + (1e20 - 1e20), a3 = 0.1 + 0.2;
+  el.append(h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "tarayıcının JavaScript motoru, şu an hesaplandı")),
+    h("div", { class:"term-body", html:
+      `<span class="p">&gt;</span> (0.1 + 1e20) - 1e20\n<span class="w">${a1}</span>\n<span class="p">&gt;</span> 0.1 + (1e20 - 1e20)\n<span class="w">${a2}</span>\n<span class="p">&gt;</span> 0.1 + 0.2\n<span class="w">${a3}</span>\n<span class="d">// Aynı sayılar, farklı parantez: farklı sonuç. Kayan nokta toplaması birleşmeli değil.</span>` })));
+  const rand = L0.rng(42);
+  const arr = Array.from({ length:1000 }, () => (rand() < .5 ? -1 : 1) * rand() * Math.pow(10, rand() * 10 - 4));
+  const CH = [1,2,4,8,16,32,64,128,256,512,1000];
+  const rC = L0.range("Parça (batch) boyu", "l0-nd-c", 0, CH.length-1, 1, 0);
+  const shuf = h("button", { class:"btn ghost", type:"button" }, "Rastgele sırayla topla");
+  const res = h("div", { class:"panel live", "aria-live":"polite" });
+  const seen = new Map();
+  el.append(h("h4", null, "Aynı 1.000 sayı, farklı toplama düzeni"), h("div", { class:"ctrl" }, rC.wrap, shuf), res);
+  function chunkSum(a, c){ let tot = 0; for (let i = 0; i < a.length; i += c){ let s = 0; for (let j = i; j < Math.min(i + c, a.length); j++) s += a[j]; tot += s; } return tot; }
+  function show(label, v){
+    const k = v.toPrecision(17); if (!seen.has(k)) seen.set(k, label);
+    res.innerHTML = `<div class="l0-sum">Sonuç: <b>${k}</b> <span class="muted">(${esc(label)})</span></div><p style="margin:.4rem 0 .2rem">Şu ana kadar <b>${seen.size}</b> farklı sonuç görüldü:</p><div class="l0-sum muted">${[...seen].slice(-8).map(([s, l]) => esc(s) + "  ← " + esc(l)).join("<br>")}</div>`;
+  }
+  rC.inp.addEventListener("input", () => { const c = CH[+rC.inp.value]; rC.out.textContent = c; show("parça " + c, chunkSum(arr, c)); });
+  shuf.onclick = () => { const b = arr.slice(); for (let i = b.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } show("karışık sıra", chunkSum(b, 1)); };
+  rC.out.textContent = 1; show("parça 1", chunkSum(arr, 1));
+
+  const sg = h("div", { class:"seg", role:"group", "aria-label":"Çekirdek türü" }, h("button", { type:"button", "data-v":"n", "aria-pressed":"true" }, "Varsayılan çekirdekler"), h("button", { type:"button", "data-v":"i", "aria-pressed":"false" }, "Batch’ten bağımsız çekirdekler"));
+  const svgWrap = h("div");
+  const note = h("p", { class:"hint", "aria-live":"polite" });
+  el.append(h("h4", null, "Qwen3-235B, T=0, aynı prompt, 1.000 koşum"), h("div", { class:"ctrl", style:{ marginTop:0 } }, sg), svgWrap, note);
+  const T = (x, y, s, a) => `<text x="${x}" y="${y}" style="fill:var(--ink);font:600 12px var(--sans)" text-anchor="${a || "start"}">${s}</text>`;
+  seg(sg, v => {
+    if (v === "n"){
+      svgWrap.innerHTML = `<svg class="l0-tree" viewBox="0 0 600 180" role="img" aria-label="1000 koşu 102 token boyunca aynı, 103. token’da ikiye ayrılıyor">
+        <line x1="20" y1="90" x2="320" y2="90" style="stroke:var(--model);stroke-width:16;stroke-linecap:round"/>
+        <path d="M320 90 C 380 90, 400 45, 470 45 L 590 45" style="fill:none;stroke:var(--model);stroke-width:15.8"/>
+        <path d="M320 90 C 380 90, 400 140, 470 140 L 590 140" style="fill:none;stroke:var(--risk);stroke-width:2.5"/>
+        <circle cx="320" cy="90" r="7" style="fill:var(--ctx)"/>
+        ${T(20,68,"Token 1–102: 1.000 koşunun hepsi aynı")}${T(320,122,"token 103","middle")}
+        ${T(590,28,"“Queens, New York” · 992 koşu","end")}${T(590,166,"“New York City” · 8 koşu","end")}</svg>`;
+      note.textContent = "Ayrılan yollar birbirini besledi: sonunda 80 farklı tamamlama çıktı, en sık olanı yalnızca 78 kez. Küçük bir sayısal fark, iki adayın sırasını değiştirmeye yetti.";
+    } else {
+      svgWrap.innerHTML = `<svg class="l0-tree" viewBox="0 0 600 180" role="img" aria-label="1000 koşunun hepsi aynı">
+        <line x1="20" y1="90" x2="590" y2="90" style="stroke:var(--ok);stroke-width:16;stroke-linecap:round"/>
+        ${T(20,68,"1.000 koşu × 1.000 token: tek bir çıktı")}${T(590,122,"bedeli: Qwen3-8B’de 26 sn → 42 sn (optimize)","end")}</svg>`;
+      note.textContent = "Toplama sırası batch boyutundan bağımsız hâle getirilince 1.000 koşumun hepsi aynı oldu. Saf deterministik sürüm 55 sn, optimize sürüm 42 sn sürdü; varsayılan vLLM 26 sn.";
+    }
+  });
+});
+
+/* ---------- 5a. Attention ---------- */
+Edu.widget("l0-attn", el => {
+  const { h, $, $$, seg, esc } = Edu;
+  const tk = ["Müşteri"," sipariş","i"," iptal"," etti"," çünkü"," kargo"," gecik","ti"," ve"," o"," çok"," kız","dı","."];
+  const n = tk.length;
+  const heads = {
+    prev:{ l:"Önceki token", d:"Bu head neredeyse her zaman bir önceki token’a bakar. Gerçek modellerde de bu tür basit, konumsal head’ler bulunur.", s:(i, j) => j === i-1 ? 4 : j === i ? 1 : 0 },
+    stem:{ l:"Ek → kök", d:"Ek token’ları bağlandıkları köke bakar: “i” → “ sipariş”, “ti” → “ gecik”, “dı” → “ kız”. Türkçe gibi eklemeli dillerde anlam, kök ile ekin birleşiminden çıkar.", s:(i, j) => { const m = {2:1, 4:3, 8:7, 13:12}; if (m[i] != null) return j === m[i] ? 5 : 0; return j === i ? 2 : 0; } },
+    coref:{ l:"Gönderim", d:"“ o” zamiri kimi gösteriyor? Bu head “Müşteri”ye bağlanıyor; “ kız”+“dı” da öznesini arıyor. Kargo gecikti; kızan müşteri.", s:(i, j) => { const m = { 10:{0:5}, 12:{0:3,10:3}, 13:{0:2,10:2,12:1}, 4:{0:2,1:1}, 7:{6:3}, 8:{6:2,7:2}, 2:{1:3} }; if (m[i]) return m[i][j] || 0; return j === i ? 1 : 0; } }
+  };
+  const W = s => Array.from({ length:n }, (_, i) => { const sc = Array.from({ length:i+1 }, (_, j) => s(i, j)); const m = Math.max(...sc); const e = sc.map(v => Math.exp(v - m)); const z = e.reduce((a, b) => a + b, 0); return e.map(v => v / z); });
+  let head = "coref", sel = 10;
+  const sg = h("div", { class:"seg", role:"group", "aria-label":"Attention head" }, ...Object.entries(heads).map(([k, v]) => h("button", { type:"button", "data-v":k, "aria-pressed": k === head ? "true" : "false" }, v.l)));
+  const row = h("div", { class:"l0-toks", role:"group", "aria-label":"Token seç" });
+  const desc = h("div", { class:"panel live", "aria-live":"polite" });
+  const grid = h("div", { class:"l0-grid", style:{ gridTemplateColumns:`repeat(${n},18px)` }, "aria-hidden":"true" });
+  const NN = [10,100,1000,10000,100000,1000000];
+  const rn = L0.range("Dizi uzunluğu n", "l0-at-n", 0, NN.length-1, 1, 2);
+  const nOut = h("div", { class:"stats", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sg), row, desc, h("h4", null, "Bütün satırlar: üçgen maske"), h("div", { style:{ overflowX:"auto" } }, grid), h("div", { class:"ctrl" }, rn.wrap), nOut);
+  tk.forEach((t, i) => row.append(h("button", { type:"button", "data-i":i, "aria-pressed":"false", onclick:() => { sel = i; draw(); } }, t)));
+  function draw(){
+    const w = W(heads[head].s);
+    $$("button", row).forEach((b, j) => {
+      b.setAttribute("aria-pressed", j === sel ? "true" : "false");
+      if (j > sel){ b.style.background = "var(--soft)"; b.style.opacity = ".4"; b.title = "gelecek token: maskeli"; }
+      else { const v = w[sel][j]; b.style.opacity = "1"; b.style.background = `color-mix(in srgb, var(--model) ${Math.round(v*85)}%, var(--paper))`; b.style.color = v > .5 ? "var(--paper)" : ""; b.title = "ağırlık " + (v*100).toFixed(0) + "%"; }
+    });
+    const top = w[sel].map((v, j) => [v, j]).sort((a, b) => b[0] - a[0]).slice(0, 3);
+    desc.innerHTML = `<b class="mono">${esc(tk[sel])}</b> en çok şunlara bakıyor: ${top.map(([v, j]) => `<span class="tag m">${esc(tk[j].trim() || tk[j])} %${Math.round(v*100)}</span>`).join(" ")}<br><span class="muted">${heads[head].d}</span>`;
+    grid.innerHTML = "";
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++){
+      const v = j <= i ? w[i][j] : null;
+      grid.append(h("span", { style:{ background: v == null ? "var(--soft)" : `color-mix(in srgb, var(--model) ${Math.round(v*90)}%, var(--surface))`, outline: i === sel ? "1px solid var(--ink)" : null } }));
+    }
+  }
+  function nUpd(){ const N = NN[+rn.inp.value]; rn.out.textContent = L0.fmt(N); const cells = N * N; nOut.innerHTML = `<span>Skor sayısı (katman ve head başına)<b>${cells >= 1e9 ? (cells/1e12 >= 1 ? L0.fmt(cells/1e12) + " trilyon" : L0.fmt(cells/1e9) + " milyar") : L0.fmt(cells)}</b></span><span>Yukarıdaki ızgara<b>${n}×${n} = ${n*n}</b></span>`; }
+  seg(sg, v => { head = v; draw(); });
+  rn.inp.addEventListener("input", nUpd); nUpd();
+});
+
+/* ---------- 5b. Kafiye deneyi ---------- */
+Edu.widget("l0-rabbit", el => {
+  const { h, $, seg, sleep, runner } = Edu;
+  const V = {
+    none:{ f:[["rabbit",.92],["habit",.34],["grab",.18]], end:"rabbit", note:"İkinci satır, ‘rabbit’ ile bitecek biçimde kuruluyor. Hedef kelime, satır yazılmaya başlanmadan seçilmiş." },
+    sup:{ f:[["rabbit",0],["habit",.81],["grab",.2]], end:"habit", note:"‘rabbit’ temsili bastırıldı. Model bir sonraki kafiye adayına (habit) geçti ve satırı ona göre kurdu: plan değişti, satır da." },
+    inj:{ f:[["green",.9],["rabbit",.22],["habit",.15]], end:"green", note:"‘green’ kavramı enjekte edildi. Kafiye bozuldu ama model ‘green’ ile biten, anlamca tutarlı bir satır yazdı: planlanan hedef, satırın tamamını yönlendiriyor." }
+  };
+  const sg = h("div", { class:"seg", role:"group", "aria-label":"Müdahale" }, h("button", { type:"button", "data-v":"none", "aria-pressed":"true" }, "Müdahale yok"), h("button", { type:"button", "data-v":"sup", "aria-pressed":"false" }, "‘rabbit’i bastır"), h("button", { type:"button", "data-v":"inj", "aria-pressed":"false" }, "‘green’ enjekte et"));
+  const f1 = h("div", { class:"l0-frame" }), f2 = h("div", { class:"l0-frame" }), f3 = h("div", { class:"l0-frame", "aria-live":"polite" });
+  const play = h("button", { class:"btn sm", type:"button" }, "▶ Yeniden oynat");
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sg, play), f1, f2, f3);
+  const r = runner(); let cur = "none";
+  async function run(){
+    const cancelled = r.start(), v = V[cur];
+    f1.innerHTML = `<b>1. satır yazıldı</b><div class="l0-gen" style="margin-top:.4rem">… and had to <span class="new">grab it</span>⏎</div>`;
+    f2.innerHTML = `<b>Satır sonu token’ı işlenirken</b> <span class="muted">(ikinci satırın ilk kelimesi henüz yok)</span><div style="margin-top:.4rem"></div>`;
+    f3.innerHTML = ""; await sleep(500); if (cancelled()) return;
+    const box = f2.lastChild;
+    for (const [w, a] of v.f){ box.append(h("span", { class:"l0-feat" }, w, h("i", { style:{ width: Math.round(a*70) + "px", opacity: a ? 1 : .2 } }), a ? (a*100).toFixed(0) : "bastırıldı")); await sleep(250); if (cancelled()) return; }
+    await sleep(350); if (cancelled()) return;
+    f3.innerHTML = `<b>2. satır</b><div class="l0-gen" style="margin-top:.4rem"><span class="dim">… … … … …</span> <span class="new">${v.end}</span></div><p style="margin:.5rem 0 0">${v.note}</p>`;
+  }
+  play.onclick = run;
+  seg(sg, v => { cur = v; run(); });
+});
+
+/* ---------- 6. Belirtiden mekanizmaya ---------- */
+Edu.widget("l0-symptom", el => {
+  const { h, $, $$ } = Edu;
+  const items = [
+    { t:"“strawberry” kelimesindeki r harflerini yanlış saydı.", k:"Tokenizasyon", why:"Model harfleri değil, kelimenin bölündüğü birkaç opak token’ı görür. Harf düzeyindeki bilgi dolaylıdır.", act:"Harf, karakter ve dizgi işlemlerini kodla yaptır (ör. bir script yazıp çalıştırmasını iste)." },
+    { t:"Aynı prompt’a iki koşumda farklı cevap verdi.", k:"Sampling + batch", why:"Her token bir dağılımdan çekilir; T=0 olsa bile sunucudaki batch boyutu toplama sırasını ve böylece son basamakları değiştirir.", act:"Tutarlılığı doğrulayıcıdan al: şema, test, karşılaştırmalı çoklu koşum." },
+    { t:"Kullandığımız kütüphanede olmayan bir metodu kendinden emin çağırdı.", k:"Kayıplı sıkıştırma", why:"Model bir veritabanı değil; makul görünen bir devam üretti. Nadir API ayrıntıları kayıplı temsil edilir.", act:"Dokümanı ya da kaynak kodu context’e koy; derleyici ve testlerle döngüyü kapat." },
+    { t:"Dün anlattığım proje kuralını bugün bilmiyor.", k:"Donmuş ağırlıklar", why:"Konuşmada öğrenilen hiçbir şey ağırlıklara yazılmaz. Bilgi yalnızca o oturumun metnindeydi.", act:"Kalıcı kuralları her istekte yüklenen dosyalara (CLAUDE.md, AGENTS.md) yaz." },
+    { t:"Uzun bir sayının toplamında son basamakları tutturdu ama ortadakileri kaçırdı.", k:"İç aritmetik + token", why:"İçeride bir yol büyüklüğü kabaca, diğeri son basamağı hesaplıyor; sayılar da keyfi token’lara bölünüyor.", act:"Hesaplamayı kod çalıştırma aracına ver; modelden sonucu yorumlamasını iste." },
+    { t:"“Nasıl hesapladın?” deyince okul yöntemini anlattı.", k:"Sadakatsiz açıklama", why:"Yorumlanabilirlik bulgusu: modelin anlattığı yöntem, içeride kullandığıyla aynı değil.", act:"Gerekçeyi kanıt sayma; araç çıktısına, log’a, diff’e bak." },
+    { t:"Türkçe dokümanı okuttuğumda context beklenenden hızlı doldu, fatura yükseldi.", k:"Token vergisi", why:"Eklemeli diller daha çok token’a bölünür; tokenizer sürümü de sayıyı değiştirir.", act:"Gerçek token sayısını ölç; yalnızca ilgili bölümleri context’e koy." },
+    { t:"Uzun bir cevap ilk kelimeyi hızlı verdi ama bitmesi çok sürdü.", k:"Prefill / decode", why:"İlk token prefill’e bağlı ve paralel; her çıktı token’ı ise sıralı bir decode adımı.", act:"Gereksiz uzun çıktı isteme; kısa format ve özet iste." }
+  ];
+  const grid = $(".l0-sym", el), out = $(".l0-sym-out", el);
+  items.forEach(it => {
+    const b = h("button", { type:"button", class:"btn ghost" }, it.t);
+    b.addEventListener("click", () => {
+      $$("button", grid).forEach(x => { x.style.borderColor = ""; x.style.background = ""; });
+      b.style.borderColor = "var(--model)"; b.style.background = "var(--model-bg)";
+      out.innerHTML = "";
+      out.append(h("span", { class:"tag m" }, it.k), " ", it.why, h("br"), h("span", { class:"tag t" }, "Ne yaparsın"), " ", it.act);
+    });
+    grid.append(b);
+  });
+});
+})();
+</script>

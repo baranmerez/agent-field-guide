@@ -1,0 +1,771 @@
+<section class="level" data-no="7" data-short="Claude ve Codex" data-title="İki model, iki harness: Claude ve Codex"
+  data-accent="harness" data-time="75 dk"
+  data-lede="“Claude Code mu, Codex mi?” aslında iki ayrı soru: hangi model ve hangi harness. Bu seviye ikisini ayrı ayrı açıyor: model kadrosu ve fiyatı, benchmark okuma, sandbox ve onay mimarisi, talimat dosyaları ve pratik bir karar rehberi.">
+
+  <!-- ============ 7.1 ============ -->
+  <div class="lesson" data-tab="Neden iki katman?">
+    <h2>Bir soru gibi görünen iki soru</h2>
+    <p class="lead">Ekipte “Claude Code mu daha iyi, Codex mi?” tartışması açıldığında genellikle iki kişi farklı şeyleri savunur. Biri modelden bahseder (“Claude daha iyi plan yapıyor”), öteki araçtan (“Codex sandbox’ı daha sıkı”). İkisi de haklı olabilir, çünkü ortada tek bir şey yok: <span class="m">model</span> ve <span class="h">harness</span> ayrı katmanlar.</p>
+    <p>Başlangıç seviyesindeki denklemi hatırla: <b>Agent = Model + Harness</b>. Claude Code, Anthropic’in harness’ı; içinde Claude modelleri çalışıyor. Codex ise Kasım 2026 itibarıyla OpenAI’ın <em>agent ürününün</em> adı: CLI, IDE eklentisi, masaüstü uygulaması ve bulut ortamı. İçinde GPT ailesinden modeller çalışıyor. Bu ayrım eskiden bulanıktı, çünkü OpenAI bir dönem “-codex” sonekli, kodlamaya özel modeller yayımlıyordu. GPT-5.4’ten bu yana ayrı bir kodlama modeli yok; kodlama yeteneği genel modele katıldı. Yani bugün “Codex modeli” demek teknik olarak yanlış bir ifade. Codex bir harness, model ise <code>gpt-6.1-sol</code> ya da <code>gpt-6-astra</code> gibi bir GPT sürümü.</p>
+
+    <h3>Neden ayırmak zorundayız?</h3>
+    <p>Çünkü bir davranışı düzeltmek istediğinde hangi katmana dokunacağını bilmen gerekir. Agent’ın bir dosyayı neden onaysız değiştirdiğini merak ediyorsan cevap modelde değil, harness’ın izin modunda. Agent’ın bir API’yi neden yanlış çağırdığını merak ediyorsan cevap muhtemelen modelin eğitiminde ve context’te. 6. seviyede gördüğün gibi aynı model farklı harness’larda belirgin şekilde farklı sonuç veriyor: LangChain, modeli hiç değiştirmeden yalnızca prompt’u, araçları ve ara katmanları değiştirerek Terminal-Bench 2.0 skorunu %52,8’den %66,5’e çıkardığını raporluyor (şirketin kendi ölçümü). Bağımsız bir derlemeye göre aynı Opus 4.6 modeli farklı harness’larla bu benchmark’ta yaklaşık 24 puanlık bir aralığa yayılıyor; bu rakam ikincil kaynaktan, kesin değil, ama yön tutarlı.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Aynı PostgreSQL veritabanı, EF Core ile ve elle yazılmış SQL ile çok farklı performans gösterebilir. Aynı EF Core da farklı veritabanı motorlarında farklı davranır. Bir “uygulama performansı” rakamı gördüğünde motoru ve erişim katmanını birlikte ölçtüğünü bilirsin. Agent’larda da durum bu: bir skor, modeli ve harness’ı <em>birlikte</em> ölçer.</div>
+
+    <h3>Katmanlar birbirinden tamamen bağımsız da değil</h3>
+    <p>İşi biraz karmaşıklaştıran bir ayrıntı var. İki laboratuvar da modellerini kendi harness’larıyla birlikte eğitiyor. OpenAI’ın Codex rehberi, modelin <code>apply_patch</code> diff formatında ve özel bir terminal aracıyla eğitildiğini, AGENTS.md talimatlarına sıkı uyacak şekilde ayarlandığını açıkça söylüyor. Anthropic de <code>bash</code> ve <code>text_editor</code> gibi araç şemalarının “eğitime gömülü” olduğunu, modelin bu tam imzalarla binlerce başarılı yörünge üzerinde optimize edildiğini yazıyor. Sonuç: bir model genellikle kendi “ev” harness’ında rahattır. Ama bu bir yasa değil; LangChain gibi ekipler, eğitim harness’ının bir göreve en uygun harness olmak zorunda olmadığını savunuyor.</p>
+    <p>Pratik anlamı şu: Claude Code’u Claude modelleriyle, Codex’i GPT modelleriyle kullandığında iki katman birbirine göre ayarlanmış olur. Bu seviyede ikisini karşılaştırırken bu yüzden hep iki soruyu ayrı tutacağız: <span class="m">model ne yapabiliyor?</span> ve <span class="h">harness ona neye izin veriyor, neyi gösteriyor?</span></p>
+
+    <div class="fig" data-widget="l7-compare">
+      <p class="fig-title">İki ekosistem, katman katman</p>
+      <p class="fig-cap">Bir katman seç. Mor satırlar eğitimin ve modelin ürünü, teal satırlar harness mimarisi, yeşil satırlar iki dünyanın ortak zemini. Bir satıra tıklayınca neden önemli olduğu açılır. Bilgiler Kasım 2026 itibarıyla (Claude Code v2.1.318, Codex CLI 0.166.0).</p>
+      <div class="seg" role="group" aria-label="Karşılaştırma katmanı">
+        <button type="button" data-v="m" aria-pressed="true">Model katmanı</button>
+        <button type="button" data-v="h" aria-pressed="false">Harness katmanı</button>
+        <button type="button" data-v="o" aria-pressed="false">Ortak zemin</button>
+      </div>
+      <div class="l7-cmp"></div>
+      <div class="panel live l7-cmp-out" aria-live="polite"><span class="muted">Bir satıra tıkla.</span></div>
+    </div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Codex dümdüz bir iş aracı, Claude ise hayal gücü olan bir birey.” Yarısı gözlem, yarısı abartı. Doğru olan: iki laboratuvar post-training’de farklı şeyleri vurguluyor ve bu, açıklama uzunluğuna, ne kadar soru sorduğuna, işi ne zaman “bitti” saydığına yansıyor. Abartılı olan: ikisi de token tahmin eden ağlar; “karakter”, eğitimle şekillenmiş tutarlı bir davranış örüntüsü. Üstelik bu örüntünün yarısı harness’tan geliyor: sistem prompt’u, araç seti ve izin modu, modelin ne kadar konuşkan ya da ne kadar atak görüneceğini doğrudan etkiler. Araç seçimini “hangisi daha yaratıcı hissettiriyor” üzerinden değil, kendi görevlerinde ölçerek yap.</div>
+
+    <h3>Bu seviyenin haritası</h3>
+    <ol class="steps">
+      <li><b>Model katmanı:</b> güncel kadro, fiyatlar ve iki laboratuvarın modeli “yetiştirme” felsefesi.</li>
+      <li><b>Benchmark okumak:</b> bir skorun neyi ölçtüğünü, neden SWE-bench Verified’ın bırakıldığını ve harness’ın skoru nasıl oynattığını görmek.</li>
+      <li><b>Sandbox ve onay:</b> iki harness’ın en belirgin mimari farkı. Aynı eylemi iki tarafta çalıştırıp kimin neye karar verdiğini izleyeceğiz.</li>
+      <li><b>Talimat, hook, skill:</b> iki dünyanın nerede yakınsadığı; yatırımını nasıl taşınabilir tutacağın.</li>
+      <li><b>Hangisi, ne zaman:</b> abartısız, duruma göre bir karar rehberi.</li>
+    </ol>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>“Claude Code mu, Codex mi?” iki ayrı sorudur: model mi, harness mı?</li>
+        <li>Kasım 2026 itibarıyla Codex bir üründür; ayrı bir “Codex modeli” yoktur, içinde GPT modelleri çalışır.</li>
+        <li>Bir benchmark skoru model ile harness’ı birlikte ölçer. Aynı model farklı harness’ta 10–20 puan oynayabilir.</li>
+        <li>Modeller kendi harness’larıyla birlikte eğitilir; bu yüzden “ev” eşleşmesi genellikle iyi çalışır ama tek doğru değildir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://learn.chatgpt.com/docs/models">OpenAI Codex: Models</a></li>
+      <li><a href="https://the-decoder.com/openai-kills-its-dedicated-coding-model-codex-again-folding-it-into-gpt-5-5/">The Decoder: ayrı kodlama modelinin genel modele katılması</a></li>
+      <li><a href="https://blog.langchain.com/improving-deep-agents-with-harness-engineering">LangChain: Improving deep agents with harness engineering</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide">OpenAI: Codex prompting guide</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Anthropic: How tool use works</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 7.2 ============ -->
+  <div class="lesson" data-tab="Model katmanı">
+    <h2>Kadro: kim, ne kadar, ne için</h2>
+    <p>Model katmanında karşılaştırma yaparken üç soruya bakıyoruz: kadroda hangi boylar var, token başına ne kadar ödüyorsun ve laboratuvar modeli hangi değerlerle yetiştiriyor. Aşağıdaki tablolar Kasım 2026 itibarıyla resmi model sayfalarından alındı. Bu rakamlar birkaç ayda bir değişiyor; ekip içi bir karar belgesine koymadan önce resmi sayfayı yeniden kontrol et.</p>
+
+    <h3>Anthropic: dört boy, tek context boyu</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>API kimliği</th><th>Girdi / çıktı ($/MTok)</th><th>Varsayılan effort</th><th>Çıkış</th></tr></thead>
+      <tbody>
+        <tr><td><b>Claude Fable 5.1</b></td><td><code>claude-fable-5-1</code></td><td>10 / 50</td><td>high</td><td><span class="muted">tarih doğrulanamadı</span></td></tr>
+        <tr><td><b>Claude Opus 5.5</b></td><td><code>claude-opus-5-5</code></td><td>4 / 20</td><td>medium</td><td>22 Eylül 2026</td></tr>
+        <tr><td><b>Claude Sonnet 5.5</b></td><td><code>claude-sonnet-5-5</code></td><td>2 / 10</td><td>high</td><td>28 Eylül 2026</td></tr>
+        <tr><td><b>Claude Haiku 5.5</b></td><td><code>claude-haiku-5-5</code></td><td>0,10 / 0,50’den başlayan</td><td>medium</td><td>7 Ekim 2026</td></tr>
+      </tbody>
+    </table></div>
+    <p>Dördünün de context penceresi 1M token, en fazla çıktı uzunluğu 128K token ve bilgi kesim tarihi Haziran 2026. Hepsinde <span class="g" data-g="Adaptive thinking">adaptive thinking</span> var: model ne kadar düşüneceğine kendisi karar veriyor. Fable 5.1 ve Opus 5.5’te bu her zaman açık; Claude Code’da 5.5 modelleri için kapatılamıyor. Anthropic’in önerisi çoğu iş için Opus 5.5 ile başlamak, uzun soluklu ve çok zorlu işler için Fable 5.1’e çıkmak. Fiyat notlarında erişimi kısıtlı bir “Claude Mythos 5.1” de geçiyor; genel kullanıma açık değil, bu yüzden bu sette ona değinmiyoruz.</p>
+
+    <h3>OpenAI: Codex’in içinde çalışan GPT’ler</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>Konumlandırma</th><th>Girdi / çıktı ($/MTok)</th><th>Not</th></tr></thead>
+      <tbody>
+        <tr><td><code>gpt-6-astra</code></td><td>En yetenekli</td><td>10 / 50</td><td>Önbellekli girdi 1 $</td></tr>
+        <tr><td><code>gpt-6.1-sol</code></td><td>Astra’ya yakın, daha ucuz</td><td>2 / 10</td><td>29 Eylül 2026</td></tr>
+        <tr><td><code>gpt-6.1-terra</code></td><td>Hızlı</td><td><span class="muted">bu sette doğrulanmadı</span></td><td>CLI ≥ 0.159.0; Codex’te 26 Ekim 2026’dan beri genel</td></tr>
+        <tr><td><code>gpt-6-luna</code></td><td>En verimli</td><td><span class="muted">bu sette doğrulanmadı</span></td><td></td></tr>
+      </tbody>
+    </table></div>
+    <p>Emeklilikler de takip etmeye değer: GPT-5.5, ChatGPT oturumuyla kullanılan Codex’ten 14 Ekim 2026’da kaldırıldı (API anahtarıyla çalışan oturumlar etkilenmedi); gpt-5.4 ve gpt-5.4-mini 31 Ağustos’ta, GPT-5.3-Codex-Spark 14 Eylül’de emekli oldu. Ekip içi script’lerde ya da CI’da model adını sabit yazdıysan, bir sabah “model bulunamadı” hatasıyla karşılaşabilirsin. Model kimliğini tek bir yapılandırma noktasında tut.</p>
+
+    <div class="callout warn"><span class="ct">Dikkat: token’lar arası kur farkı</span>Fiyatlar “milyon token başına” ama her laboratuvarın tokenizer’ı farklı. Aynı metin iki tarafta farklı sayıda token’a bölünür. Anthropic’in kendi tarafında bile Opus 4.7 ile gelen yeni tokenizer, aynı İngilizce metin için yaklaşık 1,35 kat daha fazla token üretiyor. Fiyat tablosunu yan yana koymak bir başlangıç, ama gerçek maliyeti ancak aynı görevi iki tarafta koşup faturaya bakarak öğrenirsin.</div>
+
+    <div class="fig" data-widget="l7-price">
+      <p class="fig-title">Aynı oturum, altı model</p>
+      <p class="fig-cap">Bir agent oturumunun maliyeti çoğunlukla girdi tarafında, özellikle her turda yeniden gönderilen context’te birikir. Bir hazır profil seç ya da kaydırıcıları oynat. Hesap, yazma ek ücretini yok sayan basitleştirilmiş bir modeldir ve iki tarafın token’larını eşit sayar; amaç fiyat yapısını hissetmek.</p>
+      <div class="ctrl l7-pr-presets"></div>
+      <div class="l7-pr-ranges"></div>
+      <div class="l7-pr-bars bars"></div>
+      <div class="panel live l7-pr-out mono" aria-live="polite"></div>
+    </div>
+
+    <h3>Önbellek farkı fiyattan büyük olabilir</h3>
+    <p>2. seviyede prompt caching’in mekanizmasını gördün. Burada iki tarafın farkı önem kazanıyor. Anthropic’te önbellekten okuma normalde girdi fiyatının 0,1 katı; ama Opus 5.5 ve Sonnet 5.5’te 0,05 katı, Fable 5.1’de 0,025 katı. Önbellek varsayılan olarak 5 dakika yaşar, her isabette süre yenilenir; istersen 1 saatlik önbellek de kullanılabilir. OpenAI’da önbellek otomatik ve varsayılan olarak açık; GPT-6.1 Sol’da okuma 0,05 kat, Astra’da 0,1 kat. Uzun bir agent oturumunda girdi token’larının ezici çoğunluğu önbellekten okunduğu için, liste fiyatı yüksek görünen bir model pratikte beklenenden ucuza gelebilir ya da tersi olabilir. Yukarıdaki hesapta önbellek oranını sıfıra çekip farkı izle.</p>
+
+    <h2>Yetiştirme felsefesi: anayasa ve Model Spec</h2>
+    <p>İki laboratuvar da modelinin nasıl davranacağını kamuya açık bir belgeyle tarif ediyor, ama üslupları farklı.</p>
+    <div class="cols">
+      <div class="card m"><h4 class="m">Anthropic: anayasa</h4>Ocak 2026’da (21–22 Ocak) yeni bir <span class="g" data-g="Constitution">Claude anayasası</span> yayımlandı ve CC0 ile kamuya açıldı. Yaklaşım, kuralları tek tek saymak yerine <em>neden</em>leri açıklamak: değerler, yargı ve bir öncelik sırası. Sıralama kabaca güvenlik, etik, yönergeler ve yardımseverlik. Hedef, modelin hiç görmediği bir durumda da makul davranacak bir yargı geliştirmesi.</div>
+      <div class="card m"><h4 class="m">OpenAI: Model Spec</h4>Yorumcular <span class="g" data-g="Model Spec">Model Spec</span>’i daha kuralcı ve yapılandırılmış buluyor. Belgenin merkezinde açık bir “emir komuta zinciri” var: OpenAI, sonra geliştirici, sonra kullanıcı. Belgenin şu anki tam sürüm numarasını doğrulayamadık; ilkesel yapı ise geniş çapta raporlanmış durumda.</div>
+    </div>
+    <p>Bu fark sohbet modunda üslup farkı olarak hissedilir, ama agent’lar için önemli olan ortak nokta: iki belge de bir <b>yetki hiyerarşisi</b> tanımlıyor. Operatör ya da geliştirici talimatı, kullanıcı mesajı ve araç çıktısı aynı ağırlıkta değil. Özellikle araç çıktısı, yani okunan bir web sayfası, bir issue metni ya da bir dosya, <em>veri</em>dir; talimat veren bir taraf değildir. Bu, prompt injection’a karşı savunmanın model tarafındaki yarısı. Diğer yarısı harness’ta ve 10. seviyenin konusu. Model tarafındaki yarı olasılıksaldır: eğitim, modelin veriyi talimat sanma ihtimalini düşürür ama sıfırlamaz.</p>
+
+    <div class="callout deep"><span class="ct">Derine in: effort bir model ayarı mı, harness ayarı mı?</span>İkisi birden. Effort (düşünme bütçesi), API’de modele giden bir parametredir; ama hangi değerle gideceğine harness karar verir. Claude Code’da <code>/effort high</code> ya da <code>/effort xhigh</code> ile bir oturumda yükseltebilirsin; zor hatalar ve şema değişiklikleri için önerilen de bu. Varsayılan effort modele göre değişir (yukarıdaki tablo). Yüksek effort her zaman daha iyi değildir: OpenAI da yüksek effort’un “aşırı düşünme” ve gereksiz arama yapma eğilimini artırabileceğini yazıyor. Benchmark karşılaştırmalarında effort’un neden ayrı bir eksen olduğunu bir sonraki konuda göreceğiz.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Kasım 2026 itibarıyla Claude kadrosu Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5; hepsi 1M context. Codex tarafında gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna.</li>
+        <li>Sonnet 5.5 ile GPT-6.1 Sol aynı liste fiyatında (2 / 10 $); Fable 5.1 ile GPT-6 Astra aynı (10 / 50 $).</li>
+        <li>Uzun oturumlarda önbellek okuma çarpanı liste fiyatından daha belirleyici olabilir.</li>
+        <li>İki laboratuvar da bir yetki hiyerarşisi tanımlar; araç çıktısı talimat değil veridir. Bu model tarafı savunma olasılıksaldır.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/models/overview">Anthropic: Models overview</a> ve <a href="https://platform.claude.com/docs/en/about-claude/pricing">Pricing</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic: Prompt caching</a></li>
+      <li><a href="https://learn.chatgpt.com/docs/models">OpenAI Codex: Models</a>, <a href="https://learn.chatgpt.com/docs/changelog">Changelog</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI: Prompt caching</a></li>
+      <li><a href="https://www.anthropic.com/news/claude-new-constitution">Anthropic: Claude’s new constitution</a></li>
+      <li><a href="https://bisi.org.uk/reports/claudes-new-constitution-ai-alignment-ethics-and-the-future-of-model-governance">BISI: anayasa ile Model Spec karşılaştırması</a></li>
+      <li><a href="https://code.claude.com/docs/en/costs">Claude Code: Costs</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 7.3 ============ -->
+  <div class="lesson" data-tab="Benchmark okumak">
+    <h2>Bir skor neyi ölçer?</h2>
+    <p>Yeni bir model çıktığında ilk gördüğün şey bir benchmark tablosudur: “X modeli şu testte %80”. Bu rakamı okumayı öğrenmek, araç seçerken pazarlamadan korunmanın en ucuz yolu. Kural basit: bir skor, <b>görev seti × sürüm × model × harness × effort × altyapı</b> çarpımının tek bir noktasıdır. Bu eksenlerden biri farklıysa iki skoru yan yana koymak, iki farklı veritabanında farklı sorgularla ölçülmüş iki yanıt süresini karşılaştırmak gibidir.</p>
+
+    <h3>SWE-bench Verified neden bırakıldı?</h3>
+    <p><span class="g" data-g="SWE-bench Verified">SWE-bench Verified</span>, açık kaynak Python projelerinden alınmış gerçek issue’lar ve onların testlerinden oluşan, insanlar tarafından “çözülebilir” olarak doğrulanmış bir alt kümeydi. 2024–2025 boyunca kodlama agent’larının ana vitriniydi. OpenAI, 23 Şubat 2026’da bu benchmark’ı artık raporlamayacağını duyurdu. Gerekçe iki parçalı:</p>
+    <ul>
+      <li><b>Bozuk testler:</b> En zor 138 problemin denetiminde en az %59,4’ünde testlerin doğru çözümleri de reddettiği bulundu. Yani skorun tavanı, modelin yeteneği değil testlerin kalitesiydi.</li>
+      <li><b><span class="g" data-g="Kontaminasyon">Kontaminasyon</span>:</b> GPT-5.2, Opus 4.5 ve Gemini 3 Flash gibi modeller bazı düzeltmeleri ezberden yeniden üretebiliyordu. Benchmark’ın kendisi eğitim verisine sızmıştı.</li>
+    </ul>
+    <p>OpenAI onun yerine <span class="g" data-g="SWE-bench Pro">SWE-bench Pro</span>’yu önerdi. Bu, Verified’ın zayıflıklarına karşı tasarlanmış daha zor bir set. Ama burada da dikkatli olman gerekiyor: Scale’in standartlaştırılmış ortak kurulumunda (SEAL) Ekim 2026 itibarıyla en üst sonuçlar %60 civarında (ör. Muse Spark 1.1 %61,5, GPT-5.4 xHigh %59,1). Anthropic’in Opus 5.5 için raporladığı %89,9 ise farklı bir kurulumda ölçülmüş ve bağımsız olarak doğrulanmamış bir üretici rakamı. İkisi aynı benchmark adını taşıyor ama karşılaştırılamaz.</p>
+
+    <h3>Terminal-Bench ve harness’ın ağırlığı</h3>
+    <p><span class="g" data-g="Terminal-Bench">Terminal-Bench</span>, agent’ı bir konteynerde terminal görevleriyle sınar: derle, yapılandır, hata ayıkla, veri işle. Kodlama agent’ları için SWE-bench’ten daha “agentik” bir ölçü. Kasım 2026 itibarıyla resmi sitede güncel sürüm 4.0 görünüyor. Bu sürüm için dolaşan rakamlar toplayıcı sitelerden geliyor ve doğrulanmadı; bu yüzden aşağıdaki laboratuvarda 2.0 sürümünün daha iyi belgelenmiş sonuçlarını kullanıyoruz. Bu sonuçlar asıl dersi çok net gösteriyor: Snorkel’in 2.0 tablosunda en üstteki satırlar özel harness’larla çalıştırılmış GPT-5.5 girdileri (%84,7), Opus 4.7 özel bir harness’la (%80,2). Aynı modeller vals.ai’nin <em>sabit</em> harness’ıyla (Terminus 2) ölçüldüğünde GPT-5.5 %73,2, Opus 4.8 %70,0 alıyor. Aradaki 10 puanlık fark, büyük ölçüde harness’ın eseri.</p>
+    <p>Bir de altyapı gürültüsü var. Anthropic’in Şubat 2026 tarihli “agentic kodlama değerlendirmelerinde altyapı gürültüsü” yazısı, yalnızca altyapı farklarının (zaman aşımları, kaynak limitleri, ağ) skorları oynatabildiğini gösteriyor. Yani iki puanlık bir fark, aynı modelin farklı bir günde aldığı sonuç da olabilir.</p>
+
+    <div class="fig" data-widget="l7-bench">
+      <p class="fig-title">Liderlik tablosu okuma laboratuvarı</p>
+      <p class="fig-cap">Gerçek, kaynağı belli sonuçlar. İki satır seç; widget hangi eksenlerin aynı, hangilerinin farklı olduğunu gösterir ve bu iki rakamın yan yana konup konamayacağını açıklar. Kaynak türü: “bağımsız” sabit bir değerlendirici, “üretici” modeli ya da harness’ı yapan şirket.</p>
+      <div class="l7-bn-rows"></div>
+      <div class="panel live l7-bn-out" aria-live="polite"><span class="muted">İki satır seç.</span></div>
+    </div>
+
+    <h3>Bir tablo satırını okurken sorulacak beş soru</h3>
+    <ol class="steps">
+      <li><b>Hangi set ve hangi sürüm?</b> “SWE-bench” ile “SWE-bench Pro”, “Terminal-Bench 2.0” ile “4.0” farklı sınavlardır.</li>
+      <li><b>Hangi harness?</b> Üreticinin kendi agent’ı mı, benchmark’ın referans harness’ı mı, yarışma için ayarlanmış özel bir harness mı? Benchmark için ayarlanmış harness’lar zaman aşımı ve etkileşimsizlik gibi konularda ürün harness’larından farklıdır; ürün harness’ı güvenlik, izin ve maliyet için optimize edilir.</li>
+      <li><b>Hangi effort?</b> “xHigh” ile ölçülmüş bir sonuç, senin varsayılan ayarınla alacağın sonuç değildir; maliyeti de farklıdır.</li>
+      <li><b>Kim ölçtü?</b> Üretici rakamı yanlış demek değil, ama kurulumu genellikle tam yayımlanmaz.</li>
+      <li><b>Benim işime benziyor mu?</b> Python kütüphane hataları ile .NET kurumsal uygulamanın migration’ı aynı beceri değil.</li>
+    </ol>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Benchmark’ları bir “kısa liste” aracı olarak kullan, karar aracı olarak değil. Asıl karar için kendi deposundan 20–30 gerçek görev seç, her birini iki araçta en az üç kez koş, testlerin geçip geçmediğini ve maliyeti kaydet. 9. seviyede bunun nasıl yapıldığını, neden tek koşumun yetmediğini ve pass@k ile pass^k farkını ayrıntılı göreceğiz.</div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Liderlik tablosunda bir numara olan model, benim agent’ımda da bir numara olur.” Tablo, o modelin <em>o harness’la, o effort’la, o altyapıda</em> en iyi sonucunu gösterir. Senin harness’ın, senin araçların ve senin repo’n başka bir deney.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>SWE-bench Verified, bozuk testler ve kontaminasyon nedeniyle Şubat 2026’dan beri OpenAI tarafından raporlanmıyor; yerine SWE-bench Pro öneriliyor.</li>
+        <li>Aynı benchmark adı altında bağımsız (~%60) ve üretici (%89,9) rakamları yan yana durabilir; kurulumları farklıdır.</li>
+        <li>Harness ve effort, skoru 10 puandan fazla oynatabilir; altyapı gürültüsü de birkaç puan oynatır.</li>
+        <li>Benchmark kısa liste içindir; karar kendi görevlerinde tekrarlı ölçümle verilir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/">OpenAI: Why we no longer evaluate SWE-bench Verified</a></li>
+      <li><a href="https://www.morphllm.com/swe-bench-pro">SWE-bench Pro sonuç derlemesi</a></li>
+      <li><a href="https://www.tbench.ai/leaderboard">Terminal-Bench leaderboard</a>, <a href="https://snorkel.ai/leaderboard/terminal-bench-2-0/">Snorkel TB 2.0</a>, <a href="https://www.vals.ai/benchmarks/terminal-bench-2">vals.ai TB 2.0</a></li>
+      <li><a href="https://www.anthropic.com/engineering">Anthropic Engineering: Quantifying infrastructure noise in agentic coding evals (5 Şubat 2026)</a></li>
+      <li><a href="https://blog.langchain.com/improving-deep-agents-with-harness-engineering">LangChain: harness engineering</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 7.4 ============ -->
+  <div class="lesson" data-tab="Sandbox ve onay">
+    <h2>İki farklı güvenlik felsefesi</h2>
+    <p>İki harness arasındaki en belirgin mimari fark, agent’ın “bir şey yapmasına” nasıl karar verildiği. Kabaca söylersek <span class="h">Codex sandbox merkezli</span>, <span class="h">Claude Code izin merkezli</span> tasarlanmış. İkisi de diğerinin mekanizmasını sonradan eklemiş, bu yüzden bugün büyük ölçüde aynı yapı taşlarına sahipler; ama varsayılanlar ve düşünme biçimi farklı.</p>
+
+    <h3>Codex: önce duvarlar, sonra sorular</h3>
+    <p>Codex’te her komut bir işletim sistemi sandbox’ı içinde çalışır ve bu, modelin ayrılmaz parçasıdır. <span class="g" data-g="sandbox_mode">sandbox_mode</span> üç değer alır:</p>
+    <ul>
+      <li><code>read-only</code>: okuyabilir, yazamaz.</li>
+      <li><code>workspace-write</code>: çalışma dizinine yazabilir; ağ varsayılan olarak kapalıdır (<code>[sandbox_workspace_write] network_access = true</code> ile açılır). <code>.git</code>, <code>.agents</code>, <code>.codex</code> ve <code>.aws</code> yazılabilir kökün içinde olsalar bile salt okunurdur.</li>
+      <li><code>danger-full-access</code>: duvar yok.</li>
+    </ul>
+    <p>Duvara çarpan bir komut için ne olacağını <span class="g" data-g="approval_policy">approval_policy</span> belirler: <code>on-request</code> modelin yetki yükseltme istemesine ve senin onaylamana izin verir; <code>never</code> hiç sormaz, hata modele geri döner. Bir de ayrıntılı (granüler) tablo seçeneği var. Eski <code>untrusted</code> değeri emekliye ayrıldı; eski bir config dosyasında kalırsa Codex’in açılmasını engelleyebilir. Codex’in “Auto” ön ayarı, sürüm kontrolü altındaki klasörlerde <code>workspace-write</code> + <code>on-request</code>, diğer yerlerde salt okunur demek. <code>codex exec</code> (etkileşimsiz mod) varsayılan olarak salt okunurdur. Platform tarafında macOS’ta Seatbelt, Linux’ta bubblewrap ve seccomp, Windows’ta tercih edilen “MXC” sandbox’ı kullanılıyor.</p>
+<pre data-title="~/.codex/config.toml"><code>approval_policy = "on-request"
+sandbox_mode    = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false
+
+[features.network_proxy]
+enabled = true
+domains = { "registry.npmjs.org" = "allow", "db.example.test" = "deny" }</code></pre>
+
+    <h3>Claude Code: önce kurallar, sandbox isteğe bağlı</h3>
+    <p>Claude Code’da her araç çağrısı bir izin modundan ve izin kurallarından geçer. Modlar: <code>default</code> (arayüzde “Manual”: çoğu şeyi sorar), <code>acceptEdits</code> (dosya düzenlemelerini sormadan kabul eder), <code>plan</code> (yalnız okur, plan onaylanana kadar düzenleme yok), <code>auto</code> (bir sınıflandırıcı model karar verir), <code>dontAsk</code> ve <code>bypassPermissions</code> (hiç sormaz). Kasım 2026 itibarıyla etkileşimli terminalde ve VS Code’da varsayılan başlangıç modu <b>auto</b> (v2.1.283’ten beri); <code>claude -p</code> ve SDK’da ise <b>Manual</b> (v2.1.302’den beri). 2025’ten kalma “varsayılan her şeyi sorar” bilgisi artık eski.</p>
+    <p>İşletim sistemi sandbox’ı Claude Code’da <b>isteğe bağlı ve varsayılan olarak kapalı</b>. Açıldığında macOS’ta Seatbelt, Linux ve WSL2’de bubblewrap ile socat kullanılır. İki önemli sınır var: Windows için yerel bir sandbox yok (WSL2 kullanman gerekir) ve sandbox yalnızca kabuk komutlarını (Bash, PowerShell, Monitor) sarar; Read, Edit, WebFetch, MCP araçları ve hook’lar sandbox’ın dışında, izin sisteminin kontrolündedir. Ağ, bir proxy üzerinden alan adı izin listesiyle sınırlanır (<code>sandbox.network.allowedDomains</code>, boş başlar). Anthropic, sandbox’ın izin istemlerini %84 azalttığını raporluyor; çünkü duvarların içinde kalan komutlar için sormaya gerek kalmıyor.</p>
+<pre data-title=".claude/settings.json"><code>{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash(npm run test *)"],
+    "deny":  ["Read(./.env)", "Bash(curl *)"]
+  },
+  "sandbox": {
+    "enabled": true,
+    "network": { "allowedDomains": ["registry.npmjs.org"] }
+  }
+}</code></pre>
+    <p>İki tarafta da bazı yollar <span class="g" data-g="Korumalı yol">korumalı</span>dır. Claude Code’da <code>.git</code>, <code>.claude</code>, <code>.vscode</code>, <code>.idea</code>, <code>.husky</code>, <code>.devcontainer</code>, kabuk başlangıç dosyaları, <code>.npmrc</code>, <code>.mcp.json</code> gibi yollara yazma, <code>bypassPermissions</code> dışında hiçbir modda otomatik onaylanmaz. Mantık aynı: bu dosyalar bir sonraki komutta ya da bir sonraki oturumda kod çalıştırabilir.</p>
+
+    <div class="fig" data-widget="l7-matrix">
+      <p class="fig-title">Aynı eylem, iki harness</p>
+      <p class="fig-cap">Soldaki ayarlar Claude Code’u, sağdakiler Codex’i yapılandırır. Her satır agent’ın yapmak istediği bir eylem; hücreler sonucu ve kararı hangi mekanizmanın verdiğini gösterir. Bu, belgelerdeki kurallardan kurulmuş basitleştirilmiş bir modeldir; kendi kural ve hook’ların sonucu değiştirir.</p>
+      <div class="l7-mx-ctrl"></div>
+      <div class="tbl"><table class="l7-mx"><thead><tr><th>Eylem</th><th>Claude Code</th><th>Codex</th></tr></thead><tbody></tbody></table></div>
+      <div class="legend-row"><span><i class="sw" style="background:var(--ok)"></i>Çalışır</span><span><i class="sw" style="background:var(--ctx)"></i>Sorar</span><span><i class="sw" style="background:var(--model)"></i>Sınıflandırıcı karar verir</span><span><i class="sw" style="background:var(--risk)"></i>Engellenir</span></div>
+    </div>
+
+    <p>Laboratuvarda dikkat etmeni istediğim üç şey var. Birincisi, <code>workspace-write</code> sandbox’ı <code>rm -rf build/</code> komutunu sormadan çalıştırır: sandbox çalışma dizininin <em>içinde</em> yıkıcı işlemleri engellemez, yalnızca dışına çıkmayı engeller. İkincisi, Claude Code’da sandbox açık olsa bile <code>~/.bashrc</code> düzenlemesi sandbox’a değil izin sistemine takılır, çünkü Edit aracı sandbox’ın kapsamında değil. Üçüncüsü, <code>auto</code> modu bir sınıflandırıcıdır ve olasılıksaldır.</p>
+
+    <h3>Model tabanlı onaylayıcılar: auto mode ve auto_review</h3>
+    <p>Her iki taraf da insanı her adımda sormaktan kurtarmak için bir “onaylayıcı model” ekledi. Bunun nedeni gerçek bir veri: Anthropic’in Mart 2026 yazısına göre kullanıcılar izin istemlerinin %93’ünü onaylıyor. Bu kadar sık “evet” denen bir istem, bir süre sonra güvenlik değil alışkanlık olur. Claude Code’un <span class="g" data-g="Auto mode">auto mode</span>’u iki aşamalı bir transcript sınıflandırıcısı ve sunucu tarafında bir injection yoklaması kullanıyor. Sınıflandırıcı yalnızca kullanıcı mesajlarını ve araç çağrılarını görüyor; asistanın kendi düzyazısı ve araç sonuçları çıkarılıyor ki enjekte edilmiş bir metin sınıflandırıcıyla “tartışamasın”. Raporlanan rakamlar: 10 bin gerçek eylemde yanlış pozitif oranı %0,4; 52 gerçek “aşırı hevesli” eylemde kaçırma oranı %17; sentetik veri sızdırma denemelerinde kaçırma %5,7. Art arda 3 ya da toplam 20 ret sonrası insana döner. Codex’te benzer işi <code>approvals_reviewer = "auto_review"</code> yapıyor: zaten onay gerektiren isteklere bir inceleyici agent bakıyor ve emin değilse reddediyor (fail closed).</p>
+
+    <div class="callout warn"><span class="ct">Dikkat: YOLO bayrakları</span>Claude Code’da <code>--dangerously-skip-permissions</code>, Codex’te <code>--dangerously-bypass-approvals-and-sandbox</code> (kısa adı <code>--yolo</code>) bütün korumayı kaldırır. Codex’in eski <code>--full-auto</code> bayrağı artık desteklenmiyor. Ağustos 2025’teki Nx “s1ngularity” saldırısında kötü niyetli npm paketleri, makinede kurulu agent CLI’larını tam da bu bayraklarla çağırıp gizli anahtar avına çıkardı. Bu bayrakları yalnızca atılabilir bir konteynerde kullan; ekip makinelerinde politikayla kapatmayı düşün (Claude Code’da <code>disableBypassPermissionsMode</code>).</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Codex’te sandbox (<code>sandbox_mode</code>) her zaman vardır; <code>approval_policy</code> duvara çarpınca ne olacağını söyler.</li>
+        <li>Claude Code’da izin modu ve kurallar esastır; OS sandbox isteğe bağlı, kapalı başlar, Windows’ta yerel değildir ve yalnız kabuk komutlarını sarar.</li>
+        <li>Sandbox çalışma dizininin içindeki yıkıcı işlemi engellemez; sınırın dışına çıkmayı engeller.</li>
+        <li>Auto mode ve auto_review olasılıksal katmanlardır; deterministik kuralların yerine değil, yanına konur.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://learn.chatgpt.com/docs/agent-approvals-security">Codex: Agent approvals and security</a></li>
+      <li><a href="https://learn.chatgpt.com/docs/non-interactive-mode">Codex: Non-interactive mode</a></li>
+      <li><a href="https://code.claude.com/docs/en/permission-modes">Claude Code: Permission modes</a>, <a href="https://code.claude.com/docs/en/permissions">Permissions</a></li>
+      <li><a href="https://code.claude.com/docs/en/sandboxing">Claude Code: Sandboxing</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-sandboxing">Anthropic: Claude Code sandboxing</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-auto-mode">Anthropic: Claude Code auto mode (25 Mart 2026)</a></li>
+      <li><a href="https://blog.gitguardian.com/the-nx-s1ngularity-attack-inside-the-credential-leak/">GitGuardian: Nx s1ngularity</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 7.5 ============ -->
+  <div class="lesson" data-tab="Talimat, hook, skill">
+    <h2>Farklı adlar, yakınsayan mimari</h2>
+    <p>İyi haber: iki harness’ın genişletme mekanizmaları birbirine hızla yaklaşıyor. Talimat dosyaları, hook sözleşmesi ve skill formatı artık büyük ölçüde aynı şekle sahip. Bu, ekibin bu araçlara yaptığı yatırımın (kurallar, otomasyonlar, prosedürler) bir araca kilitlenmediği anlamına geliyor. Ama ayrıntılardaki farklar, “neden bu kural yüklenmedi?” sorusunun cevabı olabileceği için bilmeye değer.</p>
+
+    <h3>Talimat dosyaları: CLAUDE.md ve AGENTS.md</h3>
+    <div class="cols">
+      <div class="card h"><h4 class="h">Claude Code</h4>Yönetilen (kurum) dosyası, kullanıcı dosyası <code>~/.claude/CLAUDE.md</code>, proje dosyası <code>./CLAUDE.md</code> ya da <code>./.claude/CLAUDE.md</code> ve git’e girmeyen kişisel <code>./CLAUDE.local.md</code>. Başlangıçta kökten çalışma dizinine kadarki atalar yüklenir; alt dizinlerdekiler o dizindeki bir dosyaya dokunulduğunda. Dosyalar <b>birleştirilir</b>, birbirini ezmez; yakın olan sonra okunur. <code>@yol</code> ile içe aktarma yapılabilir (en fazla 4 atlama). <code>.claude/rules/*.md</code> dosyaları <code>paths:</code> başlığıyla yalnızca eşleşen dosyalara dokunulunca yüklenir. Dosya başına hedef 200 satırın altı.</div>
+      <div class="card h"><h4 class="h">Codex</h4>Global olarak <code>~/.codex/AGENTS.override.md</code>, yoksa <code>~/.codex/AGENTS.md</code> (boş olmayan ilk dosya). Projede kökten çalışma dizinine kadar her dizinde <b>bir</b> dosya: önce <code>AGENTS.override.md</code>, yoksa <code>AGENTS.md</code>, yoksa <code>project_doc_fallback_filenames</code> ile tanımladığın yedek adlar. Hepsi birleştirilir; toplam <code>project_doc_max_bytes</code> sınırına (varsayılan 32 KiB) ulaşınca kesilir. Bir içe aktarma mekanizması olmadığı belirtiliyor, ama bunu yalnız üçüncü taraf bir kaynak söylüyor.</div>
+    </div>
+    <p>Ekipte iki aracı birlikte kullanıyorsan en sağlam düzen şu: ortak proje kurallarını <code>AGENTS.md</code>’de tut, <code>CLAUDE.md</code> dosyasına yalnızca <code>@AGENTS.md</code> satırını ve Claude’a özgü birkaç notu yaz. Claude Code’un AGENTS.md dosyasını doğrudan nasıl ele aldığı sürümden sürüme değişti; bu yüzden neyin yüklendiğini tahmin etme, Claude Code’da <code>/context</code> ile gör. Codex tarafında da hangi dosyaların okunduğunu oturum başında kontrol etmek iyi bir alışkanlık.</p>
+
+    <div class="fig" data-widget="l7-resolver">
+      <p class="fig-title">Hangi talimat dosyası yükleniyor?</p>
+      <p class="fig-cap">Hayali bir <code>example_app</code> deposu. Harness’ı ve çalışma dizinini seç, isteğe bağlı olayları aç kapat. Liste, dosyaların context’e giriş sırasını ve boyutunu gösterir. Codex’in 32 KiB sınırını aşan kısım kesilir; Claude Code’da içe aktarmalar context maliyetini azaltmaz.</p>
+      <div class="ctrl l7-rs-ctrl"></div>
+      <div class="l7-rs-list"></div>
+      <div class="panel live l7-rs-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Hook’lar: aynı sözleşme</h3>
+    <p>8. seviyede Claude Code hook’larını derinlemesine işleyeceğiz; burada önemli olan karşılaştırma. Claude Code Kasım 2026 itibarıyla 33 hook olayı ve beş işleyici türü sunuyor (<code>command</code>, <code>http</code>, <code>mcp_tool</code>, <code>prompt</code>, <code>agent</code>). Codex’te 14 olay var: SessionStart, SessionEnd, PreToolUse, PermissionRequest, PostToolUse, PreModelRequest, PostModelRequest, PreCompact, PostCompact, UserPromptSubmit, SubagentStart, SubagentStop, Stop ve Interrupt. Asıl önemli olan sözleşmenin şekli ve o neredeyse birebir aynı:</p>
+    <ul>
+      <li>Hook olay bilgisini <b>stdin’den JSON</b> olarak alır.</li>
+      <li><b>Exit 2</b> eylemi engeller; stderr’e yazılan metin gerekçe olarak modele döner.</li>
+      <li>PreToolUse için JSON çıktıda <code>hookSpecificOutput.permissionDecision: "deny"</code> engeller.</li>
+      <li>Stop ve UserPromptSubmit için üst düzeyde <code>{"decision": "block", "reason": "…"}</code> kullanılır.</li>
+    </ul>
+    <p>Fark güven modelinde: Codex hook’ları <b>hash tabanlı güven</b> ile çalıştırır, yani onayladığın hook içeriği değişirse yeniden güven gerekir. Claude Code’da projenin hook’ları çalışma alanı güveni (workspace trust) verildikten sonra devreye girer. İki yaklaşımın da varlık nedeni aynı: depodaki bir yapılandırma dosyası, senin makinende kod çalıştırabilen bir dosyadır. 10. seviyede bunun gerçek CVE’lerini göreceğiz.</p>
+
+    <h3>Skill’ler: SKILL.md artık ortak bir standart</h3>
+    <p>Skill, bir klasör ve içinde ön bilgi başlıklı bir <code>SKILL.md</code> dosyasıdır. Başta yalnızca adı ve açıklaması context’e girer; gövde yalnızca gerektiğinde yüklenir, ek dosyalar ancak referans verilince. Bu “aşamalı açılım” sayesinde onlarca skill tanımlamak context’i doldurmaz. Anthropic, SKILL.md formatını 22 Ekim 2026’da Agentic AI Foundation’a devretti; format artık tek bir şirketin değil. AGENTS.md ve MCP ile birlikte bu, iki dünyanın ortak dilini oluşturuyor.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Bu yakınsama, editör dünyasındaki Language Server Protocol’e benziyor. Bir zamanlar her editör her dil için ayrı eklenti isterdi; LSP ile dil desteği editörden bağımsız bir varlık oldu. AGENTS.md, SKILL.md, MCP ve ortak hook sözleşmesi de ekibin bilgisini ve otomasyonunu harness’tan bağımsız bir varlığa dönüştürüyor.</div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Hook betiklerini harness’a özgü alanlara bağımlı olmadan yaz: stdin’den <code>tool_name</code> ve <code>tool_input</code> oku, kararı exit 2 ile ver. Böylece aynı <code>block-db-writes</code> betiği iki araçta da çalışır. Araca özgü olan yalnızca betiği bağladığın yapılandırma dosyası olur.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Claude Code talimat dosyalarını birleştirir, içe aktarmaya izin verir ve kuralları yola göre yükler; Codex dizin başına bir dosya alır ve 32 KiB’de keser.</li>
+        <li>Ortak kuralları AGENTS.md’de tut, CLAUDE.md’den içe aktar; yüklenenleri <code>/context</code> ile doğrula.</li>
+        <li>Hook sözleşmesi iki tarafta aynı: stdin JSON, exit 2 ile engel, <code>permissionDecision</code>, <code>decision: "block"</code>.</li>
+        <li>SKILL.md, AGENTS.md ve MCP harness’tan bağımsız varlıklardır; yatırımı bunlara yap.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/memory">Claude Code: Memory (CLAUDE.md)</a></li>
+      <li><a href="https://learn.chatgpt.com/docs/agent-configuration/agents-md">Codex: AGENTS.md</a></li>
+      <li><a href="https://code.claude.com/docs/en/hooks">Claude Code: Hooks</a>, <a href="https://learn.chatgpt.com/docs/hooks">Codex: Hooks</a></li>
+      <li><a href="https://code.claude.com/docs/en/skills">Claude Code: Skills</a></li>
+      <li><a href="https://www.anthropic.com/news">Anthropic News: SKILL.md’nin Agentic AI Foundation’a devri (22 Ekim 2026)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 7.6 ============ -->
+  <div class="lesson" data-tab="Hangisi, ne zaman">
+    <h2>Abartısız bir karar rehberi</h2>
+    <p>Bu konuda bir kazanan ilan etmeyeceğiz. Bunun iki nedeni var. Birincisi, iki taraf da birkaç haftada bir sürüm çıkarıyor; bugünkü üstünlük üç ay sonra tersine dönebilir. İkincisi, “daha iyi” sorusunun cevabı senin işine bağlı: hangi işletim sistemi, hangi güvenlik gereksinimi, hangi iş türü, hangi bütçe. Bu konuda yapacağımız şey, kararı etkileyen gerçek farkları duruma göre sıralamak.</p>
+
+    <h3>Kararı gerçekten etkileyen farklar</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Eksen</th><th>Claude Code</th><th>Codex</th></tr></thead>
+      <tbody>
+        <tr><td>OS sandbox</td><td>İsteğe bağlı, kapalı başlar; Windows’ta yalnız WSL2 ile</td><td>Her zaman var; Windows’ta MXC</td></tr>
+        <tr><td>İzin ayrıntısı</td><td>Araç ve argüman düzeyinde deny/ask/allow kuralları, 6 mod</td><td><code>approval_policy</code> + granüler tablo</td></tr>
+        <tr><td>Hook olayları</td><td>33 olay, 5 işleyici türü</td><td>14 olay, hash tabanlı güven</td></tr>
+        <tr><td>Etkileşimsiz mod</td><td><code>claude -p</code>, <code>--bare</code>, JSON / stream-json</td><td><code>codex exec</code>, salt okunur başlar, JSONL olaylar</td></tr>
+        <tr><td>CI</td><td><code>anthropics/claude-code-action@v1</code></td><td><code>openai/codex-action</code></td></tr>
+        <tr><td>SDK</td><td>Agent SDK: Python ve TypeScript</td><td>Codex SDK: TypeScript; app-server API</td></tr>
+        <tr><td>Arayüzler</td><td>Terminal, VS Code, JetBrains, masaüstü, web, Slack</td><td>CLI, IDE eklentisi, Codex uygulaması, ChatGPT Work, iOS</td></tr>
+        <tr><td>Bulut</td><td>Web’de yalıtılmış sandbox; git kimliği sandbox dışında, kapsamlı bir git proxy’si arkasında</td><td>İki fazlı: kurulum fazında ağ ve gizli anahtarlar var; agent fazında ağ kapalı, anahtarlar kaldırılmış</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="fig" data-widget="l7-decide">
+      <p class="fig-title">Senin durumunda ne öne çıkıyor?</p>
+      <p class="fig-cap">Ekibine uyan durumları işaretle. Widget bir kazanan seçmez; her durumda iki tarafta neye dikkat etmen gerektiğini ve iki tarafta da geçerli olan notu listeler.</p>
+      <div class="l7-dc-opts"></div>
+      <div class="l7-dc-out live" aria-live="polite"></div>
+    </div>
+
+    <h3>Kendi karşılaştırmanı yapmanın protokolü</h3>
+    <p>Gerçek bir karar vermen gerekiyorsa, bir hafta sonu yapılabilecek küçük bir deney yeterli. Önemli olan, deneyin 9. seviyede göreceğin eval disipliniyle yapılması.</p>
+    <ol class="steps">
+      <li><b>Görev seç:</b> Son üç ayda ekibin gerçekten yaptığı 20–30 iş. Kolay, orta, zor karışık olsun. Her birinin başarısı otomatik kontrol edilebilsin: belirli testler geçmeli, belirli dosyalar değişmemeli.</li>
+      <li><b>Ortamı eşitle:</b> Aynı commit, aynı talimat dosyası (AGENTS.md ortak, CLAUDE.md onu içe aktarır), aynı izin seviyesi. Birinde sandbox açık, ötekinde kapalıysa karşılaştırdığın şey güvenlik ayarıdır.</li>
+      <li><b>Tekrarla:</b> Her görevi her araçta en az üç kez koş. Tek koşum tesadüftür.</li>
+      <li><b>Dört şeyi kaydet:</b> testler geçti mi, kaç tur sürdü, maliyet ne oldu, diff’i bir insan kabul eder mi.</li>
+      <li><b>Transcript’leri oku:</b> Başarısızlıkların “adil” olup olmadığına bak. Görev mi belirsizdi, harness mı engelledi, model mi yanıldı?</li>
+    </ol>
+
+    <div class="callout tip"><span class="ct">Pratikte: ikisini birlikte kullanmak</span>Birçok ekip iki aracı birlikte kullanıyor ve bu meşru bir seçim. Örneğin bir oturumda yazdırıp öteki araçla bağımsız bir inceleme yaptırmak, aynı modelin kendi işini incelemesinden daha farklı hataları yakalayabilir. Bunun için talimat dosyalarını, skill’leri ve hook betiklerini taşınabilir tutman yeterli; bir önceki konuda nasıl yapılacağını gördün.</div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Biri güvenli, öteki güvensiz.” İki aracın da güvenliği büyük ölçüde senin ayarlarına bağlı. Codex’i <code>--yolo</code> ile çalıştırırsan sandbox yoktur; Claude Code’u sandbox, deny kuralları ve PreToolUse hook’larıyla kurarsan oldukça dar bir kutu elde edersin. Varsayılanlar farklı, tavanlar benzer.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Kazanan yok; işine, işletim sistemine, güvenlik gereksinimine ve bütçene göre öne çıkan farklar var.</li>
+        <li>Windows’ta native çalışan bir ekip için sandbox farkı somut: Codex’te yerel Windows sandbox’ı var, Claude Code’da WSL2 gerekir.</li>
+        <li>Karar için kendi görevlerinde, eşit ortamda, tekrarlı ölçüm yap; transcript’leri oku.</li>
+        <li>Talimat, skill ve hook yatırımını taşınabilir tutarsan araç değiştirmek ucuzlar.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/sandboxing">Claude Code: Sandboxing</a></li>
+      <li><a href="https://learn.chatgpt.com/docs/agent-approvals-security">Codex: Agent approvals and security</a></li>
+      <li><a href="https://code.claude.com/docs/en/github-actions">Claude Code: GitHub Actions</a></li>
+      <li><a href="https://learn.chatgpt.com/docs/non-interactive-mode">Codex: Non-interactive mode</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-sandboxing">Anthropic: Claude Code on the web sandboxing</a></li>
+      <li><a href="https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents">Anthropic: Demystifying evals for AI agents</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+Edu.glossary({
+  "Adaptive thinking": "Modelin bir istekte ne kadar düşünme token’ı harcayacağına kendisinin karar vermesi. Claude 5.5 modellerinde ve Fable 5.1’de var; Opus 5.5 ve Fable 5.1’de her zaman açık.",
+  "Constitution": "Anthropic’in Claude’un değerlerini ve öncelik sırasını anlatan, eğitimde kullanılan belgesi. Ocak 2026 sürümü CC0 ile yayımlandı; kural saymak yerine nedenleri açıklar.",
+  "Model Spec": "OpenAI’ın modellerinin nasıl davranacağını tarif eden belge. Daha kural odaklıdır ve açık bir emir komuta zinciri tanımlar: OpenAI, geliştirici, kullanıcı.",
+  "SWE-bench Verified": "Gerçek Python issue’ları ve testlerinden oluşan, insanlarca doğrulanmış kodlama benchmark’ı. OpenAI bozuk testler ve kontaminasyon nedeniyle Şubat 2026’da raporlamayı bıraktı.",
+  "SWE-bench Pro": "SWE-bench Verified’ın zayıflıklarına karşı tasarlanmış daha zor kodlama benchmark’ı. Scale SEAL kurulumunda en üst sonuçlar Ekim 2026 itibarıyla %60 civarında.",
+  "Terminal-Bench": "Agent’ları konteyner içinde terminal görevleriyle ölçen benchmark. Kasım 2026 itibarıyla güncel sürümü 4.0; skorlar harness’a çok duyarlı.",
+  "Kontaminasyon": "Benchmark sorularının ya da çözümlerinin modelin eğitim verisine sızması. Model çözmek yerine hatırlar; skor yeteneği değil ezberi ölçer.",
+  "sandbox_mode": "Codex’te komutların çalıştığı OS sandbox’ının seviyesi: read-only, workspace-write ya da danger-full-access.",
+  "approval_policy": "Codex’te sandbox sınırına çarpan bir eylemde ne olacağını belirleyen ayar: on-request (sorar), never (sormaz, hata döner) ya da granüler tablo.",
+  "Korumalı yol": "Harness’ın otomatik onaylamadığı dosya yolları (.git, .claude, kabuk başlangıç dosyaları gibi). Bu dosyalar sonraki komutlarda kod çalıştırabildiği için ayrıca korunur.",
+  "Auto mode": "Claude Code’da izin kararlarını bir sınıflandırıcı modele bırakan mod. Olasılıksaldır: raporlanan kaçırma oranı gerçek aşırı hevesli eylemlerde %17.",
+  "auto_review": "Codex’te onay gerektiren isteklere bir inceleyici agent’ın bakmasını sağlayan ayar (approvals_reviewer). Emin olmadığında reddeder.",
+  "Effort": "Modelin bir istekte harcayacağı düşünme bütçesi. Parametre modele gider ama değerini harness belirler; benchmark’larda ayrı bir eksendir.",
+  "Workspace trust": "Bir klasörü ilk açtığında harness’ın sorduğu güven onayı. Verilmeden önce projenin hook’ları ve allow kuralları devreye girmez.",
+  "AGENTS.md": "Agent’lar için proje talimat dosyası. Codex’in yerel formatı; ortak kuralları iki araç arasında paylaşmanın en taşınabilir yolu.",
+  "SKILL.md": "Bir skill klasörünün ön bilgi başlıklı ana dosyası. Başta yalnız adı ve açıklaması context’e girer; Ekim 2026’dan beri Agentic AI Foundation’ın bir standardı."
+});
+
+(function(){
+  const css = `
+  .l7-cmp{display:grid;gap:6px;margin-top:.9rem}
+  .l7-row{all:unset;box-sizing:border-box;cursor:pointer;display:grid;grid-template-columns:minmax(90px,140px) 1fr 1fr;gap:.6rem;align-items:start;padding:.55rem .7rem;border:1px solid var(--line);border-left:4px solid var(--rc,var(--line));border-radius:9px;background:var(--paper);font-size:.84rem;line-height:1.4}
+  .l7-row:hover,.l7-row:focus-visible{border-color:var(--rc);outline:none}
+  .l7-row.on{background:color-mix(in srgb,var(--rc) 10%,var(--paper))}
+  .l7-row b{font-family:var(--sans)}
+  .l7-row .sd{font-size:.7rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);display:block}
+  @media (max-width:560px){.l7-row{grid-template-columns:1fr}}
+  .l7-pill{display:inline-block;font-family:var(--sans);font-size:.72rem;font-weight:800;border-radius:999px;padding:.1rem .5rem;color:#fff;white-space:nowrap}
+  .l7-pill.run{background:var(--ok)}.l7-pill.ask{background:var(--ctx)}.l7-pill.clf{background:var(--model)}.l7-pill.block{background:var(--risk)}.l7-pill.dep{background:var(--muted)}
+  .l7-mx td{font-size:.82rem}.l7-mx td small{display:block;color:var(--muted);margin-top:.2rem;line-height:1.35}
+  .l7-box{border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem;background:var(--paper)}
+  .l7-box h4{margin:0 0 .5rem;font-size:.92rem}
+  .l7-box .lbl{font-size:.75rem;color:var(--muted);margin:.45rem 0 .25rem;font-family:var(--mono)}
+  .l7-chk{display:flex;gap:.45rem;align-items:center;font-size:.85rem;margin-top:.5rem;cursor:pointer}
+  .l7-chk input{accent-color:var(--acc);width:16px;height:16px}
+  .l7-bn{all:unset;box-sizing:border-box;cursor:pointer;display:grid;grid-template-columns:1fr auto;gap:.2rem .6rem;padding:.5rem .7rem;border:1px solid var(--line);border-radius:9px;background:var(--paper);font-size:.82rem;margin-bottom:5px;width:100%}
+  .l7-bn.on{border-color:var(--acc);background:var(--acc-bg)}
+  .l7-bn .v{font-family:var(--sans);font-weight:800;font-size:1.1rem;grid-row:span 2;align-self:center}
+  .l7-bn .meta{color:var(--muted);font-size:.75rem}
+  .l7-file{display:grid;grid-template-columns:auto 1fr auto;gap:.5rem;align-items:center;padding:.4rem .6rem;border-radius:8px;border:1px solid var(--line);background:var(--paper);margin-bottom:4px;font-size:.8rem}
+  .l7-file .n{font-family:var(--mono)}
+  .l7-file .o{font-family:var(--sans);font-weight:800;width:1.5rem;height:1.5rem;border-radius:50%;display:grid;place-items:center;background:var(--acc);color:#fff;font-size:.75rem}
+  .l7-file.off{opacity:.45}.l7-file.off .o{background:var(--line)}
+  .l7-file.cut{border-color:var(--risk);background:var(--risk-bg)}
+  .l7-file .s{font-family:var(--mono);color:var(--muted);font-size:.75rem}
+  .l7-dc-out{display:grid;gap:.6rem;margin-top:.9rem}
+  .l7-dc-item{border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;background:var(--paper);font-size:.86rem}
+  .l7-dc-item h4{margin:0 0 .4rem;font-size:.92rem}
+  .l7-dc-item .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.5rem}
+  .l7-dc-item .two div{border-left:3px solid var(--harness);padding-left:.55rem}
+  .l7-dc-item .both{margin-top:.45rem;color:var(--muted)}
+  `;
+  document.head.append(Edu.h("style", { text: css }));
+})();
+
+/* ---------- 7.1 İki ekosistem karşılaştırması ---------- */
+Edu.widget("l7-compare", el => {
+  const { h, $, seg } = Edu;
+  const data = {
+    m: { col:"var(--model)", rows:[
+      { a:"Kadro", c:"Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5", x:"gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna", why:"Codex bir üründür; içindeki model bir GPT sürümüdür. GPT-5.4’ten beri ayrı bir “-codex” modeli yok. Claude tarafında Anthropic çoğu iş için Opus 5.5 ile başlamayı öneriyor." },
+      { a:"Fiyat bantları", c:"Üst: 10/50 $ · Orta: 2/10 $ (Sonnet 5.5) · Opus 5.5: 4/20 $", x:"Üst: 10/50 $ (Astra) · Orta: 2/10 $ (6.1 Sol)", why:"Liste fiyatları iki tarafta şaşırtıcı derecede hizalı. Fark çoğunlukla önbellek çarpanında, tokenizer’da ve modelin aynı iş için kaç token harcadığında ortaya çıkar." },
+      { a:"Düşünme", c:"Adaptive thinking; Fable 5.1 ve Opus 5.5’te hep açık", x:"Reasoning effort parametresi (GPT-5.5’te none…xhigh); güncel değerleri model sayfasından kontrol et", why:"İki tarafta da düşünme token’ları çıktı fiyatından ödenir, görünmese bile. Effort yükseldikçe maliyet ve süre artar; kalite her zaman artmaz." },
+      { a:"Önbellek", c:"cache_control ile otomatik ya da açık; TTL 5 dk / 1 sa; okuma 0,05× (Opus/Sonnet 5.5)", x:"Otomatik, varsayılan açık; okuma 0,05× (6.1 Sol), 0,1× (Astra)", why:"Uzun agent oturumlarında girdinin çoğu önbellekten okunur. Bu çarpan, faturayı liste fiyatından daha fazla belirleyebilir." },
+      { a:"Davranış belgesi", c:"Anayasa: nedenleri açıklayan, yargıya dayalı", x:"Model Spec: daha kural odaklı, açık emir komuta zinciri", why:"Üslup farkı sohbet modunda hissedilir. Agent’lar için ortak nokta daha önemli: iki belge de araç çıktısını talimat veren bir taraf olarak görmez." },
+      { a:"Harness’la eğitim", c:"bash, text_editor gibi araç şemaları eğitime gömülü", x:"apply_patch formatı, özel terminal aracı, AGENTS.md’ye sıkı uyum", why:"Model kendi harness’ında rahattır. Kendi agent’ını yazıyorsan modelin eğitildiği araç imzalarını kullanmak çoğu zaman bedava kazançtır." }
+    ]},
+    h: { col:"var(--harness)", rows:[
+      { a:"Güvenlik ekseni", c:"İzin merkezli: 6 mod + deny/ask/allow kuralları", x:"Sandbox merkezli: sandbox_mode × approval_policy", why:"Claude Code’da önce “bu araç çağrısına izin var mı?” sorulur; Codex’te önce “bu komut duvarın içinde mi?”. İkisi de diğerinin mekanizmasını sonradan ekledi." },
+      { a:"OS sandbox", c:"İsteğe bağlı, kapalı başlar; Seatbelt / bubblewrap; Windows’ta yerel değil", x:"Her zaman; Seatbelt / bwrap+seccomp / Windows MXC", why:"Windows’ta native çalışan bir ekip için bu fark somut: Claude Code’da OS sandbox’ı için WSL2 gerekir." },
+      { a:"Varsayılan başlangıç", c:"Etkileşimli: auto · claude -p ve SDK: Manual", x:"Auto ön ayarı: VCS klasöründe workspace-write + on-request · codex exec: read-only", why:"2025’ten kalma varsayılan bilgisi iki tarafta da eskidi. Ekip belgelerini güncelle." },
+      { a:"Onaylayıcı model", c:"Auto mode: iki aşamalı sınıflandırıcı + injection yoklaması", x:"approvals_reviewer = \"auto_review\"", why:"İnsanlar istemlerin %93’ünü onaylıyor; bu yüzden ikisi de rutin onayı modele devretmeye çalışıyor. İkisi de olasılıksal." },
+      { a:"Talimat dosyası", c:"CLAUDE.md hiyerarşisi, @import (4 atlama), .claude/rules", x:"AGENTS.md / AGENTS.override.md, dizin başına bir dosya, 32 KiB sınırı", why:"Bir kural “okunmamış” gibi davranıyorsa önce hangi dosyaların yüklendiğine bak (bu seviyenin 5. konusu)." },
+      { a:"Hook’lar", c:"33 olay; command, http, mcp_tool, prompt, agent", x:"14 olay; hash tabanlı güven", why:"Sözleşme aynı: stdin JSON, exit 2 engeller, permissionDecision. Olay sayısı farkı ayrıntı düzeyini gösterir." },
+      { a:"Etkileşimsiz", c:"claude -p, --bare, --output-format json", x:"codex exec, --json (JSONL), --output-schema", why:"CI’da ikisi de kullanılabilir. Ayrıntılar 9. seviyede." }
+    ]},
+    o: { col:"var(--ok)", rows:[
+      { a:"AGENTS.md", c:"CLAUDE.md içinden @AGENTS.md ile içe aktarılabilir", x:"Yerel format", why:"Ortak kuralları tek yerde tutmanın en taşınabilir yolu." },
+      { a:"SKILL.md", c:".claude/skills/<ad>/SKILL.md", x:"Ortak format", why:"22 Ekim 2026’da Agentic AI Foundation’a devredildi; tek şirketin formatı değil." },
+      { a:"Hook sözleşmesi", c:"stdin JSON · exit 2 · permissionDecision · decision: block", x:"Aynı şekil", why:"Betiğini araca özgü alanlara bağlamazsan aynı betik iki tarafta çalışır." },
+      { a:"MCP", c:"Dış araç ve veri bağlamanın ortak protokolü", x:"Aynı protokol", why:"Bir MCP sunucusu bir kez yazılır, birden çok harness’ta kullanılır. Güvenlik riski de ortaktır (10. seviye)." },
+      { a:"Yetki hiyerarşisi", c:"Araç çıktısı veridir", x:"Araç çıktısı veridir", why:"Prompt injection savunmasının model tarafı. Olasılıksaldır; harness tarafı olmadan yetmez." }
+    ]}
+  };
+  const box = $(".l7-cmp", el), out = $(".l7-cmp-out", el);
+  seg($(".seg", el), v => {
+    box.innerHTML = ""; out.innerHTML = '<span class="muted">Bir satıra tıkla.</span>';
+    const d = data[v];
+    box.append(h("div", { class:"l7-row", style:{ cursor:"default", "--rc":"transparent", border:"0", background:"transparent", padding:".1rem .7rem" } },
+      h("span", { class:"sd" }, "Konu"), h("span", { class:"sd" }, "Claude / Claude Code"), h("span", { class:"sd" }, "OpenAI / Codex")));
+    d.rows.forEach(r => {
+      const b = h("button", { type:"button", class:"l7-row", style:{ "--rc": d.col } }, h("b", null, r.a), h("span", null, r.c), h("span", null, r.x));
+      b.addEventListener("click", () => {
+        Edu.$$(".l7-row", box).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        out.innerHTML = ""; out.append(h("b", null, r.a + ": "), r.why);
+      });
+      box.append(b);
+    });
+  });
+});
+
+/* ---------- 7.2 Fiyat karşılaştırması ---------- */
+Edu.widget("l7-price", el => {
+  const { h, $ } = Edu;
+  const models = [
+    { n:"Fable 5.1", i:10, o:50, r:0.025, c:"var(--model)" },
+    { n:"Opus 5.5", i:4, o:20, r:0.05, c:"var(--model)" },
+    { n:"Sonnet 5.5", i:2, o:10, r:0.05, c:"var(--model)" },
+    { n:"Haiku 5.5", i:0.10, o:0.50, r:0.1, c:"var(--model)" },
+    { n:"GPT-6 Astra", i:10, o:50, r:0.1, c:"var(--tool)" },
+    { n:"GPT-6.1 Sol", i:2, o:10, r:0.05, c:"var(--tool)" }
+  ];
+  const P = { T:20, C:80000, O:1500, hit:85 };
+  const presets = [
+    ["Kısa hata düzeltme", { T:8, C:40000, O:1500, hit:80 }],
+    ["Uzun refactor oturumu", { T:60, C:180000, O:2000, hit:92 }],
+    ["Soğuk CI incelemesi", { T:6, C:60000, O:3000, hit:0 }]
+  ];
+  const defs = [
+    ["T", "Tur sayısı", 1, 120, 1, v => v],
+    ["C", "Tur başına context (token)", 5000, 400000, 5000, v => (v/1000) + "K"],
+    ["O", "Tur başına çıktı + düşünme (token)", 200, 8000, 100, v => v],
+    ["hit", "Önbellekten okunan girdi (%)", 0, 95, 1, v => "%" + v]
+  ];
+  const pre = $(".l7-pr-presets", el), rg = $(".l7-pr-ranges", el), bars = $(".l7-pr-bars", el), out = $(".l7-pr-out", el);
+  const inputs = {};
+  presets.forEach(([n, p]) => pre.append(h("button", { type:"button", class:"btn ghost sm", onclick:() => { Object.assign(P, p); sync(); } }, n)));
+  defs.forEach(([k, lab, mn, mx, st, f]) => {
+    const id = "l7pr-" + k;
+    const inp = h("input", { type:"range", id, min:mn, max:mx, step:st, value:P[k] });
+    const o = h("output", { for:id });
+    inp.addEventListener("input", () => { P[k] = +inp.value; draw(); });
+    inputs[k] = [inp, o, f];
+    rg.append(h("div", { class:"range" }, h("label", { for:id, style:{ minWidth:"min(100%,230px)" } }, lab), inp, o));
+  });
+  function cost(m){
+    const inTok = P.T * P.C, hit = P.hit / 100;
+    const inCost = inTok * ((1-hit) * m.i + hit * m.i * m.r) / 1e6;
+    const outCost = P.T * P.O * m.o / 1e6;
+    return { inCost, outCost, tot: inCost + outCost };
+  }
+  function sync(){ for (const k in inputs) inputs[k][0].value = P[k]; draw(); }
+  function draw(){
+    for (const k in inputs) inputs[k][1].textContent = inputs[k][2](P[k]);
+    const rs = models.map(m => ({ m, ...cost(m) }));
+    const max = Math.max(...rs.map(r => r.tot)) || 1;
+    bars.innerHTML = "";
+    rs.forEach(r => bars.append(h("div", { class:"bar" },
+      h("span", { class:"lab" }, r.m.n),
+      h("div", { class:"track" }, h("div", { class:"fill", style:{ width: Math.max(0.6, r.tot / max * 100) + "%", background:r.m.c } })),
+      h("span", { class:"pct" }, "$" + (r.tot < 1 ? r.tot.toFixed(3) : r.tot.toFixed(2))))));
+    const op = rs[1];
+    const share = op.tot ? Math.round(op.inCost / op.tot * 100) : 0;
+    out.innerHTML = "";
+    out.append(
+      "Toplam girdi: " + (P.T * P.C / 1e6).toFixed(2) + "M token (her tur bütün context yeniden gönderilir). ",
+      h("br"), "Opus 5.5 örneğinde maliyetin %" + share + "’i girdi tarafında. ",
+      h("br"), h("span", { class:"muted" }, "Formül: tur × context × [(1−önbellek)×girdi + önbellek×girdi×okuma çarpanı] + tur × çıktı × çıktı fiyatı. Yazma ek ücreti (Anthropic’te 1,25×) ve tokenizer farkı yok sayıldı."));
+  }
+  sync();
+});
+
+/* ---------- 7.3 Benchmark laboratuvarı ---------- */
+Edu.widget("l7-bench", el => {
+  const { h, $ } = Edu;
+  const rows = [
+    { id:"a", b:"Terminal-Bench 2.0", m:"GPT-5.5", hn:"Özel harness (tablonun en üstü)", e:"belirtilmemiş", s:"Snorkel tablosu", k:"tablo", v:84.7 },
+    { id:"b", b:"Terminal-Bench 2.0", m:"Claude Opus 4.7", hn:"WOZCODE", e:"belirtilmemiş", s:"Snorkel tablosu", k:"tablo", v:80.2 },
+    { id:"c", b:"Terminal-Bench 2.0", m:"GPT-5.5", hn:"Terminus 2 (sabit)", e:"belirtilmemiş", s:"vals.ai, Haziran 2026", k:"bağımsız", v:73.2 },
+    { id:"d", b:"Terminal-Bench 2.0", m:"Claude Opus 4.8", hn:"Terminus 2 (sabit)", e:"belirtilmemiş", s:"vals.ai, Haziran 2026", k:"bağımsız", v:70.0 },
+    { id:"e", b:"Terminal-Bench 2.0", m:"gpt-5.2-codex", hn:"deepagents-cli (önce)", e:"belirtilmemiş", s:"LangChain", k:"üretici", v:52.8 },
+    { id:"f", b:"Terminal-Bench 2.0", m:"gpt-5.2-codex", hn:"deepagents-cli (harness iyileştirmesi sonrası)", e:"plan/doğrulamada yüksek, uygulamada orta", s:"LangChain", k:"üretici", v:66.5 },
+    { id:"g", b:"SWE-bench Pro", m:"Muse Spark 1.1", hn:"SEAL standart kurulum", e:"belirtilmemiş", s:"Scale SEAL, Ekim 2026", k:"bağımsız", v:61.5 },
+    { id:"i", b:"SWE-bench Pro", m:"GPT-5.4", hn:"SEAL standart kurulum", e:"xHigh", s:"Scale SEAL, Ekim 2026", k:"bağımsız", v:59.1 },
+    { id:"j", b:"SWE-bench Pro", m:"Claude Opus 5.5", hn:"Üretici kurulumu", e:"belirtilmemiş", s:"Anthropic (doğrulanmamış)", k:"üretici", v:89.9 }
+  ];
+  const box = $(".l7-bn-rows", el), out = $(".l7-bn-out", el);
+  let sel = [];
+  rows.forEach(r => {
+    const b = h("button", { type:"button", class:"l7-bn", "aria-pressed":"false" },
+      h("span", null, h("b", null, r.m), " · ", r.b),
+      h("span", { class:"v" }, "%" + String(r.v).replace(".", ",")),
+      h("span", { class:"meta" }, "Harness: " + r.hn + " · Effort: " + r.e + " · " + r.s));
+    b.addEventListener("click", () => {
+      if (sel.includes(r)) sel = sel.filter(x => x !== r);
+      else { sel.push(r); if (sel.length > 2) sel.shift(); }
+      Edu.$$(".l7-bn", box).forEach((x, i) => { const on = sel.includes(rows[i]); x.classList.toggle("on", on); x.setAttribute("aria-pressed", on); });
+      judge();
+    });
+    box.append(b);
+  });
+  function judge(){
+    out.innerHTML = "";
+    if (sel.length < 2){ out.append(h("span", { class:"muted" }, sel.length ? "Bir satır daha seç." : "İki satır seç.")); return; }
+    const [x, y] = sel, d = Math.abs(x.v - y.v).toFixed(1).replace(".", ",");
+    const same = { b: x.b === y.b, m: x.m === y.m, hn: x.hn === y.hn, e: x.e === y.e && x.e !== "belirtilmemiş", k: x.k === y.k };
+    const li = [];
+    li.push(["Benchmark ve sürüm", same.b]); li.push(["Model", same.m]); li.push(["Harness", same.hn]); li.push(["Effort (bilinen ve aynı)", same.e]); li.push(["Kaynak türü", same.k]);
+    const ul = h("ul", { style:{ margin:".3rem 0 .6rem" } }, li.map(([n, s]) => h("li", null, h("span", { class:"tag " + (s ? "ok" : "r") }, s ? "aynı" : "farklı"), " " + n)));
+    let verdict;
+    if (!same.b) verdict = "Farklı sınavlar. %" + d + " fark hiçbir şey söylemez; SWE-bench Pro ile Terminal-Bench farklı becerileri ölçer.";
+    else if (same.m && !same.hn) verdict = "Model aynı, harness farklı: aradaki " + d + " puan büyük ölçüde harness’ın etkisi. Bu seviyenin ana dersi tam olarak bu.";
+    else if (!same.m && same.hn) verdict = "Harness sabit, model farklı: bu, iki satırı model karşılaştırması olarak okuyabileceğin nadir durum. Yine de " + d + " puanlık farkın bir kısmı altyapı gürültüsü olabilir." + (same.e ? "" : " Effort bilinmiyor ya da farklı; bu da bir değişken.");
+    else if (!same.m && !same.hn) verdict = "Hem model hem harness değişmiş. " + d + " puanın ne kadarının modelden, ne kadarının harness’tan geldiğini ayıramazsın.";
+    else verdict = "Aynı satır özellikleri.";
+    if (same.b && x.k !== y.k) verdict += " Ayrıca biri üretici rakamı, öteki bağımsız ölçüm; kurulumlar eşit olmayabilir.";
+    out.append(h("b", null, x.m + " (%" + x.v + ") ↔ " + y.m + " (%" + y.v + ")"), ul, verdict);
+  }
+});
+
+/* ---------- 7.4 Sandbox ve onay matrisi ---------- */
+Edu.widget("l7-matrix", el => {
+  const { h, $, seg } = Edu;
+  const S = { cm:"auto", csb:false, xs:"workspace-write", xa:"on-request", xn:false };
+  const acts = [
+    ["read", "src/app.ts dosyasını oku"],
+    ["edit", "src/app.ts dosyasını düzenle"],
+    ["test", "<code>npm test</code> (ağsız, yerel)"],
+    ["install", "<code>npm install left-pad</code> (ağ: registry.npmjs.org)"],
+    ["curl", "<code>curl https://db.example.test/export</code>"],
+    ["githook", "<code>.git/hooks/pre-commit</code> dosyasına yaz"],
+    ["rmbuild", "<code>rm -rf build/</code> (çalışma dizini içinde)"],
+    ["bashrc", "<code>~/.bashrc</code> dosyasını düzenle"]
+  ];
+  const R = (k, why) => ({ k, why });
+  function claude(a){
+    const m = S.cm, sb = S.csb;
+    if (m === "bypassPermissions" && !(sb && a === "curl")) return R("run", "İzin katmanı devre dışı; korumalı yollar bile sorulmaz.");
+    switch (a){
+      case "read": return R("run", "Okuma araçları izin istemez" + (m === "plan" ? "; plan modu tam olarak bunun için." : "."));
+      case "edit": return ({ default:R("ask","Manual mod düzenlemeleri sorar."), acceptEdits:R("run","acceptEdits düzenlemeleri kabul eder."), plan:R("block","Plan onaylanana kadar düzenleme yok."), auto:R("clf","Sınıflandırıcı karar verir; çalışma dizinindeki olağan düzenlemeler genelde geçer.") })[m];
+      case "test":
+        if (sb && m !== "plan") return R("run", "Sandbox içinde, ağsız: sandbox’lı komutlar sorulmadan çalıştırılabilir.");
+        return ({ default:R("ask","Allow kuralı yoksa kabuk komutu sorulur."), acceptEdits:R("ask","acceptEdits dosya düzenlemelerini kapsar; bu komut için kural gerekir."), plan:R("ask","Plan modunda yalnız okuma amaçlı komutlar rahat çalışır; auto kullanılabiliyorsa sınıflandırıcı onaylayabilir."), auto:R("clf","Sınıflandırıcı; yerel test çalıştırmak olağan bir eylem.") })[m];
+      case "install":
+        if (sb && m !== "plan") return R("run", "Sandbox ağ proxy’si: örnek ayarda registry.npmjs.org izin listesinde. Paket adının gerçek olduğunu yine sen doğrula (10. seviye: slopsquatting).");
+        return ({ default:R("ask","Kabuk komutu sorulur."), acceptEdits:R("ask","Kabuk komutu sorulur."), plan:R("ask","Plan modunda değişiklik yapan komut beklemez, sorulur."), auto:R("clf","Sınıflandırıcı; paket kurulumu bağlama göre değerlendirilir.") })[m];
+      case "curl":
+        if (sb) return m === "bypassPermissions" ? R("dep","Sandbox ağ proxy’si izin listesinde olmayan alanı engeller; ama bypass modunda sandbox dışına kaçış isteklerinin nasıl ele alınacağı ayara bağlı. Bu modu yalnız atılabilir ortamda kullan.") : R("block","Sandbox ağ proxy’si: db.example.test izin listesinde değil. Bu, komutun nasıl yazıldığından bağımsız işleyen gerçek bir sınır.");
+        return ({ default:R("ask","Kabuk komutu sorulur. Bunun dışarıya veri gönderebilecek bir komut olduğunu fark etmek sana kalır. Bir deny Bash(curl *) kuralı eklesen bile o bir sınır değildir: /usr/bin/curl ya da sh -c ile aşılabilir (8. seviye)."), acceptEdits:R("ask","Kabuk komutu sorulur; acceptEdits yalnız düzenlemeleri kapsar."), plan:R("ask","Plan modunda değişiklik ya da dış iletişim beklemez, sorulur."), auto:R("clf","Dışarıya veri gönderimi sınıflandırıcının özellikle baktığı şey; sentetik sızdırma denemelerinde raporlanan kaçırma oranı %5,7.") })[m];
+      case "githook": return m === "plan" ? R("block","Plan modunda yazma yok.") : R("ask","Korumalı yol (.git): bypass dışında hiçbir modda otomatik onaylanmaz, auto’da bile.");
+      case "rmbuild":
+        if (sb && m !== "plan") return R("run","Sandbox içinde ve çalışma dizinine yazma serbest. Sandbox yıkıcı işlemi değil, sınır dışına çıkmayı engeller.");
+        return ({ default:R("ask","Kabuk komutu sorulur."), acceptEdits:R("ask","Kabuk komutu sorulur."), plan:R("block","Plan modunda değişiklik yok."), auto:R("clf","Sınıflandırıcı; kritik yollardaki rm asla otomatik onaylanmaz, build/ ise bağlama göre.") })[m];
+      case "bashrc": return m === "plan" ? R("block","Plan modunda yazma yok.") : R("ask","Kabuk başlangıç dosyası korumalı yol. Sandbox Edit aracını kapsamaz; karar izin sisteminde." + (sb ? " (Sandbox açık olsa bile.)" : ""));
+    }
+  }
+  function codex(a){
+    const s = S.xs, ap = S.xa, net = S.xn;
+    const esc = why => ap === "on-request" ? R("ask", why + " on-request: model yetki yükseltmesi ister, sen onaylarsın.") : R("block", why + " never: sorulmaz, hata modele döner.");
+    if (s === "danger-full-access") return R("run", a === "read" ? "Okuma serbest." : "Duvar yok; komut doğrudan çalışır.");
+    switch (a){
+      case "read": return R("run", "Okuma her sandbox modunda serbest.");
+      case "edit": return s === "read-only" ? esc("Salt okunur sandbox.") : R("run", "Çalışma dizini yazılabilir kök.");
+      case "test": return R("run", s === "read-only" ? "Okuyarak çalışır; bir şey yazmaya kalkarsa sandbox reddeder." : "Sandbox içinde, ağ gerekmez.");
+      case "install":
+        if (s === "read-only") return esc("Yazma ve ağ gerekiyor.");
+        return net ? R("run", "network_access = true; çalışma dizinine yazma serbest.") : esc("workspace-write’ta ağ varsayılan olarak kapalı.");
+      case "curl":
+        if (s === "read-only") return esc("Ağ gerekiyor.");
+        return net ? R("run", "network_access açık. Alan adı bazlı kısıt için features.network_proxy gerekir (örnek ayarda db.example.test deny).") : esc("Ağ kapalı.");
+      case "githook": return esc(".git, yazılabilir kökün içinde olsa bile salt okunur.");
+      case "rmbuild": return s === "read-only" ? esc("Salt okunur sandbox.") : R("run", "Çalışma dizini içinde: sandbox engellemez. Yıkıcı ama sınır içinde.");
+      case "bashrc": return esc("Ev dizini yazılabilir kökün dışında.");
+    }
+  }
+  const ctrl = $(".l7-mx-ctrl", el);
+  const mkSeg = (vals, key, label) => {
+    const s = h("div", { class:"seg", role:"group", "aria-label":label }, vals.map(v => h("button", { type:"button", "data-v":v, "aria-pressed": String(S[key] === v) }, v)));
+    return s;
+  };
+  const cSeg = mkSeg(["default","acceptEdits","plan","auto","bypassPermissions"], "cm", "Claude Code izin modu");
+  const cChk = h("input", { type:"checkbox", id:"l7mx-csb" });
+  const xSeg = mkSeg(["read-only","workspace-write","danger-full-access"], "xs", "Codex sandbox_mode");
+  const aSeg = mkSeg(["on-request","never"], "xa", "Codex approval_policy");
+  const nChk = h("input", { type:"checkbox", id:"l7mx-xn" });
+  ctrl.append(h("div", { class:"cols", style:{ margin:".2rem 0 .4rem" } },
+    h("div", { class:"l7-box" }, h("h4", { class:"h" }, "Claude Code"), h("p", { class:"lbl" }, "permission mode"), cSeg,
+      h("label", { class:"l7-chk", for:"l7mx-csb" }, cChk, "OS sandbox açık (allowedDomains: registry.npmjs.org)")),
+    h("div", { class:"l7-box" }, h("h4", { class:"h" }, "Codex"), h("p", { class:"lbl" }, "sandbox_mode"), xSeg, h("p", { class:"lbl" }, "approval_policy"), aSeg,
+      h("label", { class:"l7-chk", for:"l7mx-xn" }, nChk, "network_access = true"))));
+  const tb = $("tbody", el);
+  function cell(r){ return h("td", null, h("span", { class:"l7-pill " + r.k }, ({ run:"Çalışır", ask:"Sorar", clf:"Sınıflandırıcı", block:"Engellenir", dep:"Ayara bağlı" })[r.k]), h("small", null, r.why)); }
+  function draw(){
+    tb.innerHTML = "";
+    acts.forEach(([k, lab]) => tb.append(h("tr", null, h("td", { html: lab }), cell(claude(k)), cell(codex(k)))));
+  }
+  seg(cSeg, v => { S.cm = v; draw(); });
+  seg(xSeg, v => { S.xs = v; draw(); });
+  seg(aSeg, v => { S.xa = v; draw(); });
+  cChk.addEventListener("change", () => { S.csb = cChk.checked; draw(); });
+  nChk.addEventListener("change", () => { S.xn = nChk.checked; draw(); });
+  draw();
+});
+
+/* ---------- 7.5 Talimat dosyası çözümleyici ---------- */
+Edu.widget("l7-resolver", el => {
+  const { h, $, seg } = Edu;
+  const S = { tool:"claude", cwd:"api", subTouch:false, sql:false, override:true };
+  const ctrl = $(".l7-rs-ctrl", el), list = $(".l7-rs-list", el), out = $(".l7-rs-out", el);
+  const tSeg = h("div", { class:"seg", role:"group", "aria-label":"Harness" }, h("button", { type:"button", "data-v":"claude", "aria-pressed":"true" }, "Claude Code"), h("button", { type:"button", "data-v":"codex", "aria-pressed":"false" }, "Codex"));
+  const cSeg = h("div", { class:"seg", role:"group", "aria-label":"Çalışma dizini" }, h("button", { type:"button", "data-v":"root", "aria-pressed":"false" }, "cwd: /repo"), h("button", { type:"button", "data-v":"api", "aria-pressed":"true" }, "cwd: /repo/services/api"));
+  const opts = h("div", { style:{ display:"flex", gap:".2rem 1rem", flexWrap:"wrap", width:"100%" } });
+  ctrl.append(tSeg, cSeg, opts);
+  const chk = (key, label) => { const id = "l7rs-" + key; const i = h("input", { type:"checkbox", id }); i.checked = S[key]; i.addEventListener("change", () => { S[key] = i.checked; draw(); }); return h("label", { class:"l7-chk", for:id }, i, label); };
+  function draw(){
+    opts.innerHTML = "";
+    if (S.tool === "claude"){
+      if (S.cwd === "root") opts.append(chk("subTouch", "services/api altındaki bir dosyayı oku"));
+      opts.append(chk("sql", "bir .sql dosyasına dokun"));
+    } else opts.append(chk("override", "services/api/AGENTS.override.md mevcut"));
+    list.innerHTML = ""; out.innerHTML = "";
+    const files = [];
+    if (S.tool === "claude"){
+      files.push({ n:"~/.claude/CLAUDE.md", kb:2, note:"kullanıcı, tüm projeler" });
+      files.push({ n:"/repo/CLAUDE.md", kb:0.3, note:"proje kökü; içinde @AGENTS.md ve @docs/conventions.md" });
+      files.push({ n:"  ↳ @AGENTS.md", kb:14, note:"içe aktarma, 1. atlama", warn:true });
+      files.push({ n:"  ↳ @docs/conventions.md", kb:6, note:"içe aktarma, 1. atlama" });
+      files.push({ n:"    ↳ @docs/sql-style.md", kb:2, note:"içe aktarma, 2. atlama (sınır 4)" });
+      files.push({ n:"/repo/CLAUDE.local.md", kb:0.4, note:"kişisel, git’e girmez" });
+      const sub = S.cwd === "api" || S.subTouch;
+      files.push({ n:"/repo/services/api/CLAUDE.md", kb:1, note: S.cwd === "api" ? "çalışma dizini: başlangıçta yüklenir" : (S.subTouch ? "alt dizine dokunuldu: isteğe bağlı yüklendi" : "alt dizin: o dizine dokunulana kadar yüklenmez"), off:!sub });
+      files.push({ n:"/repo/.claude/rules/sql.md", kb:1.5, note:"paths: \"**/*.sql\" — " + (S.sql ? "eşleşen dosyaya dokunuldu, yüklendi" : "eşleşen dosyaya dokunulmadı"), off:!S.sql });
+      let k = 0, tot = 0;
+      files.forEach(f => {
+        if (!f.off){ k++; tot += f.kb; }
+        list.append(h("div", { class:"l7-file" + (f.off ? " off" : "") }, h("span", { class:"o" }, f.off ? "–" : String(k)), h("span", null, h("span", { class:"n" }, f.n), h("br"), h("span", { class:"muted", style:{ fontSize:".75rem" } }, f.note)), h("span", { class:"s" }, f.kb + " KB")));
+      });
+      out.append(h("b", null, "Toplam ≈ " + tot.toFixed(1) + " KB ≈ " + Math.round(tot * 1024 / 4 / 100) / 10 + "K token. "),
+        "Dosyalar birleştirilir; yakın olan sonra okunur ama öncekini ezmez. İçe aktarılan AGENTS.md ≈ 300 satır: 200 satır hedefinin üstünde ve içe aktarma context maliyetini azaltmaz. ",
+        h("span", { class:"muted" }, "Kurum (managed) dosyası bu örnekte yok; varsa en başta yüklenir."));
+    } else {
+      files.push({ n:"~/.codex/AGENTS.md", kb:1.2, note:"global (AGENTS.override.md yok, bu yüzden bu)", glob:true });
+      files.push({ n:"/repo/AGENTS.md", kb:14, note:"proje kökü" });
+      if (S.cwd === "api"){
+        if (S.override) files.push({ n:"/repo/services/api/AGENTS.override.md", kb:3, note:"bu dizinde override öncelikli; AGENTS.md atlandı" });
+        else files.push({ n:"/repo/services/api/AGENTS.md", kb:22, note:"bu dizinin dosyası" });
+      }
+      files.push({ n:"/repo/web/AGENTS.md", kb:5, note:"cwd yolunda değil: okunmaz", off:true });
+      const cap = 32; let used = 0, k = 0, cut = null;
+      files.forEach(f => {
+        let cls = "l7-file", note = f.note, show = f.kb + " KB";
+        if (f.off) cls += " off";
+        else if (!f.glob){
+          if (used + f.kb > cap){ const fit = Math.max(0, cap - used); cut = { f, fit }; cls += " cut"; note += " · KESİLDİ: yalnız ilk " + fit + " KB yüklendi"; show = fit + "/" + f.kb + " KB"; used = cap; }
+          else used += f.kb;
+        }
+        if (!f.off) k++;
+        list.append(h("div", { class:cls }, h("span", { class:"o" }, f.off ? "–" : String(k)), h("span", null, h("span", { class:"n" }, f.n), h("br"), h("span", { class:"muted", style:{ fontSize:".75rem" } }, note)), h("span", { class:"s" }, show)));
+      });
+      out.append(h("b", null, "Proje belgeleri: " + used + " / 32 KiB. "), cut
+        ? "Sınır aşıldı ve kesilen dosya, çalışma dizinine en yakın, yani en özel kuralları içeren dosya oldu. Kök AGENTS.md’yi kısaltmak ya da override kullanmak bunu çözer."
+        : "Sınırın altında. Dizin başına tek dosya okunur; override varsa aynı dizindeki AGENTS.md atlanır.",
+        " ", h("span", { class:"muted" }, "Sınır proje dosyalarına uygulanır (project_doc_max_bytes); global dosya ayrı gösterildi."));
+    }
+  }
+  seg(tSeg, v => { S.tool = v; draw(); });
+  seg(cSeg, v => { S.cwd = v; draw(); });
+});
+
+/* ---------- 7.6 Karar rehberi ---------- */
+Edu.widget("l7-decide", el => {
+  const { h, $ } = Edu;
+  const items = [
+    { t:"Ekip Windows’ta native çalışıyor (WSL yok)", c:"OS sandbox’ı Windows’ta yerel değil; WSL2 gerekir. Sandbox’sız kalırsan deny kuralları, PreToolUse hook’ları ve auto mode ile çalışırsın.", x:"Windows sandbox’ı var (MXC tercih ediliyor; eski elevated/unelevated seçenekleri legacy).", b:"Hangisini seçersen seç, ajanı yönetici yetkisiyle çalıştırma; .env ve kimlik dosyalarını okuma kurallarıyla kapat." },
+    { t:"Varsayılan olarak OS sandbox istiyorum", c:"sandbox.enabled ile açılır; yalnız kabuk komutlarını sarar. Ağ izin listesi boş başlar.", x:"Sandbox her zaman modelin parçası; workspace-write’ta ağ kapalı başlar.", b:"Sandbox dosya sistemi ve ağ yalıtımını birlikte istersin; biri eksikse sızdırma ya da kaçış kapısı açık kalır." },
+    { t:"İhlali kabul edilemeyen kurallar var (prod DB, migration klasörü)", c:"33 hook olayı, if alanı (ör. \"Bash(psql *)\"), http/prompt/agent işleyicileri; deny kuralları her moddan önce gelir.", x:"14 hook olayı; PreToolUse ve PermissionRequest var; hash tabanlı güven.", b:"Bu tür kurallar CLAUDE.md ya da AGENTS.md’ye değil, hook’a ve kimlik bilgisi yetkisine yazılır. Ajanın kullandığı veritabanı rolü zaten salt okunur olmalı." },
+    { t:"PR incelemesini CI’da otomatikleştireceğiz", c:"anthropics/claude-code-action@v1; claude -p --bare önerilir; JSON çıktıda total_cost_usd ve permission_denials.", x:"openai/codex-action; codex exec salt okunur başlar; --json ile JSONL olaylar; CODEX_API_KEY yalnız tek çağrıya verilmeli.", b:"PR başlığı ve issue metni güvenilmeyen girdidir; prompt’a gömülürse 2026’daki “Comment and Control” türü saldırılara açılırsın (10. seviye)." },
+    { t:"Yoğun paralel iş, çok sayıda alt görev", c:"Subagent’lar (ayrı context, worktree yalıtımı, 3 seviyeye kadar iç içe); agent teams deneysel ve yaklaşık 7 kat token.", x:"SubagentStart/SubagentStop hook olayları var; paralel iş akışının ayrıntılarını kendi sürümünde dene.", b:"Paralellik inceleme kapasitesini aşarsa birikmiş iş üretir; token maliyeti de katlanır (9. seviye)." },
+    { t:"Maliyet hassas, yüksek hacimli işler", c:"Sonnet 5.5 (2/10 $) ve Haiku 5.5 (0,10/0,50 $’dan başlayan); Opus/Sonnet 5.5’te önbellek okuma 0,05×.", x:"GPT-6.1 Sol (2/10 $), önbellek okuma 0,05×; Terra ve Luna hızlı/verimli seçenekler (fiyatları bu sette doğrulanmadı).", b:"Liste fiyatı değil, aynı görev setinde ölçülmüş görev başına maliyet karar verir." },
+    { t:"Uzun soluklu, çok zor görevler", c:"Anthropic bu iş için Fable 5.1’i öneriyor (10/50 $, varsayılan effort high).", x:"gpt-6-astra en yetenekli model olarak konumlanıyor (10/50 $).", b:"Bu sınıfta benchmark farkları harness ve effort gürültüsünün içinde kalabilir; kendi görevinde 3+ tekrarla ölç." },
+    { t:"Yatırımı araçtan bağımsız tutmak istiyoruz", c:"CLAUDE.md’den @AGENTS.md içe aktar; skill’ler SKILL.md; hook betikleri stdin JSON + exit 2.", x:"AGENTS.md yerel; SKILL.md ortak; aynı hook sözleşmesi.", b:"Kuralları, prosedürleri ve otomasyonu ekip varlığı olarak gör; araç değişince taşınır." }
+  ];
+  const opts = $(".l7-dc-opts", el), out = $(".l7-dc-out", el);
+  opts.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.1rem .9rem";
+  const state = items.map(() => false); state[0] = true; state[2] = true;
+  items.forEach((it, i) => {
+    const id = "l7dc-" + i, inp = h("input", { type:"checkbox", id }); inp.checked = state[i];
+    inp.addEventListener("change", () => { state[i] = inp.checked; draw(); });
+    opts.append(h("label", { class:"l7-chk", for:id }, inp, it.t));
+  });
+  function draw(){
+    out.innerHTML = "";
+    const on = items.filter((_, i) => state[i]);
+    if (!on.length){ out.append(h("p", { class:"muted" }, "En az bir durum işaretle.")); return; }
+    on.forEach(it => out.append(h("div", { class:"l7-dc-item" }, h("h4", null, it.t),
+      h("div", { class:"two" }, h("div", null, h("b", { class:"h" }, "Claude Code: "), it.c), h("div", null, h("b", { class:"h" }, "Codex: "), it.x)),
+      h("p", { class:"both" }, h("b", null, "Her iki durumda: "), it.b))));
+  }
+  draw();
+});
+</script>

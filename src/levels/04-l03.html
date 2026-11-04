@@ -1,0 +1,1060 @@
+<section class="level" data-no="3" data-short="Prompt" data-title="Prompt engineering: fasa fisoyu ayıklamak"
+  data-accent="ctx" data-time="60 dk"
+  data-lede="İyi prompt yazmak sihirli kelime bilmek değil; iyi bir ticket yazabiliyorsan iyi prompt da yazabilirsin. Modelin gerçekte ne gördüğünü, hangi numaraların folklor olduğunu, neyin kanıtla işe yaradığını ve prompt’tan context engineering’e geçişi ham örnekler üzerinden açıyoruz.">
+
+  <!-- ============ 1. MODEL NE GÖRÜYOR ============ -->
+  <div class="lesson" data-tab="Model ne görüyor?">
+    <h2>Senin mesajın, isteğin küçük bir parçası</h2>
+    <p class="lead">Claude Code’a “testleri düzelt” yazdığında modele giden şey bu iki kelime değil. Harness o anda büyük bir HTTP isteği kurar: araç tanımları, kendi sistem talimatı, proje kuralların, o ana kadarki bütün konuşma, okunan dosyalar, komut çıktıları. Senin cümlen bu isteğin en sonuna eklenen birkaç düzine token’dır.</p>
+    <p>Bunu kavramak, prompt engineering’in geri kalanını anlamanın ön koşulu. Çünkü model “senin mesajını” okumaz; kendisine verilen token dizisinin tamamına bakıp bir sonraki token’ı üretir (0. seviye). O dizide ne varsa modelin dünyası odur. Dizide olmayan bir şeyi bilmez; dizide olan ama çok uzun bir yığının ortasında kalmış bir şeyi de çoğu zaman yeterince dikkate almaz.</p>
+    <p>API durumsuzdur (2. seviyede gördük): sunucu senin için oturum tutmaz, her istekte bütün geçmiş yeniden gönderilir. Anthropic Messages API’sinde istek üç büyük alandan oluşur ve önbellek açısından sıra da budur: önce <code>tools</code>, sonra <code>system</code>, sonra <code>messages</code>. Bu sıra rastgele değil. En kararlı içerik öne, en çok değişen içerik sona konur ki önbelleğe alınmış önek bozulmasın.</p>
+
+    <h3>Katman katman bir agent isteği</h3>
+    <ul>
+      <li><b>Tool-use sistem talimatı.</b> İstekte araç varsa API, modele araçları nasıl kullanacağını anlatan kendi talimatını ekler. Anthropic’in dokümantasyonuna göre bu, Opus, Sonnet ve Haiku 5.5’te senin araç tanımlarından önce yaklaşık 286 token tutar (Kasım 2026 itibarıyla).</li>
+      <li><b>Araç tanımları.</b> Her aracın adı, açıklaması ve JSON şeması. Açıklama metni modelin aracı ne zaman kullanacağına karar verdiği tek yerdir; yani o da bir prompt’tur (4. seviye).</li>
+      <li><b><span class="g" data-g="System prompt">System prompt</span>.</b> Harness’ın yazdığı kimlik ve çalışma kuralları, ortam bilgisi: işletim sistemi, çalışma dizini, git durumu, tarih.</li>
+      <li><b>Proje talimatları.</b> CLAUDE.md, AGENTS.md ve benzerleri. Bunları sen ya da ekibin yazar; harness her istekte ekler (8. seviyede ayrıntısıyla).</li>
+      <li><b>Skill açıklamaları.</b> Yalnızca ad ve kısa açıklama. Skill’in gövdesi ancak ilgili olduğunda yüklenir.</li>
+      <li><b><span class="g" data-g="System reminder">System reminder</span>’lar.</b> Konuşmanın ortasına harness’ın eklediği küçük notlar: “şu dosya dışarıdan değişti”, “yapılacaklar listesinin durumu bu”.</li>
+      <li><b>Konuşma geçmişi.</b> Senin önceki mesajların, modelin cevapları ve güncel modellerde düşünme blokları.</li>
+      <li><b>Araç sonuçları.</b> Okunan dosyalar, komut çıktıları, arama sonuçları. Uzun bir oturumda isteğin açık ara en büyük parçası çoğu zaman budur.</li>
+      <li><b>Senin son mesajın.</b> En sonda, en kısa parça.</li>
+    </ul>
+
+    <div class="fig" data-widget="l3-anatomy">
+      <p class="fig-title">Bir agent isteğinin anatomisi</p>
+      <p class="fig-cap">Oturumun hangi anında olduğunu seç, sonra çubuktaki ya da listedeki bir katmana tıkla. Kimin yazdığını, ne zaman eklendiğini ve ham istekte nereye düştüğünü gör. Token sayıları tipik bir coding agent oturumu için temsili büyüklükler; yalnızca tool-use talimatının 286 token’ı dokümante edilmiş bir değer. Asıl önemli olan oranlar.</p>
+      <div class="seg" role="group" aria-label="Oturumun anı">
+        <button type="button" data-v="0" aria-pressed="true">İlk mesaj</button>
+        <button type="button" data-v="1" aria-pressed="false">15. tur</button>
+        <button type="button" data-v="2" aria-pressed="false">40. tur</button>
+      </div>
+      <div class="l3-stack" role="group" aria-label="Katmanların token payı"></div>
+      <div class="stats l3-anat-stats"></div>
+      <div class="l3-layers" role="group" aria-label="Katmanlar"></div>
+      <div class="panel l3-anat-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Bundan çıkan üç sonuç</h3>
+    <p><b>Birincisi: mesajın rekabet ediyor.</b> 40. turda senin yazdığın cümle, isteğin binde birinden küçük bir parça. Model dikkatini bu dizinin tamamına dağıtır. Kısa ve belirsiz bir mesaj, binlerce satırlık araç çıktısının yanında kolayca “gürültü” kalır. Bu yüzden mesajın kısa olabilir ama belirsiz olmamalı.</p>
+    <p><b>İkincisi: kalıcı etki istiyorsan her istekte giden katmanlara yatırım yap.</b> Her oturumda tekrar tekrar yazdığın bir kural varsa (“testleri silme”, “migration’lara dokunma”), o kuralın yeri sohbet değil, harness’ın her istekte eklediği proje talimat dosyası ya da daha sert bir katman (6. seviyede “kuralın doğru yeri”). Sohbette söylenen kural, uzun bir oturumda sıkıştırma (compaction) sırasında özetten düşebilir; proje dosyasındaki kural her istekte yeniden eklenir.</p>
+    <p><b>Üçüncüsü: hata ayıklarken önce modelin ne gördüğüne bak.</b> “Model neden bunu yaptı?” sorusunun cevabı çoğu zaman modelde değil, isteğin içeriğindedir. Claude Code’da <code>/context</code> komutu context’in kategorilere göre dökümünü gösterir. Bir kural uygulanmıyorsa önce o kuralın gerçekten context’te olup olmadığını kontrol et.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>C’de tek bir <code>.c</code> dosyası yazarsın ama derleyici onu görmez; önişlemcinin bütün <code>#include</code>’ları açtığı, makroları genişlettiği koca bir çeviri birimini görür. Hata mesajı da senin dosyanda olmayan bir satırı gösterebilir. Model için de durum aynı: senin mesajın kaynak dosyan, modelin gördüğü şey ise harness’ın birleştirdiği “çeviri birimi”.</div>
+
+    <h3>Roller gerçek ama sınırları yumuşak</h3>
+    <p>Bütün bu katmanlar sonunda rol işaretleriyle ayrılmış tek bir metne dökülür (1. seviyede gördüğümüz <span class="g" data-g="Chat template">chat template</span>). Model system talimatına kullanıcı mesajından, kullanıcı mesajına da araç çıktısındaki metinden daha fazla ağırlık vermeyi eğitimle öğrenmiştir. Ama bu bir işletim sistemi izin modeli değil, öğrenilmiş bir eğilimdir. Bir web sayfasının ya da bir issue yorumunun içindeki “önceki talimatları unut” cümlesi de aynı token akışına girer.</p>
+    <p>Pratik kural Anthropic’in araç dokümantasyonunda da yazıyor: güvenilmeyen içerik (web sayfası, e-posta, kullanıcı yüklemesi) system prompt’a değil, <code>tool_result</code> içine konur. Bu tek başına koruma değildir; prompt injection’ın asıl savunması harness’tadır (10. seviye).</p>
+
+    <div class="callout deep"><span class="ct">Derine in</span>Anthropic’in güncel prompt rehberi yeni modellerin system prompt’a “daha duyarlı” olduğunu söylüyor. Bu iyi haber gibi görünür ama yan etkisi var: eski, zayıf modelleri zorlamak için yazılmış sert ifadeler artık aşırı uygulanıyor. Bir sonraki konunun önemli bir kısmı bu kaymanın sonuçları.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Model senin mesajını değil, harness’ın kurduğu isteğin tamamını görür: araçlar, system prompt, proje talimatları, geçmiş, araç sonuçları.</li>
+        <li>Uzun bir oturumda isteğin en büyük parçası çoğu zaman araç sonuçlarıdır; senin son mesajın en küçüğüdür.</li>
+        <li>Kalıcı kurallar sohbete değil, her istekte eklenen katmanlara yazılır.</li>
+        <li>“Neden böyle davrandı?” sorusunda ilk adım: context’te gerçekten ne vardı? (<code>/context</code>)</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (tool-use sistem talimatının token maliyeti)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls">Anthropic: Handle tool calls (güvenilmeyen içerik tool_result’ta)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (/context, compaction, ertelenmiş MCP araçları)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. FOLKLOR ============ -->
+  <div class="lesson" data-tab="Folklor ve kanıt">
+    <h2>Zayıf modellerden kalma numaralar</h2>
+    <p class="lead">“Sen dünyanın en iyi yazılımcısısın.” “200 dolar bahşiş veririm.” “KRİTİK: ASLA unutma.” “Derin bir nefes al.” Bunların hepsi bir dönem gerçekten denenmiş, paylaşılmış, “işe yarıyor” diye yayılmış numaralar. Bugün çoğunun ya etkisi yok ya da ters tepiyor. Neden yayıldıklarını anlamak, yenilerine kanmamanın en iyi yolu.</p>
+
+    <h3>Folklor nasıl doğar?</h3>
+    <p>2022–2023’ün modelleri talimat takibinde bugünkülerden çok daha zayıftı. İnsanlar belirli bir modelde belirli bir cümlenin bir şeyleri iyileştirdiğini gördü ve paylaştı. Sorun şu: model çıktısı olasılıksaldır (0. seviye). Aynı prompt’u iki kez çalıştırsan iki farklı cevap alırsın. Prompt A ile kötü bir cevap aldın, “bahşiş” ekleyip yeniden denedin ve iyi bir cevap geldi. Bu, bahşişin işe yaradığını mı gösterir, yoksa ikinci denemede zarın iyi gelmesini mi? Tek denemeyle ayırt edemezsin.</p>
+    <p>Wharton’ın <span class="g" data-g="Prompting Science Report">Prompting Science Report</span> serisi tam bunu ölçtü: aynı soruları her koşulda çok sayıda tekrar ederek. Ağustos 2025 tarihli 3. raporun bulgusu net: modele bahşiş teklif etmek ya da onu tehdit etmek, benchmark performansında genel olarak anlamlı bir etki yaratmıyor. Tekil sorularda iki yönde de oynamalar var; ama bu oynamalar bir kaldıraç değil, gürültü. Aralık 2025 tarihli 4. rapor aynı yöntemi uzman <span class="g" data-g="Persona">persona</span>’larına uyguladı: “Sen dünya çapında bir fizikçisin” gibi roller lisansüstü düzeydeki sorularda doğruluğu genel olarak artırmadı; alanla eşleşen uzman rolü bile pek fark yaratmadı; “küçük çocuk” gibi düşük bilgili roller ise çoğu zaman sonucu kötüleştirdi.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Flaky bir test kırmızı yandı; bir <code>sleep(500)</code> ekledin, yeniden çalıştırdın, yeşil oldu. “Düzeldi” mi? Belki de test zaten her üç çalıştırmada bir geçiyordu. Prompt folklorü, tek çalıştırmayla doğrulanmış <code>sleep</code>’lerin toplamıdır. Çare de aynı: tekrar et, oranı ölç.</div>
+
+    <div class="fig" data-widget="l3-folk">
+      <p class="fig-title">Folklor gezgini: iddia → mekanizma → kanıt</p>
+      <p class="fig-cap">Bir iddiaya tıkla. Neden işe yarıyor gibi göründüğünü, bugünkü kanıtın ne dediğini ve yerine ne yazman gerektiğini gör. Üstteki düğmelerle iddiaları bugünkü durumlarına göre süzebilirsin.</p>
+      <div class="seg l3-folk-filter" role="group" aria-label="Süz">
+        <button type="button" data-v="all" aria-pressed="true">Hepsi</button>
+        <button type="button" data-v="back" aria-pressed="false">Ters tepenler</button>
+        <button type="button" data-v="none" aria-pressed="false">Etkisizler</button>
+        <button type="button" data-v="moved" aria-pressed="false">Yeri değişenler</button>
+        <button type="button" data-v="works" aria-pressed="false">Hâlâ geçerli</button>
+      </div>
+      <div class="l3-cards" role="group" aria-label="İddialar"></div>
+      <div class="panel l3-folk-out" aria-live="polite"><span class="muted">Bir iddiaya tıkla.</span></div>
+    </div>
+
+    <h2>Bağırmak artık ters tepiyor</h2>
+    <p>Listenin en öğretici maddesi büyük harfler. 2023’te bir modelin bir aracı kullanmasını ya da bir kurala uymasını sağlamak için “CRITICAL: You MUST…” yazmak gerçekten gerekiyordu, çünkü model kuralı sık sık atlıyordu. Bu prompt’lar o dönemin <i>az tetiklenme</i> sorununu telafi etmek için yazıldı.</p>
+    <p>Anthropic’in güncel rehberi durumu şöyle özetliyor: yeni modeller system prompt’a çok daha duyarlı; eski modellerin az tetiklenmesini düzeltmek için yazılmış prompt’lar artık <span class="g" data-g="Aşırı tetikleme">aşırı tetiklemeye</span> yol açabiliyor. Çare saldırgan dili yumuşatmak: “CRITICAL: You MUST use this tool when…” yerine “Use this tool when…”. Rehber “emin değilsen şu aracı kullan” türü ifadelerin de aşırı tetiklemeye yol açtığını özellikle belirtiyor.</p>
+    <p>OpenAI’nin GPT-5.5 rehberi aynı yönde: gereksiz ALWAYS, NEVER, must, only ifadelerinden kaçın; bunları yalnızca gerçekten değişmez kurallar için sakla; muhakeme gerektiren durumlar için karar kuralları yaz. GPT-5 rehberinde Cursor ekibinin deneyimi anlatılıyor: “bilgi toplarken KAPSAMLI ol” talimatı modelin küçük işlerde bile arama araçlarını gereksiz yere çağırmasına yol açmış; ifadeyi yumuşatmak sorunu çözmüş.</p>
+
+    <div class="fig" data-widget="l3-caps">
+      <p class="fig-title">Aynı kural, üç ses tonu</p>
+      <p class="fig-cap">Bir sipariş sorgulama agent’ının system prompt’undaki tek bir satırın tonunu değiştir. Tablodaki sekiz isteğin hangisinde aracın çağrılacağını izle. Bu bir simülasyon, gerçek model çıktısı değil: rehberlerin tarif ettiği aşırı tetikleme örüntüsünü görünür kılmak için kuruldu.</p>
+      <div class="seg" role="group" aria-label="Ton">
+        <button type="button" data-v="0" aria-pressed="true">Sakin</button>
+        <button type="button" data-v="1" aria-pressed="false">Vurgulu</button>
+        <button type="button" data-v="2" aria-pressed="false">Bağıran</button>
+      </div>
+      <div class="l3-box l3-caps-line"></div>
+      <div class="tbl l3-tbl"><table><thead><tr><th>Kullanıcı isteği</th><th>Araç</th><th>Not</th></tr></thead><tbody class="l3-caps-body"></tbody></table></div>
+      <div class="stats l3-caps-stats" aria-live="polite"></div>
+    </div>
+
+    <p>Claude Code dokümantasyonu bunun harness tarafındaki karşılığını da söylüyor: CLAUDE.md’deki bir satıra sürekli vurgu ekliyorsan ve model hâlâ kaçırıyorsa, o satır muhtemelen bir hook’a aittir; “IMPORTANT” eklemek büyük ihtimalle sorunu çözmez. Yani bir kuralın asla atlanmaması gerekiyorsa, onu daha yüksek sesle söylemek yerine deterministik bir katmana taşırsın (6. ve 8. seviye).</p>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“İyi çalışan prompt’umu yeni modele aynen taşırım.” OpenAI’nin GPT-5.5 geçiş rehberi tersini öneriyor: eski prompt yığınından değil, ürün sözleşmesini koruyan en küçük prompt’tan başla. Eski modelin kusurlarını yamamak için eklenmiş her satır, yeni modelde yeni bir kusur yaratabilir.</div>
+
+    <h3>Kendi folklorünü nasıl test edersin?</h3>
+    <ol class="steps">
+      <li><b>Gerçek görevlerden küçük bir set kur.</b> Ekibinin gerçekten verdiği 10–20 iş: bir bug fix, bir test yazımı, bir review isteği.</li>
+      <li><b>Her varyantı birden çok kez çalıştır.</b> Tek çıktı bir anekdottur. Aynı prompt’u en az birkaç kez çalıştırıp başarı oranına bak.</li>
+      <li><b>Ölçütü önceden yaz.</b> “Daha iyi görünüyor” değil; testler geçti mi, diff kaç satır, istenen biçimde mi rapor verdi.</li>
+      <li><b>Bir seferde tek şeyi değiştir.</b> Persona’yı, tonu ve bağlamı aynı anda değiştirirsen hangisinin işe yaradığını bilemezsin.</li>
+    </ol>
+    <p>Bu, küçük ölçekli bir eval’dir. Eval kurmayı ve otomasyona bağlamayı 9. seviyede ayrıntısıyla göreceğiz.</p>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Bahşiş, tehdit ve uzman persona’sı ölçüldüğünde doğruluğa anlamlı katkı yapmıyor (Wharton PSR 3 ve 4, 2025). Rol tonu ve kapsamı ayarlar, bilgi eklemez.</li>
+        <li>Büyük harf ve “KRİTİK/MUTLAKA” yeni modellerde aşırı tetikliyor. Sakin söyle; gerçekten değişmez kuralı deterministik bir katmana taşı.</li>
+        <li>Folklor, tek denemeyle doğrulanmış tesadüftür. Varyantları tekrar ederek ve önceden yazılmış bir ölçütle karşılaştır.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://arxiv.org/abs/2508.00614">Meincke, Mollick ve ark.: Prompting Science Report 3, bahşiş ve tehdit (Ağustos 2025)</a></li>
+      <li><a href="https://arxiv.org/abs/2512.05858">Prompting Science Report 4, persona’lar (Aralık 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (aşırı tetikleme, rol)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 rehberi (ALWAYS/NEVER, en küçük prompt’tan başlamak)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide (Cursor deneyimi, çelişkili talimatlar)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (vurgu yerine hook)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. İŞE YARAYANLAR ============ -->
+  <div class="lesson" data-tab="İşe yarayanlar">
+    <h2>Parlak ama yeni bir çalışan</h2>
+    <p class="lead">Anthropic’in rehberi modeli şöyle tarif ediyor: çok parlak ama işe yeni başlamış, senin ekibinin alışkanlıklarından habersiz bir çalışan. Önerdiği test de basit: prompt’unu bağlamı az bilen bir meslektaşına göstersen kafası karışır mıydı? Karışacaksa model de karışır.</p>
+    <p>Bu benzetme, işe yarayan tekniklerin neredeyse hepsini tek bir ilkeye bağlıyor: modelin göremediği şeyi ona söyle. Repo’nun neden böyle olduğunu, kısıtın nereden geldiğini, işin bittiğini nasıl anlayacağını model tahmin edemez. Tahmin etmeye zorlarsan, eğitim verisindeki “ortalama” projeye göre tahmin eder.</p>
+
+    <h3>1. Açık ol, eylemi söyle</h3>
+    <p>Rehberdeki örnek çok öğretici: “Bu fonksiyonu iyileştirmek için bazı değişiklikler önerebilir misin?” diye sorarsan <i>öneriler</i> alırsın. “Bu fonksiyonu performansını artıracak şekilde değiştir” dersen <i>düzenleme</i> alırsın. Model kibar bir soruyu kelimesi kelimesine okur. Bir agent’tan iş istiyorsan fiili açık yaz: bul, düzelt, değiştir, ekle, yalnızca raporla.</p>
+
+    <h3>2. Kuralın gerekçesini ver</h3>
+    <p>Anthropic’in en bilinen örneği: “ASLA üç nokta kullanma” yazmak, “Yanıtın bir metin okuma motoruyla sesli okunacak; bu yüzden üç nokta kullanma, çünkü motor onu nasıl telaffuz edeceğini bilmiyor” yazmaktan daha az etkili. Neden? Gerekçe, modelin kuralı <i>genelleştirmesini</i> sağlar. Gerekçeyi bilen model, kuralın hiç söylenmemiş akrabalarını da yakalar (sesli okunamayacak başka işaretler) ve kuralın uygulanmaması gereken istisnaları da tanır.</p>
+
+    <div class="fig" data-widget="l3-reason">
+      <p class="fig-title">Kural tek başına mı, gerekçesiyle mi?</p>
+      <p class="fig-cap">Aynı proje kuralı dört farklı durumla karşılaşıyor. Üstten “sadece kural” ile “kural + gerekçe” arasında geçiş yap ve her durumda modelin elinde hangi bilginin olduğunu karşılaştır. Davranışlar temsili; amaç mekanizmayı göstermek.</p>
+      <div class="seg" role="group" aria-label="Kuralın biçimi">
+        <button type="button" data-v="rule" aria-pressed="true">Sadece kural</button>
+        <button type="button" data-v="why" aria-pressed="false">Kural + gerekçe</button>
+      </div>
+      <div class="l3-box l3-reason-rule"></div>
+      <div class="l3-trio l3-reason-cases" aria-live="polite"></div>
+    </div>
+
+    <h3>3. Örnek göster, ama çeşitli</h3>
+    <p><span class="g" data-g="Few-shot örnek">Few-shot örnekler</span>, rehberin ifadesiyle biçimi, tonu ve yapıyı yönlendirmenin en güvenilir yollarından biri. Önerilen sayı üç ila beş; örnekler göreve uygun, birbirinden farklı ve <code>&lt;example&gt;</code> / <code>&lt;examples&gt;</code> etiketleriyle ayrılmış olmalı. Tek bir örnek verirsen model onun tesadüfi özelliklerini de kopyalar: uzunluğunu, ilk kelimesini, alan sırasını. Çeşitlilik, modele “değişmeyen şey” ile “tesadüf olan şey”i ayırma imkânı verir. Düşünme modu açık modellerde örnekler yalnızca çıktıyı değil, modelin iç akıl yürütmesini de şekillendirir.</p>
+
+    <h3>4. Yapı ver: XML etiketleri ve sıra</h3>
+    <p>Uzun bir prompt’ta talimat, bağlam, girdi ve doküman birbirine karışabilir. Rehber farklı içerik türlerini <span class="g" data-g="XML etiketleri">XML etiketleriyle</span> sarmayı öneriyor: <code>&lt;instructions&gt;</code>, <code>&lt;context&gt;</code>, <code>&lt;input&gt;</code>, kaynağı belirtilmiş <code>&lt;document&gt;</code>. Etiket adlarında sihir yok; işe yarayan şey ayrımın kendisi. İkinci kural sırayla ilgili: uzun dokümanları prompt’un başına, asıl soruyu sona koy. Anthropic bunun tüm modellerde performansı artırdığını söylüyor.</p>
+
+    <h3>5. Ne istemediğini değil, ne istediğini söyle</h3>
+    <p>“Markdown kullanma” yerine “Yanıtın akıcı düzyazı paragraflarından oluşsun” yaz. Bu bir <span class="g" data-g="Pozitif talimat">pozitif talimat</span>. Yasak, modelin dikkatini yasaklanan şeye çeker ama yerine ne konacağını söylemez. Rehberin ince bir gözlemi daha var: prompt’unun kendi biçimi çıktının biçimini etkiler. Madde işaretleriyle dolu bir prompt madde işaretli cevap çağırır.</p>
+
+    <h3>6. “Bitti”nin neye benzediğini ve nasıl kontrol edileceğini yaz</h3>
+    <p>Agent dünyasında tek başına en etkili satır bu. Claude Code dokümantasyonu bunu şöyle söylüyor: modele başarılı ya da başarısız diye dönen bir şey verirsen, döngüyü kendisi kapatabilir. Örnekleri de net: “login bug’ını düzelt” yerine “kullanıcılar oturum zaman aşımından sonra girişin başarısız olduğunu söylüyor; src/auth/ altındaki token yenilemeye bak, sorunu yeniden üreten başarısız bir test yaz, sonra düzelt”. <span class="g" data-g="Başarı ölçütü">Başarı ölçütü</span> yoksa model kendi ölçütünü uydurur; genellikle de “kod derleniyor ve makul görünüyor”dur.</p>
+    <p>OpenAI’nin GPT-5.5 rehberi aynı fikri “sonuç odaklı prompt” diye adlandırıyor: beklenen sonucu, başarı ölçütlerini, izin verilen yan etkileri, kanıt kurallarını, çıktının biçimini ve açık durma koşullarını yaz.</p>
+
+    <h3>7. Çelişkileri temizle</h3>
+    <p>OpenAI’nin GPT-5 rehberi, modelin çelişkili ya da belirsiz talimatlardan daha fazla etkilendiğini ve bunları uzlaştırmaya çalışırken akıl yürütme token’ı harcadığını söylüyor. Örneği bir randevu sistemi: prompt hem “hasta onayı olmadan randevu verme” diyor hem de “acil durumlarda otomatik randevu ver”. Senin projende karşılığı: CLAUDE.md’de “her değişiklikte test yaz” ve “küçük düzeltmelerde hızlı ol” yan yana duruyorsa, model hangisinin ne zaman kazanacağını bilmez. Karar kuralını sen yaz.</p>
+
+    <div class="fig" data-widget="l3-builder">
+      <p class="fig-title">Yeni meslektaş testi</p>
+      <p class="fig-cap">Tek satırlık bir istekle başla. Parçaları tek tek ekle; prompt’un nasıl büyüdüğünü ve yeni gelen bir meslektaşın hâlâ soracağı soruların nasıl azaldığını izle. Puan yok; amaç her parçanın hangi soruyu cevapladığını görmek.</p>
+      <div class="l3-toggles" role="group" aria-label="Prompt parçaları"></div>
+      <div class="l3-grid2" style="margin-top:.8rem">
+        <div><p class="hint" style="margin:0">Prompt</p><div class="l3-box l3-build-out"></div><p class="hint l3-build-tok"></p></div>
+        <div><p class="hint" style="margin:0">Meslektaşın hâlâ soracakları</p><ul class="l3-q" aria-live="polite"></ul></div>
+      </div>
+    </div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Prompt’u yazdıktan sonra kendine iki soru sor: “Bu işi yeni gelen bir meslektaşa böyle verseydim, ilk soracağı şey ne olurdu?” ve “İşin bittiğini ikimiz de aynı şekilde mi anlardık?” İlk sorunun cevabını prompt’a ekle, ikincisi için bir komut ya da ölçüt yaz.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Modeli parlak ama yeni bir çalışan gibi düşün: göremediği bağlamı sen ver.</li>
+        <li>Eylemi açık söyle (“öner” değil “değiştir”), kuralın gerekçesini yaz, 3–5 çeşitli örnek ver.</li>
+        <li>İçerik türlerini etiketlerle ayır; uzun dokümanı başa, soruyu sona koy.</li>
+        <li>Pozitif talimat yaz, çelişkileri temizle, “bitti”yi ve doğrulama yolunu tanımla.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (açıklık, gerekçe, örnekler, XML, pozitif talimat)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (doğrulama yolu, somut görev)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 rehberi (sonuç odaklı prompt)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide (çelişkili talimatlar)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. REASONING VE PREFILL ============ -->
+  <div class="lesson" data-tab="Reasoning ve prefill">
+    <h2>“Adım adım düşün”ün yükselişi ve emekliliği</h2>
+    <p class="lead">2022’de bir modelin cevabının önüne “Adım adım düşünelim” cümlesini eklemek aritmetik ve mantık sorularında belirgin iyileşme sağlıyordu. Bugün aynı cümle güncel modellerde çoğunlukla gereksiz, bazı biçimleri ise reddedilebiliyor. Arada değişen şey cümle değil, modelin kendisi.</p>
+
+    <h3>Neden işe yarıyordu?</h3>
+    <p>Kojima ve arkadaşlarının 2022 çalışması bu tekniğe <span class="g" data-g="Zero-shot CoT">zero-shot chain-of-thought</span> adını verdi: hiç örnek vermeden, yalnızca “adım adım düşünelim” diyerek modelin ara adımları yazmasını sağlamak. Mekanizması 0. seviyedeki üretim döngüsünde saklı. Model her token için sabit miktarda hesap yapar. Ara adımları yazdığında iki şey kazanır: daha fazla token, yani daha fazla hesap; ve sonraki token’lar artık bu ara sonuçlara bakarak üretilir. Yazılan metin modelin çalışma belleği gibi davranır.</p>
+    <p>Bir de “derin bir nefes al ve bu problem üzerinde adım adım çalış” cümlesi var. Bu cümlenin bir insan tarafından değil, prompt’ları otomatik deneyen bir optimizasyon yöntemi (Google DeepMind’ın OPRO çalışması, 2023) tarafından, belirli bir model ve belirli bir matematik veri seti için bulunduğu aktarılıyor. Bu ayrıntıyı bu set için birincil kaynaktan yeniden doğrulayamadık; ama ders değişmiyor: bir optimizer’ın bir modelde bulduğu ifade, başka bir modele taşınabilir bir “sihir” değildir. İşin özü “adım adım” kısmıydı.</p>
+
+    <h3>Reasoning modelleri düşünmeyi içeri aldı</h3>
+    <p>1. seviyede gördüğün gibi güncel modeller, cevap vermeden önce düşünme token’ları üretecek şekilde pekiştirmeli öğrenmeyle eğitiliyor. Yani 2022’de prompt’la dışarıdan istenen şey, artık modelin eğitilmiş bir davranışı. Anthropic’in güncel rehberi bunu açıkça söylüyor: Fable 5.x, Opus 5 / 5.5 ve Sonnet 5.5’te elle yazdırılan <span class="g" data-g="Chain of thought">chain of thought</span> yerine düşünme özelliğine güvenilmeli; modelden akıl yürütmesini <code>&lt;thinking&gt;</code> etiketleri arasında yazmasını isteyen bir prompt reddedilebilir. Elle CoT yalnızca düşünme kapalıyken başvurulacak bir yedek.</p>
+    <p>Ne kadar düşünüleceğini artık prompt’taki cümlelerle değil, ayarlarla yönlendiriyorsun. Claude’da bunun adı <span class="g" data-g="Effort">effort</span> (1. seviye). OpenAI’de GPT-5.5 için <code>reasoning_effort</code>: <code>none</code>, <code>low</code>, <code>medium</code> (varsayılan), <code>high</code>, <code>xhigh</code>. OpenAI rehberi daha yüksek effort’un her zaman daha iyi olmadığını da not ediyor: gereğinden fazla düşünme ve gereksiz arama yapma eğilimi doğurabiliyor.</p>
+
+    <div class="fig" data-widget="l3-cot">
+      <p class="fig-title">Chain of thought’un kısa tarihi</p>
+      <p class="fig-cap">Adım adım ilerle. Her dönemde prompt’a ne yazıldığını, neden işe yaradığını ve bugün ne anlama geldiğini gör.</p>
+    </div>
+
+    <h3>Peki bugün ne yazmalı?</h3>
+    <p>Bu kaymanın pratik bir sonucu var: eski prompt kütüphanelerinde sık görülen “önce problemi analiz et, sonra seçenekleri listele, sonra her birini değerlendir, sonra karar ver” türü uzun düşünme reçeteleri, düşünme özelliği açık bir modelde büyük ölçüde gereksizdir; Anthropic’in rehberi bu durumda elle CoT’u yalnızca bir yedek olarak görüyor. Üstelik modelin eğitimle öğrendiği akıl yürütmeyi senin yazdığın sabit bir sıraya bağlama riski de var. Bu reçeteleri kaldırıp sonucu küçük bir görev setinde ölçmek, bir modelden diğerine geçerken yapılacak ilk temizliklerden biri.</p>
+    <p>Modele <i>nasıl</i> düşüneceğini anlatmak yerine <i>neyi</i> başarması gerektiğini ve sonucun <i>nasıl değerlendirileceğini</i> anlat. Zor bir problemde değerlendirme ölçütlerini ver; örnek çözümler ver (örnekler iç akıl yürütmeyi de şekillendirir); gerçekten zor işlerde effort’u yükselt. Cevabın içinde kısa bir gerekçe istiyorsan bunu çıktı biçiminin parçası olarak iste: “Sonunda seçimini iki cümleyle gerekçelendir.”</p>
+    <div class="callout warn"><span class="ct">Dikkat</span>Düşünme özeti, modelin gerçek hesaplamasının sadık bir kaydı değildir (1. seviye). “Testleri kontrol ettim” diye düşünen bir agent testleri çalıştırmamış olabilir. Doğrulamayı modelin anlatımına değil, harness’ın gerçekten çalıştırdığı komutun sonucuna bağla (5. seviye).</div>
+
+    <h2>Prefill’in sonu</h2>
+    <p><span class="g" data-g="Assistant prefill">Prefill</span>, eskiden Claude’la çalışanların sık kullandığı bir numaraydı: <code>messages</code> dizisinin sonuna yarım bir <code>assistant</code> mesajı koyarsın, model cevabına oradan devam eder. Son mesaj <code>"{"</code> ise model JSON yazmaya başlamak zorunda kalır; <code>"Kök neden:"</code> ise doğrudan konuya girer. Ucuz, etkili ve her yerde kullanılan bir teknikti.</p>
+    <p>Anthropic’in rehberine göre Claude 4.6 modellerinden başlayarak son asistan turunu önceden doldurmak <b>HTTP 400</b> hatası döndürüyor. Yani eski kodunda prefill varsa yeni modele geçtiğinde istek doğrudan reddedilir. Rehberin önerdiği geçiş yolları üç tane:</p>
+    <ul>
+      <li><b>JSON ve sabit şema için:</b> <span class="g" data-g="Structured outputs">structured outputs</span> ya da şemalı bir araç (<code>strict: true</code>). Biçimi metinle “zorlamak” yerine API düzeyinde garanti edersin (4. seviye).</li>
+      <li><b>Önsözü kesmek için:</b> system talimatında açıkça söylemek: “Önsöz olmadan doğrudan yanıt ver.”</li>
+      <li><b>Uzun konuşmada hatırlatma için:</b> hatırlatmayı bir sonraki <code>user</code> turunun içine eklemek.</li>
+    </ul>
+
+    <div class="fig" data-widget="l3-prefill">
+      <p class="fig-title">Prefill’den çıkış: eski istek, hata, yeni istek</p>
+      <p class="fig-cap">Prefill’in eskiden çözdüğü üç ihtiyaçtan birini seç. Eski isteği, güncel bir Claude modelinden alacağın cevabı ve önerilen yeni isteği ham JSON olarak karşılaştır. Hata mesajının metni temsili; 400 durumu dokümante edilmiş davranış.</p>
+      <div class="seg" role="group" aria-label="İhtiyaç">
+        <button type="button" data-v="json" aria-pressed="true">Sadece JSON</button>
+        <button type="button" data-v="pre" aria-pressed="false">Önsöz olmasın</button>
+        <button type="button" data-v="rem" aria-pressed="false">Kuralı hatırlat</button>
+      </div>
+      <div class="l3-grid2 l3-prefill-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout"><span class="ct">Aynı dönemde</span>Benzer bir kapanma sampling parametrelerinde de yaşandı: güncel Claude modellerinde varsayılan dışı <code>temperature</code>, <code>top_p</code>, <code>top_k</code> değerleri 400 döndürüyor (0. seviye). Ortak ders: eski “düşük seviyeli” ayar ve numaraların yerini yüksek seviyeli, açıkça desteklenen mekanizmalar alıyor.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>“Adım adım düşün” işe yarıyordu çünkü yazılan ara adımlar modele ek hesap ve çalışma belleği sağlıyordu. Reasoning modelleri bunu artık kendileri yapıyor.</li>
+        <li>Güncel Claude modellerinde elle CoT yerine düşünme özelliğine ve effort ayarına güven; düşünmeyi <code>&lt;thinking&gt;</code> etiketiyle istemek reddedilebilir.</li>
+        <li>Claude 4.6’dan itibaren prefill 400 döndürüyor. JSON için structured outputs ya da strict araç; önsöz için system talimatı; hatırlatma için user turu.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://arxiv.org/abs/2205.11916">Kojima ve ark.: Large Language Models are Zero-Shot Reasoners (2022)</a></li>
+      <li><a href="https://arxiv.org/abs/2309.03409">Yang ve ark.: Large Language Models as Optimizers (OPRO, 2023; bu set için yeniden doğrulanmadı)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (düşünme, prefill’den geçiş)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 rehberi (reasoning_effort)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. İYİ GÖREV TANIMI ============ -->
+  <div class="lesson" data-tab="İyi görev tanımı">
+    <h2>Prompt, bir ticket’tır</h2>
+    <p class="lead">Yıllardır iyi bir bug raporunun neye benzediğini biliyorsun: hangi ortam, hangi adımlar, beklenen ne, gerçekleşen ne, log ne diyor. Agent’a verilen bir görev de tam olarak böyle bir rapordur. Fark şu: bu raporu okuyan meslektaş soru sormadan işe başlar ve eksik bilgiyi kendi tahminiyle doldurur.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Scrum’daki “definition of done”, iyi bir bug raporundaki “yeniden üretme adımları” ve code review’daki “bu PR neyi değiştirmiyor?” sorusu. Agent için iyi bir görev tanımı bu üçünün toplamı. Yeni bir beceri değil; ekip içinde zaten yaptığın şeyi yazılı ve eksiksiz yapmak.</div>
+
+    <h3>Bir coding görevinin parçaları</h3>
+    <div class="cols">
+      <div class="card c"><h4 class="c">Bağlam</h4>Hangi sistem, hangi ekran ya da endpoint, ne zamandan beri, elindeki kanıt (log, hata, ölçüm). Modelin repo’dan çıkaramayacağı şeyler.</div>
+      <div class="card t"><h4 class="t">Görev</h4>Açık bir fiil ve kapsam: kök nedeni bul ve düzelt; yalnızca raporla; önce test yaz.</div>
+      <div class="card h"><h4 class="h">Kısıt ve gerekçe</h4>Neye dokunulmayacak ve neden. Gerekçe, modelin istisnaları doğru tanımasını sağlar.</div>
+      <div class="card ok"><h4>Bitti ve doğrulama</h4>Hangi komut geçmeli, sonunda ne teslim edilecek (kök neden, değişen dosyalar), hangi biçimde.</div>
+      <div class="card r"><h4 class="r">Durma koşulu</h4>Hangi durumda kendi başına devam etmeyip sormalı: şema değişikliği, public API, silme.</div>
+    </div>
+
+    <p>Aşağıdaki simülasyonda tipik bir “acil” mesajı bu parçalarla adım adım onarıyoruz. Her adımda prompt’un nasıl değiştiğini, token sayısını ve agent’ın muhtemel ilk hamlesinin nasıl kaydığını izle. Agent hamleleri temsili; ama her biri ilgili rehberlerin tarif ettiği davranışa dayanıyor.</p>
+
+    <div class="fig" data-widget="l3-repair">
+      <p class="fig-title">Bir “ACİL” mesajını adım adım onarmak</p>
+      <p class="fig-cap">İleri bas ya da oynat. Yeşil satırlar eklenen, kırmızı ve üstü çizili satırlar çıkarılan kısımlar. Alt kutuda bu adımın neden önemli olduğunu ve agent’ın ilk hamlesinin nasıl değiştiğini gör.</p>
+    </div>
+
+    <h3>Uzun prompt pahalı değil mi?</h3>
+    <p>Son hali ilk halinden birkaç kat daha fazla token tutuyor. Ama bu hesap yanıltıcı. 40. turda isteğin yüz binlerce token olduğunu ilk konuda gördün; görev tanımına eklediğin birkaç yüz token orada yuvarlama hatası. Asıl maliyet, belirsiz bir görevin yol açtığı fazladan turlarda: yanlış dosyaları okumak, istenmeyen refactor’ları geri almak, “hayır, onu kastetmedim” diye üç kez düzeltmek. Her fazladan tur bütün geçmişin yeniden gönderilmesi demek (2. seviye).</p>
+    <p>Claude Code’un en iyi pratikler sayfasında bununla ilgili somut bir tavsiye var: ilk dakikayı izle, agent yoldan çıktığı anda Esc’e bas; iki başarısız düzeltmeden sonra <code>/clear</code> çalıştırıp daha iyi bir prompt yaz. Kirli bir context’i düzeltmeye çalışmak, temiz bir context’le baştan başlamaktan genellikle daha pahalıdır (5. seviyede başarısızlık modları).</p>
+
+    <h2>Review, performans, test: aynı kalıp</h2>
+    <p>Bug düzeltme dışındaki işlerde de aynı parçalar geçerli. Aşağıda üç gündelik istek var. İşaretli parçalara tıkla; o parçanın modele hangi bilgiyi verdiğini ve onsuz ne olacağını gör.</p>
+
+    <div class="fig" data-widget="l3-review">
+      <p class="fig-title">Üç istek, önce ve sonra</p>
+      <p class="fig-cap">Bir istek türü seç. Sağdaki “sonra” metninde altı çizili parçalara tıkla. Her parça ayrı bir eksikliği kapatıyor.</p>
+      <div class="seg" role="group" aria-label="İstek türü">
+        <button type="button" data-v="review" aria-pressed="true">Code review</button>
+        <button type="button" data-v="perf" aria-pressed="false">Performans</button>
+        <button type="button" data-v="test" aria-pressed="false">Test yazımı</button>
+      </div>
+      <div class="vs l3-rv-vs"><div class="bad" data-label="Önce"></div><div class="good" data-label="Sonra"></div></div>
+      <div class="panel l3-rv-out" aria-live="polite"><span class="muted">Altı çizili bir parçaya tıkla.</span></div>
+    </div>
+
+    <h3>Kısa prompt ne zaman yeterli?</h3>
+    <p>Bu ders “her prompt bir sayfa olsun” demiyor. Bağlam zaten context’teyse kısa bir mesaj mükemmel çalışır. Az önce birlikte bir hatayı incelediğiniz bir oturumda “şimdi düzelt ve testi çalıştır” yeterlidir; çünkü bağlam, kanıt ve hedef önceki turlarda zaten konuşuldu. Ölçüt uzunluk değil, eksik bilgi: model bu mesajı okuduğunda hangi soruyu kendi tahminiyle cevaplamak zorunda kalacak?</p>
+    <p>Tersine, yeni bir oturumun ilk mesajı ya da <code>/clear</code> sonrası ilk mesaj, sıfırdan gelen bir meslektaşa verilen ilk ticket gibidir. Orada kısa mesaj, modelin bütün boşlukları “ortalama proje” varsayımlarıyla doldurması demek. Bir de şu ayrım var: aynı bağlamı her oturumda yeniden yazıyorsan (build komutu, test komutu, para için decimal kuralı), o bilgi görev tanımına değil, proje talimat dosyasına aittir. Görev tanımı yalnızca <i>bu</i> işe özgü olanı taşımalı.</p>
+    <div class="callout tip"><span class="ct">Pratikte</span>Büyük ya da belirsiz bir işte modelden önce kodu değil, teşhisi ve planı iste: “Değişiklik yapmadan önce kök nedeni ve planını iki paragrafta yaz.” Yanlış bir teşhisi kod yazılmadan yakalamak, yanlış bir diff’i geri almaktan çok daha ucuzdur. Claude Code’un plan modu bunun harness’a gömülmüş hali (8. seviye).</div>
+
+    <h3>Sık yapılan dört hata</h3>
+    <ul>
+      <li><b>Çözümü dikte etmek.</b> “X satırına null kontrolü ekle” dersen model teşhis yapmaz; teşhisin yanlışsa düzeltme de yanlış olur. Sorunu ve kanıtı ver, çözümü istersen önce açıklatarak al.</li>
+      <li><b>Kapsamı açık bırakmak.</b> “Bu arada” temizliği yasaklamazsan agent iyi niyetle dokunmaması gereken yerlere dokunabilir. Kapsamı ve nedenini yaz.</li>
+      <li><b>Boş sonuca izin vermemek.</b> Review isteğinde “bulgu yoksa bunu söyle” demezsen, model bir şey bulmak için zayıf bulgular üretmeye daha yatkın olur.</li>
+      <li><b>Doğrulamayı modele bırakmak.</b> “Emin ol” bir doğrulama değildir. Çalıştırılacak bir komut, geçmesi gereken bir test, karşılaştırılacak bir çıktı ver.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>İyi bir görev tanımı = bağlam + açık görev + gerekçeli kısıt + bitti/doğrulama + durma koşulu.</li>
+        <li>Bağırma, persona ve bahşiş bilgi taşımaz; onları çıkarmak bir şey kaybettirmez.</li>
+        <li>Fazladan birkaç yüz token’lık açıklık, birkaç fazladan turdan her zaman ucuzdur.</li>
+        <li>Yoldan çıkan agent’ı erken durdur; iki başarısız düzeltmeden sonra temiz context ve daha iyi prompt.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (somut görev, doğrulama, Esc ve /clear)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (öner ve değiştir örneği)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 rehberi (izin verilen yan etkiler, durma koşulları)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. CONTEXT ENGINEERING ============ -->
+  <div class="lesson" data-tab="Context engineering">
+    <h2>“Nasıl söylerim?”den “Pencereye ne koyarım?”a</h2>
+    <p class="lead">Tek bir soru-cevapta prompt’un ifadesi önemlidir. Kırk turluk bir agent oturumunda ise ifade, isteğin küçük bir parçası. Asıl soru değişir: her turda modelin önüne hangi token’lar konacak, hangileri dışarıda kalacak?</p>
+    <p>Anthropic Eylül 2025’te bu soruya bir ad verdi: <span class="g" data-g="Context engineering">context engineering</span>. Tanımı şöyle: prompt engineering’in doğal devamı; çıkarım anında modelin gördüğü <i>bütün</i> token’ları (system prompt, araçlar, MCP, dış veri, mesaj geçmişi) düzenleme stratejileri. Ve bu düzenleme her turda yeniden yapılır. Aynı yazıda agent da sade bir cümleyle tanımlanıyor: araçları bir döngü içinde özerk olarak kullanan LLM’ler.</p>
+
+    <h3>Neden “daha fazla context” daha iyi değil?</h3>
+    <p>Pencere büyüdü: Kasım 2026 itibarıyla güncel Claude modellerinin hepsi 1M token context sunuyor (2. seviye). Ama pencereye sığması, modelin hepsini eşit dikkatle kullanacağı anlamına gelmiyor. Anthropic context’i sınırlı bir <span class="g" data-g="Attention budget">dikkat bütçesi</span> olarak tarif ediyor: her token bu bütçeden bir parça yer.</p>
+    <p>Kanıt tarafında Chroma’nın Temmuz 2025 tarihli <span class="g" data-g="Context rot">context rot</span> raporu var. Claude, GPT-4.1, Gemini 2.5 ve Qwen3 dahil 18 model üzerinde, basit görevlerde bile girdi uzadıkça performansın giderek güvenilmez hale geldiğini gösterdi. En çarpıcı deneylerinden birinde (LongMemEval) aynı soru, yalnızca ilgili kısmı içeren yaklaşık 300 token’lık odaklı bir girdiyle ve yaklaşık 113 bin token’lık tam girdiyle soruldu; odaklı girdi <i>her</i> modelde daha iyi sonuç verdi. Düşünme özelliği farkı azalttı ama kapatmadı.</p>
+
+    <h3>System prompt’un doğru irtifası</h3>
+    <p>Anthropic’in context engineering yazısı system prompt için iki uç arasında bir “Goldilocks bölgesi” tarif ediyor. Bir uçta kırılgan, if/else gibi yazılmış talimatlar: her durumu sabit kodla tarif etmeye çalışır ve öngörülmeyen ilk durumda çöker. Diğer uçta belirsiz, yüksek seviyeli öğütler: modele somut sinyal vermez, model de ortak bir bağlamı varsayar. Hedef, beklenen davranışı tam olarak tanımlayan en küçük bilgi kümesi: <span class="g" data-g="Doğru irtifa">doğru irtifa</span>.</p>
+
+    <div class="fig" data-widget="l3-altitude">
+      <p class="fig-title">System prompt irtifası</p>
+      <p class="fig-cap">Example Co’nun iç kullanımdaki sipariş destek agent’ı için üç farklı system prompt. İrtifayı değiştir; metni, token sayısını ve tipik başarısızlık biçimini karşılaştır.</p>
+      <div class="seg" role="group" aria-label="İrtifa">
+        <button type="button" data-v="low" aria-pressed="false">Çok alçak</button>
+        <button type="button" data-v="mid" aria-pressed="true">Doğru irtifa</button>
+        <button type="button" data-v="high" aria-pressed="false">Çok yüksek</button>
+      </div>
+      <div class="l3-grid2 l3-alt-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Önceden yüklemek mi, gerektiğinde getirmek mi?</h3>
+    <p>Bir agent’a repo’yu tanıtmanın iki yolu var. Birincisi önceden yüklemek: ilgili olabilecek her şeyi baştan context’e koymak. İkincisi <span class="g" data-g="Just-in-time retrieval">just-in-time retrieval</span>: context’te yalnızca hafif referanslar (dosya yolları, sorgular, URL’ler) tutup veriyi gerektiğinde araçlarla getirmek. Claude Code ikincisini yapıyor: kod tabanını önceden indekslemek yerine grep, glob ve dosyanın başını okuma gibi araçlarla ihtiyaç anında arıyor. Anthropic’in Agent SDK yazısı da agentic arama ile başlamayı öneriyor ve semantik aramayı daha az isabetli, bakımı daha zor ve daha az şeffaf buluyor. Pratikte çoğu zaman en iyisi hibrit: küçük bir harita baştan, ayrıntı ihtiyaç anında.</p>
+
+    <div class="fig" data-widget="l3-jit">
+      <p class="fig-title">Aynı soru, üç context stratejisi</p>
+      <p class="fig-cap">Görev: “example.orders’ta amount yuvarlaması neden yanlış?” Yaklaşık 400 dosyalık bir repo. Bir strateji seç; context’e giren token’ları, bunların ne kadarının gerçekten ilgili olduğunu ve 20 turluk bir oturumda yeniden gönderilen girdinin maliyetini karşılaştır. Token sayıları temsili; fiyatlar Kasım 2026 Opus 5.5 liste fiyatı.</p>
+      <div class="seg" role="group" aria-label="Strateji">
+        <button type="button" data-v="pre" aria-pressed="true">Hepsini yükle</button>
+        <button type="button" data-v="jit" aria-pressed="false">Just-in-time</button>
+        <button type="button" data-v="hyb" aria-pressed="false">Hibrit</button>
+      </div>
+      <div class="l3-jit-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Uzun oturumların araç kutusu</h3>
+    <p>Context engineering’in diğer teknikleri sonraki seviyelerde ayrı ayrı karşına çıkacak; burada haritasını çizelim:</p>
+    <ul>
+      <li><b>Sıkıştırma (compaction).</b> Dolmaya yaklaşan context özetlenir, yeni bir pencerede özetle devam edilir. Claude Code dokümantasyonu bunun bedelini açıkça söylüyor: konuşmanın başındaki ayrıntılı talimatlar kaybolabilir. Kalıcı kurallar bu yüzden CLAUDE.md’ye yazılır (2. ve 8. seviye).</li>
+      <li><b>Araç sonuçlarını temizlemek.</b> Eski, artık gereksiz araç çıktılarını context’ten atmak; en hafif sıkıştırma biçimi.</li>
+      <li><b>Yapılandırılmış notlar.</b> Agent’ın context dışına (bir NOTES.md, bir yapılacaklar listesi, bir ilerleme dosyası) yazıp sonra geri okuduğu notlar (5. seviye, uzun görevler).</li>
+      <li><b>Subagent’lar.</b> Keşif işini temiz bir context’te yapıp ana agent’a genellikle 1.000–2.000 token’lık bir özet döndüren yardımcı agent’lar (8. seviye).</li>
+      <li><b><span class="g" data-g="Progressive disclosure">Progressive disclosure</span>.</b> Skill’lerde yalnızca ad ve açıklama baştan yüklenir; gövde ilgili olduğunda, bağlı dosyalar ancak gerektiğinde.</li>
+      <li><b>Araçlar da context’tir.</b> Her araç tanımı her istekte yer kaplar. Az sayıda, birbiriyle örtüşmeyen araç; çok sayıda MCP aracı için tool search (4. seviye).</li>
+    </ul>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Claude Code dokümantasyonu CLAUDE.md için şunu söylüyor: her satır, her görevde modelin dikkatinden küçük bir pay alır. Dosyayı kısa tut; uzun prosedürleri (sürüm çıkarma, veri düzeltme adımları) skill’lere taşı. Bir satırı her hafta biraz daha vurguluyorsan, o satırın yeri muhtemelen bir hook’tur (6. seviye).</div>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Context engineering, önbellek ve bellek hiyerarşisi tasarımına benzer. L1 önbelleğe (context) her şeyi koyamazsın; sıcak veriyi orada tutar, gerisini gerektiğinde ana bellekten ya da diskten (dosya sistemi, araçlar) çekersin. Kötü bir yerleşim, yanlış veriyle dolu bir önbellek gibi her erişimi yavaşlatır.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Context engineering, her turda modelin önüne konacak bütün token’ları seçme işidir; prompt ifadesi bunun yalnızca bir parçası.</li>
+        <li>Daha fazla context daha iyi değildir: performans girdi uzadıkça düşer (context rot). Odaklı girdi her modelde daha iyi sonuç verdi.</li>
+        <li>System prompt doğru irtifada olmalı: ne if/else yığını ne boş öğüt.</li>
+        <li>Önceden yüklemek yerine hafif referans tut, ayrıntıyı ihtiyaç anında getir; çoğu zaman hibrit en iyisi.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents (29 Eylül 2025)</a></li>
+      <li><a href="https://research.trychroma.com/context-rot">Chroma: Context Rot (14 Temmuz 2025)</a></li>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK (agentic arama)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (compaction, /context)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (CLAUDE.md kısa, prosedürler skill’de)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills">Anthropic: Equipping agents for the real world with Agent Skills (progressive disclosure)</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+/* ================= Seviye 3: stiller ================= */
+(function(){
+  const s = document.createElement("style");
+  s.textContent = `
+.l3-stack{display:flex;height:30px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin:.9rem 0 .3rem;background:var(--soft)}
+.l3-stack button{all:unset;cursor:pointer;height:100%;min-width:3px;box-sizing:border-box;border-right:1px solid var(--surface);transition:flex-basis .45s cubic-bezier(.2,.7,.2,1),opacity .2s}
+.l3-stack button:hover{opacity:.8}
+.l3-stack button:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.l3-stack button.sel{box-shadow:inset 0 0 0 3px var(--ink)}
+.l3-layers{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:.4rem;margin-top:.8rem}
+.l3-lay{display:flex;gap:.5rem;align-items:flex-start;text-align:left;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:.45rem .6rem;cursor:pointer;font:inherit;font-size:.84rem;line-height:1.35}
+.l3-lay:hover{border-color:var(--muted)}
+.l3-lay[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l3-lay small{display:block;color:var(--muted);font-family:var(--mono);font-size:.74rem}
+.l3-sw{width:12px;height:12px;border-radius:3px;flex:none;margin-top:.2rem}
+.l3-box{font-family:var(--mono);font-size:.8rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;margin:.5rem 0;color:var(--ink)}
+.l3-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.8rem}
+.l3-grid2 > div{min-width:0}
+.l3-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:.45rem;margin-top:.8rem}
+.l3-card{text-align:left;font:inherit;font-size:.86rem;line-height:1.4;border:1px solid var(--line);border-left:4px solid var(--l3c,var(--line));background:var(--paper);color:var(--ink);border-radius:9px;padding:.55rem .7rem;cursor:pointer}
+.l3-card:hover{border-color:var(--muted);border-left-color:var(--l3c,var(--line))}
+.l3-card[aria-pressed="true"]{background:var(--acc-bg);border-color:var(--acc);border-left-color:var(--l3c,var(--acc))}
+.l3-card .tag{display:inline-block;margin-top:.35rem}
+.l3-trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:.6rem;margin-top:.6rem}
+.l3-trio > div{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:.6rem .75rem;font-size:.86rem;line-height:1.5;min-width:0}
+.l3-trio h5{margin:0 0 .3rem;font-family:var(--sans);font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.l3-diff .ln{display:block;padding:0 .45rem;border-radius:3px;min-height:1.2em}
+.l3-diff .add{background:var(--ok-bg);box-shadow:inset 3px 0 0 var(--ok)}
+.l3-diff .del{background:var(--risk-bg);color:var(--risk);text-decoration:line-through;box-shadow:inset 3px 0 0 var(--risk)}
+.l3-ann{font:inherit;color:inherit;cursor:pointer;background:color-mix(in srgb,var(--ctx) 20%,transparent);border:0;border-bottom:2px solid var(--ctx);border-radius:3px;padding:0 .12rem;text-align:left}
+.l3-ann.on{background:color-mix(in srgb,var(--ctx) 45%,transparent)}
+.l3-ann:focus-visible{outline:2px solid var(--ink)}
+.l3-tbl td,.l3-tbl th{font-size:.84rem;vertical-align:top}
+.l3-call{font-family:var(--sans);font-weight:800;font-size:.78rem;white-space:nowrap}
+.l3-call.need{color:var(--tool)} .l3-call.over{color:var(--risk)} .l3-call.no{color:var(--faint)}
+.l3-toggles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,190px),1fr));gap:.35rem}
+.l3-toggles label{display:flex;gap:.45rem;align-items:flex-start;font-size:.85rem;line-height:1.35;border:1px solid var(--line);border-radius:8px;padding:.4rem .55rem;background:var(--paper);cursor:pointer}
+.l3-toggles label.on{border-color:var(--acc);background:var(--acc-bg)}
+.l3-toggles input{margin-top:.15rem;accent-color:var(--acc)}
+.l3-q{margin:.4rem 0 0;padding-left:1.1rem;font-size:.88rem}
+.l3-q li{margin:.2rem 0}
+.l3-q li.ok{color:var(--ok);list-style:none;margin-left:-1.1rem}
+.l3-year{font-family:var(--sans);font-weight:800;font-size:1.7rem;color:var(--acc);line-height:1;margin:0 0 .2rem}
+.l3-tl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:.8rem;align-items:start}
+.l3-tl > div{min-width:0}
+.l3-pill{display:inline-block;font-family:var(--sans);font-size:.72rem;font-weight:700;border-radius:999px;padding:.1rem .55rem;margin:.1rem .2rem .1rem 0}
+.l3-jbar{display:grid;grid-template-columns:minmax(80px,140px) 1fr minmax(64px,auto);gap:.5rem;align-items:center;font-size:.84rem;margin:.35rem 0}
+.l3-jbar .tr{height:16px;background:var(--soft);border-radius:5px;overflow:hidden;display:flex}
+.l3-jbar .tr i{display:block;height:100%;transition:width .45s cubic-bezier(.2,.7,.2,1)}
+.l3-jbar b{font-family:var(--mono);font-size:.78rem;font-weight:600;color:var(--muted);text-align:right}
+.l3-steps-mini{margin:.4rem 0 0;padding-left:1.2rem;font-size:.86rem}
+.l3-steps-mini li{margin:.15rem 0}
+.l3-h{font-family:var(--sans);font-weight:800;font-size:.95rem;margin:0 0 .3rem}
+`;
+  document.head.append(s);
+})();
+
+/* ================= Sözlük ================= */
+Edu.glossary({
+  "System prompt": "İsteğin system alanındaki talimat metni. Agent’larda harness yazar: kimlik, çalışma kuralları, ortam bilgisi. Model bu alana kullanıcı mesajından daha fazla ağırlık vermeyi eğitimle öğrenmiştir.",
+  "System reminder": "Harness’ın konuşmanın ortasına eklediği kısa durum notları: değişen dosyalar, yapılacaklar listesi, hatırlatılan kurallar. Kullanıcı yazmaz ama model görür.",
+  "Few-shot örnek": "Prompt’a konan örnek girdi-çıktı çiftleri. Biçim, ton ve yapıyı yönlendirmenin en güvenilir yollarından biri; Anthropic 3–5 çeşitli örnek öneriyor.",
+  "XML etiketleri": "Prompt’taki talimat, bağlam, girdi ve doküman gibi içerik türlerini ayırmak için kullanılan etiketler (ör. <context>, <task>). Sihirli adları yok; işe yarayan şey ayrımın kendisi.",
+  "Persona": "Modele verilen rol (“sen kıdemli bir mühendissin”). Ölçümlerde doğruluğu genel olarak artırmadığı görüldü; tonu ve kapsamı ayarlamak için kısa bir rol cümlesi yine de yararlı olabilir.",
+  "Prompting Science Report": "Wharton’daki bir araştırma grubunun prompt tekniklerini çok sayıda tekrarla ölçtüğü rapor serisi. 3. rapor bahşiş ve tehdidi, 4. rapor persona’ları inceledi (2025).",
+  "Aşırı tetikleme": "Bir talimatın gereğinden geniş uygulanması; ör. bir aracın ilgisiz isteklerde de çağrılması. Yeni modellerde sert ve büyük harfli ifadelerin yaygın yan etkisi.",
+  "Pozitif talimat": "Ne yapılmaması gerektiğini değil, ne yapılması gerektiğini söyleyen talimat. “Markdown kullanma” yerine “akıcı düzyazı paragraflarıyla yaz”.",
+  "Başarı ölçütü": "İşin bittiğini nesnel olarak gösteren koşul: geçmesi gereken test, çalıştırılacak komut, istenen çıktı biçimi. Agent’ın döngüyü kendisinin kapatabilmesini sağlar.",
+  "Zero-shot CoT": "Örnek vermeden yalnızca “adım adım düşünelim” gibi bir ifadeyle modelin ara adımları yazmasını sağlama tekniği (Kojima ve ark., 2022).",
+  "Assistant prefill": "messages dizisinin sonuna yarım bir assistant mesajı koyup modelin cevaba oradan devam etmesini sağlama tekniği. Claude 4.6 modellerinden itibaren HTTP 400 döndürüyor.",
+  "Structured outputs": "Çıktının belirli bir JSON şemasına uymasını API düzeyinde garanti eden özellik. Prefill ya da “sadece JSON yaz” ricası yerine kullanılır.",
+  "Context engineering": "Her turda modelin gördüğü bütün token’ları (system prompt, araçlar, dış veri, geçmiş, araç sonuçları) seçme ve düzenleme disiplini. Anthropic’e göre prompt engineering’in doğal devamı.",
+  "Context rot": "Girdi uzadıkça modelin performansının, basit görevlerde bile giderek güvenilmez hale gelmesi. Chroma’nın 2025 raporu 18 modelde gösterdi.",
+  "Attention budget": "Context’i sınırlı bir dikkat bütçesi olarak görme fikri: pencereye sığan her token modelin dikkatinden bir pay alır.",
+  "Doğru irtifa": "System prompt’un ne kırılgan if/else kuralları kadar alçak ne de boş öğütler kadar yüksek olduğu bölge: beklenen davranışı tam tanımlayan en küçük bilgi kümesi.",
+  "Just-in-time retrieval": "Veriyi baştan context’e yüklemek yerine hafif referanslar (yol, sorgu, URL) tutup ihtiyaç anında araçlarla getirme yaklaşımı.",
+  "Progressive disclosure": "Bilgiyi kademeli açma: skill’lerde yalnızca ad ve açıklama baştan yüklenir, gövde ilgili olduğunda, ek dosyalar ancak gerektiğinde."
+});
+
+/* ================= 1. İstek anatomisi ================= */
+Edu.widget("l3-anatomy", el => {
+  const { h, $, $$, seg, json } = Edu;
+  const W = {
+    api:{ n:"API", c:"var(--tool)" }, harness:{ n:"Harness", c:"var(--harness)" },
+    team:{ n:"Sen ve ekibin", c:"var(--ctx)" }, env:{ n:"Ortam ve araçlar", c:"var(--risk)" },
+    model:{ n:"Model", c:"var(--model)" }, you:{ n:"Sen", c:"var(--ok)" }
+  };
+  const L = [
+    { id:"tu", name:"Tool-use sistem talimatı", who:"api", key:"system", t:[286,286,286], when:"Her istekte, araç varsa",
+      sample:"(API’nin eklediği, modelin araçları nasıl çağıracağını anlatan talimat. İçeriği sağlayıcıya ait; sen görmezsin ama faturada ve context’te yer kaplar.)",
+      note:"Dokümante edilmiş değer: Opus, Sonnet ve Haiku 5.5’te yaklaşık 286 token (Kasım 2026). Aracı zorla çağırtmak (tool_choice) bu sayıyı artırır (4. seviye)." },
+    { id:"tools", name:"Araç tanımları", who:"harness", key:"tools", t:[12000,12000,12000], when:"Her istekte",
+      sample:'{ "name": "Read",\n  "description": "Bir dosyayı okur. Mutlak yol ister. Büyük dosyalarda offset ve limit kullan…",\n  "input_schema": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } }\n… ve diğer yerleşik araçlar (Edit, Bash, Grep, Glob…)',
+      note:"Açıklama metni bir prompt’tur: model aracı ne zaman kullanacağına yalnızca buna bakarak karar verir. Araç seti değişirse önbellek baştan geçersiz olur (2. seviye)." },
+    { id:"mcp", name:"MCP araçları (ertelenmiş)", who:"harness", key:"tools", t:[1400,1400,1400], when:"Her istekte, yalnızca adlar",
+      sample:"example_db__query, example_db__describe_table, tracker__search_issues, …\n(Claude Code MCP araçlarını varsayılan olarak tool search ile erteler: tam tanım ancak gerektiğinde yüklenir.)",
+      note:"Erteleme olmasa 30–40 MCP aracı on binlerce token tutabilir. Anthropic’in örneğinde 58 araç, konuşma başlamadan yaklaşık 55 bin token kaplıyordu (4. seviye)." },
+    { id:"sys", name:"System prompt", who:"harness", key:"system", t:[3200,3200,3200], when:"Her istekte",
+      sample:"Sen bir coding agent’ısın. Dosyaları düzenlemeden önce oku. Komutları açıklayarak çalıştır…\n<env>\nÇalışma dizini: /home/dev/example_app\nPlatform: linux\nGit dalı: fix/order-mapper\n</env>\n(temsili kısaltma)",
+      note:"Kimlik, çalışma kuralları, çıktı biçimi, ortam bilgisi. Bu metni harness yazar ve sürümden sürüme değişir; senin kontrolünde değildir." },
+    { id:"mem", name:"CLAUDE.md / AGENTS.md", who:"team", key:"system", t:[1800,1800,1800], when:"Her istekte",
+      sample:"# example_app\n- Build: dotnet build; test: dotnet test\n- Migration’lar yalnızca yeni dosya olarak eklenir; neden: eski migration’lar ortamlarda çalıştı.\n- Para tutarları decimal; float yok.",
+      note:"Harness bu dosyayı her istekte context’e ekler (system alanına ya da ilk mesajın başına; harness’a göre değişir). Kalıcı kuralların yeri burası (8. seviye)." },
+    { id:"skills", name:"Skill açıklamaları", who:"team", key:"system", t:[600,600,600], when:"Her istekte, yalnızca ad + açıklama",
+      sample:"release-notes: example_app için sürüm notu hazırlar. Kullanıcı sürüm notu istediğinde kullan.\nsql-review: PostgreSQL betiklerini güvenlik açısından inceler.",
+      note:"Progressive disclosure: gövde (SKILL.md) ancak ilgili olduğunda yüklenir. Uzun prosedürleri CLAUDE.md yerine skill’e taşımanın nedeni bu." },
+    { id:"rem", name:"System reminder’lar", who:"harness", key:"messages", t:[200,900,2200], when:"Konuşmanın içine, gerektikçe",
+      sample:"<system-reminder>\nsrc/Orders/OrderMapper.cs dosyası kullanıcı tarafından değiştirildi.\nYapılacaklar: [x] testi çalıştır [ ] düzelt [ ] tekrar test\n</system-reminder>",
+      note:"Kullanıcı yazmaz, model görür. Harness’ın modele “dünya değişti” deme yolu." },
+    { id:"hist", name:"Konuşma geçmişi", who:"model", key:"messages", t:[0,14000,38000], when:"Her turda büyür",
+      sample:'{ "role": "assistant", "content": [\n  { "type": "thinking", "thinking": "…" },\n  { "type": "text", "text": "Testi çalıştırıyorum." },\n  { "type": "tool_use", "name": "Bash", "input": { "command": "dotnet test" } } ] }',
+      note:"Senin eski mesajların ve modelin cevapları. Güncel 5.5 modellerinde düşünme blokları sonraki turlarda korunur ve girdi olarak faturalanır." },
+    { id:"res", name:"Araç sonuçları", who:"env", key:"messages", t:[0,46000,160000], when:"Her araç çağrısından sonra",
+      sample:'{ "type": "tool_result", "tool_use_id": "toolu_07",\n  "content": "Failed  Map_NullStatus_ReturnsUnknown\\n  System.InvalidCastException …\\n  at OrderMapper.cs:88 …(380 satır daha)" }',
+      note:"Okunan dosyalar, test çıktıları, grep sonuçları. Uzun oturumlarda isteğin açık ara en büyük parçası. Güvenilmeyen içerik de buraya girer (10. seviye)." },
+    { id:"you", name:"Senin son mesajın", who:"you", key:"messages", t:[60,40,25], when:"En sonda",
+      sample:'{ "role": "user", "content": "testleri düzelt" }',
+      note:"İsteğin en küçük parçası. Kısa olabilir; ama belirsizse koca yığının içinde kolayca kaybolur." }
+  ];
+  const stack = $(".l3-stack", el), list = $(".l3-layers", el), out = $(".l3-anat-out", el), stats = $(".l3-anat-stats", el);
+  let turn = 0, sel = "you";
+  const segs = {}, btns = {};
+  L.forEach(l => {
+    segs[l.id] = h("button", { type:"button", "aria-label": l.name, title: l.name, style:{ background: W[l.who].c }, onclick:() => pick(l.id) });
+    stack.append(segs[l.id]);
+    btns[l.id] = h("button", { type:"button", class:"l3-lay", "aria-pressed":"false", onclick:() => pick(l.id) },
+      h("span", { class:"l3-sw", style:{ background: W[l.who].c } }),
+      h("span", null, l.name, h("small", { class:"l3-t" }, "")));
+    list.append(btns[l.id]);
+  });
+  const fmt = n => n.toLocaleString("tr-TR");
+  const req = () => ({
+    model: "claude-opus-5-5",
+    max_tokens: 32000,
+    tools: [ { name:"Read", description:"Bir dosyayı okur…", input_schema:{ type:"object" } }, "… yerleşik araçlar + MCP adları" ],
+    system: [ { type:"text", text:"(tool-use talimatı, API ekler)" }, { type:"text", text:"Sen bir coding agent’ısın… + CLAUDE.md + skill listesi" } ],
+    messages: turn === 0 ? [ { role:"user", content:"testleri düzelt" } ]
+      : [ { role:"user", content:"testleri düzelt" }, { role:"assistant", content:"[thinking, text, tool_use]" }, { role:"user", content:"[tool_result …]" }, "… " + (turn === 1 ? "28" : "78") + " mesaj daha", { role:"user", content:"testleri düzelt" } ]
+  });
+  function render(){
+    const total = L.reduce((a, l) => a + l.t[turn], 0);
+    L.forEach(l => {
+      const v = l.t[turn], pct = v / total * 100;
+      segs[l.id].style.flex = "0 0 " + Math.max(pct, v ? 0.6 : 0) + "%";
+      segs[l.id].style.display = v ? "" : "none";
+      segs[l.id].classList.toggle("sel", l.id === sel);
+      $(".l3-t", btns[l.id]).textContent = v ? fmt(v) + " token · %" + (pct < 1 ? pct.toFixed(2).replace(".", ",") : Math.round(pct)) : "henüz yok";
+      btns[l.id].setAttribute("aria-pressed", l.id === sel ? "true" : "false");
+    });
+    const by = {}; L.forEach(l => by[l.who] = (by[l.who] || 0) + l.t[turn]);
+    const you = L.find(l => l.id === "you").t[turn];
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, fmt(total)), "toplam token"),
+      h("span", null, h("b", null, "%" + (you / total * 100).toFixed(you / total < 0.001 ? 3 : 2).replace(".", ",")), "senin son mesajın"),
+      h("span", null, h("b", null, "%" + Math.round(((by.harness||0) + (by.api||0)) / total * 100)), "harness + API"),
+      h("span", null, h("b", null, "%" + Math.round((by.env||0) / total * 100)), "araç sonuçları"));
+    const l = L.find(x => x.id === sel);
+    out.innerHTML = "";
+    out.append(
+      h("p", { style:{ margin:"0 0 .3rem" } }, h("b", null, l.name), " ",
+        h("span", { class:"l3-pill", style:{ background: "color-mix(in srgb," + W[l.who].c + " 18%,transparent)", color: W[l.who].c } }, "Yazan: " + W[l.who].n),
+        h("span", { class:"l3-pill", style:{ background:"var(--surface)", color:"var(--muted)", border:"1px solid var(--line)" } }, l.when)),
+      h("div", { class:"l3-box", text: l.sample }),
+      h("p", { style:{ margin:".3rem 0" } }, l.note),
+      h("p", { class:"hint", style:{ margin:".5rem 0 0" } }, "Ham istekte yeri (vurgulu alan):"),
+      h("div", { class:"jsonv", html: json(req(), { hl:[l.key] }) }));
+  }
+  function pick(id){ sel = id; render(); }
+  seg($(".seg", el), v => { turn = +v; render(); });
+});
+
+/* ================= 2. Folklor gezgini ================= */
+Edu.widget("l3-folk", el => {
+  const { h, $, $$, seg } = Edu;
+  const ST = {
+    back:{ n:"Ters tepiyor", c:"var(--risk)", t:"r" },
+    none:{ n:"Etkisi yok", c:"var(--muted)", t:"" },
+    moved:{ n:"Yeri değişti", c:"var(--ctx)", t:"c" },
+    works:{ n:"Hâlâ geçerli", c:"var(--ok)", t:"ok" }
+  };
+  const C = [
+    { s:"none", claim:"“Sen dünyanın en iyi kıdemli yazılımcısısın.”",
+      mech:"Rol cümlesi modelin “uzman” metinlere benzeyen bir dağılımdan üretmesini sağlar diye düşünüldü. Ama model zaten bildiğinden fazlasını bilmez; rol bilgi eklemez.",
+      ev:"Prompting Science Report 4 (Aralık 2025): uzman persona’ları lisansüstü düzey sorularda doğruluğu genel olarak artırmadı; alanla eşleşen uzman bile pek fark yaratmadı; “küçük çocuk” gibi düşük bilgili roller çoğu zaman kötüleştirdi.",
+      inst:"Anthropic yine de system prompt’ta tek cümlelik bir rolü ton ve davranış için öneriyor. Rolü kapsam ve üslup için kullan (“example_app’in kod incelemecisisin, yalnızca doğruluk hatalarına odaklan”); yetenek için değil." },
+    { s:"none", claim:"“Doğru yaparsan 200 dolar bahşiş veririm.”",
+      mech:"Tek denemelik gözlemler: bahşişli prompt bir kez daha iyi cevap verdi. Ama çıktı olasılıksaldır; tek denemede şans ile etki ayırt edilemez.",
+      ev:"Prompting Science Report 3 (Ağustos 2025): bahşiş teklif etmek benchmark performansında genel olarak anlamlı bir etki yaratmadı. Tekil sorularda iki yönde de oynama var; bu bir kaldıraç değil, gürültü.",
+      inst:"Bu token’ları bağlama harca: hangi dosya, hangi hata, ne zamandan beri." },
+    { s:"none", claim:"“Bunu yanlış yaparsan kovulacağım / seni kapatırlar.”",
+      mech:"Duygusal baskının modeli “daha dikkatli” yapacağı varsayımı. Model bir çalışan değil; tehdidin yarattığı bir motivasyon yok.",
+      ev:"Aynı rapor (PSR 3, Ağustos 2025) tehdidi de ölçtü: genel olarak anlamlı etki yok.",
+      inst:"Riskin ne olduğunu ve nedenini söyle: “Bu bugün hotfix olarak çıkacak, diff küçük olmalı.” Gerekçe davranışı gerçekten değiştirir." },
+    { s:"back", claim:"“KRİTİK: Bu aracı MUTLAKA kullan. ASLA unutma.”",
+      mech:"2023 modelleri kuralları sık atlıyordu; büyük harf az tetiklenmeyi telafi ediyordu.",
+      ev:"Anthropic: yeni modeller system prompt’a çok daha duyarlı; bu tür ifadeler artık aşırı tetikliyor, çare dili yumuşatmak. OpenAI GPT-5.5 rehberi: ALWAYS/NEVER’ı gerçek değişmezlere sakla. Cursor’ın deneyimi: “KAPSAMLI ol” talimatı küçük işlerde gereksiz arama çağrılarına yol açtı.",
+      inst:"Sakin ve koşullu yaz: “Kullanıcı sipariş verisi sorduğunda bu aracı kullan.” Asla atlanmaması gereken kuralı hook ya da izin kuralı gibi deterministik bir katmana taşı." },
+    { s:"back", claim:"“Emin değilsen her zaman araca başvur.”",
+      mech:"Güvenli taraf gibi görünür: fazladan bir çağrının zararı olmaz.",
+      ev:"Anthropic rehberi “If in doubt, use [tool]” türü ifadelerin aşırı tetiklemeye yol açtığını özellikle belirtiyor. Her gereksiz çağrı bir tur, gecikme ve context demek.",
+      inst:"Ne zaman kullanılacağını ve ne zaman gerekmediğini birlikte yaz: “Sipariş durumu, tutarı ya da sevkiyatı sorulduğunda kullan; genel SQL ya da C# sorularında gerekmez.”" },
+    { s:"moved", claim:"“Derin bir nefes al ve adım adım çalış.”",
+      mech:"İfadenin, prompt’ları otomatik deneyen bir optimizasyon çalışmasında (OPRO, 2023) belirli bir model ve matematik veri seti için bulunduğu aktarılıyor; bu ayrıntı bu set için yeniden doğrulanmadı.",
+      ev:"Bir modelde bulunan ifade başka modele taşınabilir değil. İşe yarayan kısım “adım adım”dı (zero-shot CoT, 2022) ve güncel reasoning modelleri bunu düşünme token’larıyla kendileri yapıyor.",
+      inst:"Düşünme açık modellerde effort ayarını kullan; prompt’ta nasıl düşüneceğini değil, neyi başaracağını ve nasıl değerlendirileceğini yaz." },
+    { s:"moved", claim:"“Akıl yürütmeni <thinking> etiketleri arasında yaz.”",
+      mech:"Elle CoT: ara adımları yazdırmak modele hesap ve çalışma belleği sağlar.",
+      ev:"Anthropic: Fable 5.x, Opus 5 / 5.5 ve Sonnet 5.5’te düşünme özelliğine güven; akıl yürütmeyi <thinking> etiketleriyle yazdırma isteği reddedilebilir. Elle CoT yalnızca düşünme kapalıyken yedek.",
+      inst:"Düşünmeyi aç, effort’u işe göre ayarla. Gerekçe istiyorsan çıktının parçası olarak iste: “Sonunda seçimini iki cümleyle gerekçelendir.”" },
+    { s:"moved", claim:"“JSON için cevabın başını { ile doldururum (prefill).”",
+      mech:"Son assistant mesajını yarım bırakınca model oradan devam eder; biçim pratikte garanti olurdu.",
+      ev:"Anthropic: Claude 4.6 modellerinden itibaren son asistan turunu önceden doldurmak HTTP 400 döndürüyor.",
+      inst:"JSON için structured outputs ya da strict şemalı araç; önsözü kesmek için system talimatı; hatırlatma için user turu." },
+    { s:"back", claim:"“Ne kadar uzun ve ayrıntılı prompt, o kadar iyi.”",
+      mech:"Daha fazla bilgi = daha iyi karar varsayımı. Bağlam eksikliği gerçekten sorun olduğu için aşırıya kaçmak kolay.",
+      ev:"Context rot (Chroma, Temmuz 2025): 18 modelde girdi uzadıkça performans düştü; odaklı ~300 token’lık girdi ~113 bin token’lık tam girdiden her modelde iyi sonuç verdi. Claude Code: CLAUDE.md’deki her satır her görevde dikkatten pay alır.",
+      inst:"Uzunluk değil, isabet: beklenen davranışı tam tanımlayan en küçük bilgi kümesi. Prosedürleri skill’e, kesin kuralları hook’a taşı." },
+    { s:"works", claim:"“Yasak listesi uzadıkça model daha az hata yapar.”",
+      mech:"Her hatadan sonra bir “yapma” satırı eklemek doğal bir refleks.",
+      ev:"Anthropic pozitif talimatı öneriyor: “Markdown kullanma” yerine “akıcı düzyazı paragraflarıyla yaz”. Yasak, yerine ne konacağını söylemez. (İddia yanlış; altta yatan ilke, pozitif talimat, hâlâ geçerli.)",
+      inst:"Her yasağı “bunun yerine şunu yap” cümlesine çevir; gerçekten mutlak olan yasakları izin kuralına taşı." },
+    { s:"works", claim:"“Örnek verme, model kopyacı olur.”",
+      mech:"Tek bir örnek verildiğinde model onun tesadüfi özelliklerini de kopyalar; bu gözlem doğru ama sonuç yanlış.",
+      ev:"Anthropic: few-shot örnekler biçim, ton ve yapıyı yönlendirmenin en güvenilir yollarından biri. Önerilen: 3–5 ilgili ve birbirinden farklı örnek, <example> etiketleriyle. Düşünme modellerinde örnekler iç akıl yürütmeyi de şekillendirir.",
+      inst:"Tek örnek yerine çeşitli örnekler ver ya da örneğin hangi özelliğinin önemli olduğunu açıkça söyle." },
+    { s:"works", claim:"“Kuralın nedenini yazmak gereksiz laf kalabalığı.”",
+      mech:"Kısa prompt = net prompt sezgisi.",
+      ev:"Anthropic’in örneği: “ASLA üç nokta kullanma” yerine “yanıt sesli okunacak, motor üç noktayı telaffuz edemiyor” demek daha etkili; model gerekçeden genelleme yapar.",
+      inst:"Her kısıtın yanına tek cümlelik bir “çünkü” ekle. Model hem kuralın akrabalarını hem istisnalarını tanır." }
+  ];
+  const grid = $(".l3-cards", el), out = $(".l3-folk-out", el);
+  let cur = null;
+  const btns = C.map((c, i) => {
+    const b = h("button", { type:"button", class:"l3-card", "aria-pressed":"false", style:{ "--l3c": ST[c.s].c }, onclick:() => show(i) },
+      c.claim, h("br"), h("span", { class:"tag " + ST[c.s].t }, ST[c.s].n));
+    grid.append(b); return b;
+  });
+  function show(i){
+    cur = i; const c = C[i];
+    btns.forEach((b, j) => b.setAttribute("aria-pressed", j === i ? "true" : "false"));
+    out.innerHTML = "";
+    out.append(h("p", { class:"l3-h" }, c.claim, " ", h("span", { class:"tag " + ST[c.s].t }, ST[c.s].n)),
+      h("div", { class:"l3-trio" },
+        h("div", null, h("h5", null, "Neden işe yarıyor gibi göründü"), c.mech),
+        h("div", null, h("h5", null, "Bugünkü kanıt"), c.ev),
+        h("div", null, h("h5", null, "Yerine ne yaz"), c.inst)));
+  }
+  seg($(".l3-folk-filter", el), v => {
+    btns.forEach((b, j) => { b.style.display = (v === "all" || C[j].s === v) ? "" : "none"; });
+  });
+});
+
+/* ================= 2b. Ton ve aşırı tetikleme ================= */
+Edu.widget("l3-caps", el => {
+  const { h, $, seg } = Edu;
+  const LINES = [
+    "Kullanıcı bir siparişin durumunu, tutarını ya da sevkiyatını sorduğunda example_orders_search aracını kullan.",
+    "IMPORTANT: Always use the example_orders_search tool for anything related to orders. Bu aracı kullanmayı unutma.",
+    "CRITICAL: You MUST use example_orders_search. NEVER answer about orders without it. If in doubt, use the tool!"
+  ];
+  // need: gerçekten veri gerektiriyor mu; lure: konuyla yüzeysel benzerlik (0-2)
+  const R = [
+    { q:"1042 numaralı sipariş neden geç teslim edildi?", need:true, lure:2 },
+    { q:"Dün iptal edilen kaç sipariş var?", need:true, lure:2 },
+    { q:"example.orders tablosuna index önerir misin? (genel tasarım sorusu)", need:false, lure:2, why:"Kelime ‘orders’ geçiyor ama soru veri değil, tasarım soruyor." },
+    { q:"OrderMapper.cs’deki bu metodu async yapar mısın?", need:false, lure:1, why:"Kod düzenleme isteği; sipariş verisi gerekmiyor." },
+    { q:"Sipariş durum kodları için C# enum’u nasıl yazılır?", need:false, lure:1, why:"Genel programlama sorusu." },
+    { q:"order_id kolonu bigint mi olmalı, uuid mi?", need:false, lure:1, why:"Tasarım tartışması; canlı veriye bakmak bir şey katmaz." },
+    { q:"Bu regex ne yapıyor: ^[A-Z]{2}-\\d{4}$", need:false, lure:0, why:"Konuyla ilgisiz." },
+    { q:"Teşekkürler, bugünlük bu kadar.", need:false, lure:0, why:"Konuşma kapanışı." }
+  ];
+  const body = $(".l3-caps-body", el), line = $(".l3-caps-line", el), st = $(".l3-caps-stats", el);
+  function render(level){
+    line.textContent = "system: " + LINES[level];
+    body.innerHTML = ""; let over = 0, need = 0;
+    R.forEach(r => {
+      const call = r.need || (level === 1 && r.lure >= 2) || (level === 2 && r.lure >= 1);
+      const kind = r.need ? "need" : call ? "over" : "no";
+      if (kind === "over") over++; if (kind === "need") need++;
+      const note = kind === "need" ? "Veri gerçekten gerekiyor." : kind === "over" ? "Gereksiz çağrı. " + r.why : (r.why || "");
+      body.append(h("tr", null, h("td", null, r.q),
+        h("td", null, h("span", { class:"l3-call " + kind }, kind === "no" ? "çağrılmaz" : kind === "need" ? "çağrılır" : "çağrılır (fazla)")),
+        h("td", null, note)));
+    });
+    st.innerHTML = "";
+    st.append(h("span", null, h("b", null, String(need)), "gerekli çağrı"),
+      h("span", null, h("b", { style:{ color: over ? "var(--risk)" : "var(--ink)" } }, String(over)), "gereksiz çağrı"),
+      h("span", null, h("b", null, over ? "+" + over + " tur" : "0"), "fazladan model turu ve gecikme"));
+  }
+  seg($(".seg", el), v => render(+v));
+});
+
+/* ================= 3a. Kural ve gerekçe ================= */
+Edu.widget("l3-reason", el => {
+  const { h, $, seg } = Edu;
+  const RULE = "migrations/ klasöründeki dosyaları düzenleme.";
+  const WHY = "Çünkü bu klasördeki migration’lar test ve canlı ortamlarda zaten çalıştı; çalışmış bir dosyayı değiştirmek ortamlar arasında şema farkı yaratır. Şema değişikliği gerekiyorsa yeni bir migration ekle.";
+  const CASES = [
+    { s:"example.orders tablosuna delivered_at kolonu eklenmesi gerekiyor.",
+      r:"Kural yalnızca neyin yasak olduğunu söylüyor. Değişikliği nereye koyacağı belirsiz: model şema değişikliğini başka bir yere (elle yazılmış bir SQL betiği gibi) koyabilir ya da durup sorar.",
+      w:"Gerekçe yolu da gösteriyor: yeni bir migration dosyası ekle. Model eskiye dokunmadan yeni dosya oluşturur." },
+    { s:"Bu branch’te bir saat önce agent’ın kendisinin oluşturduğu, hiçbir ortamda çalışmamış migration’da bir yazım hatası var.",
+      r:"Kelimesi kelimesine okunduğunda model kendi az önce yazdığı dosyayı bile düzeltemez: ya ikinci bir “düzeltme” migration’ı ekler ya da kuralı çiğner.",
+      w:"Gerekçe “ortamlarda çalıştı” diyor; bu dosya çalışmadı. Model istisnayı tanıyabilir, düzeltmeyi önerir ya da en azından tereddüdünü açıkça söyleyip sorar." },
+    { s:"db/scripts/released/ altında, canlıda çalışmış eski SQL betikleri de var.",
+      r:"Kural yalnızca migrations/ diyor. Model released/ altındaki betiği düzenlemekte sakınca görmeyebilir.",
+      w:"Gerekçedeki ilke (“çalışmış bir şeyi değiştirme, yenisini ekle”) bu klasöre de uyuyor. Model aynı mantıkla released/ betiklerini de korur." },
+    { s:"Canlıdaki 0042 numaralı migration bir index’i yanlış kolonda oluşturmuş.",
+      r:"Model ya kuralı çiğneyip 0042’yi düzeltir ya da takılıp kalır.",
+      w:"Gerekçe çözümü söylüyor: 0042’ye dokunma, index’i düzelten yeni bir migration ekle." }
+  ];
+  const box = $(".l3-reason-rule", el), wrap = $(".l3-reason-cases", el);
+  seg($(".seg", el), v => {
+    box.textContent = "CLAUDE.md: " + RULE + (v === "why" ? "\n" + WHY : "");
+    wrap.innerHTML = "";
+    CASES.forEach((c, i) => wrap.append(h("div", null,
+      h("h5", null, "Durum " + (i + 1)), h("p", { style:{ margin:"0 0 .4rem", fontWeight:"600" } }, c.s),
+      h("p", { style:{ margin:0, color: v === "why" ? "var(--ok)" : "var(--ink)" } }, v === "why" ? c.w : c.r))));
+  });
+});
+
+/* ================= 3b. Yeni meslektaş testi ================= */
+Edu.widget("l3-builder", el => {
+  const { h, $, tokenize } = Edu;
+  const P = [
+    { id:"ctx", lab:"Bağlam ve kanıt", tag:"context",
+      txt:"example_app’in sipariş listesi (GET /api/orders) son sürümden beri yavaş: p95 2,1 sn, önceden 300 ms civarındaydı.\nYavaşlama geçen haftaki OrderQueryService refactor’ından sonra başladı." },
+    { id:"verb", lab:"Açık eylem", tag:"task", replaces:true,
+      txt:"Yavaşlığın kök nedenini bul ve düzelt." },
+    { id:"why", lab:"Kısıt ve gerekçesi", tag:"constraints",
+      txt:"Yanıt JSON’undaki alanları değiştirme; mobil uygulama bu alanlara bağlı ve aynı gün güncellenemiyor." },
+    { id:"stop", lab:"Durma koşulu", tag:"constraints",
+      txt:"Veritabanı şeması değişmeli diye düşünürsen (index dahil) önce bana sor; şema değişiklikleri ayrıca onaydan geçiyor." },
+    { id:"verify", lab:"Doğrulama yolu", tag:"verification",
+      txt:"Önce dotnet test ile mevcut durumu gör. Sorgu sayısını ölçen bir test ekle; değişiklikten sonra OrderQueryServiceTests geçmeli." },
+    { id:"done", lab:"Bitti tanımı", tag:"done_when",
+      txt:"Bitti demek: testler yeşil, yerel ölçümde p95 400 ms altında, kök neden 2-3 cümle, değişen dosyaların listesi." },
+    { id:"ex", lab:"Rapor örneği", tag:"example",
+      txt:"Kök neden: Liste her sipariş için müşteriyi ayrı sorguyla çekiyor (N+1).\nDüzeltme: Tek sorguda join.\nDeğişen dosyalar: OrderQueryService.cs, OrderQueryServiceTests.cs" },
+    { id:"xml", lab:"XML ile yapılandır", tag:null, txt:"" }
+  ];
+  const BASE = "Sipariş listesi yavaş, bir bakar mısın?";
+  const Q = [
+    { q:"Hangi ekran, hangi endpoint? “Yavaş” ne kadar yavaş?", by:"ctx" },
+    { q:"Ne zamandan beri? Neyle ilişkili olabilir?", by:"ctx" },
+    { q:"Bakıp öneri mi sunayım, yoksa değiştireyim mi?", by:"verb" },
+    { q:"Neye dokunmamalıyım, neden?", by:"why" },
+    { q:"Şemaya dokunabilir miyim, yoksa sormalı mıyım?", by:"stop" },
+    { q:"İşimin doğru olduğunu nasıl kontrol ederim?", by:"verify" },
+    { q:"Ne zaman durayım? Hedef sayı ne?", by:"done" },
+    { q:"Sonunda neyi, hangi biçimde teslim edeyim?", by:"ex" }
+  ];
+  const on = new Set();
+  const tg = $(".l3-toggles", el), out = $(".l3-build-out", el), ql = $(".l3-q", el), tok = $(".l3-build-tok", el);
+  P.forEach(p => {
+    const inp = h("input", { type:"checkbox" });
+    const lab = h("label", null, inp, p.lab);
+    inp.addEventListener("change", () => { inp.checked ? on.add(p.id) : on.delete(p.id); lab.classList.toggle("on", inp.checked); render(); });
+    tg.append(lab);
+  });
+  function render(){
+    const parts = P.filter(p => p.id !== "xml" && on.has(p.id));
+    let text;
+    if (on.has("xml") && parts.length){
+      const groups = {};
+      if (!on.has("verb")) (groups.task = groups.task || []).push(BASE);
+      parts.forEach(p => (groups[p.tag] = groups[p.tag] || []).push(p.txt));
+      const order = ["context","task","constraints","verification","done_when","example"];
+      text = order.filter(k => groups[k]).map(k => "<" + k + ">\n" + groups[k].join("\n") + "\n</" + k + ">").join("\n");
+    } else {
+      const lines = [];
+      if (on.has("ctx")) lines.push(P[0].txt);
+      lines.push(on.has("verb") ? P[1].txt : BASE);
+      parts.filter(p => p.id !== "ctx" && p.id !== "verb").forEach(p => lines.push(p.id === "ex" ? "Rapor örneği:\n" + p.txt : p.txt));
+      text = lines.join("\n");
+    }
+    out.textContent = text;
+    const n = tokenize(text).length;
+    tok.textContent = "≈ " + n + " token (yaklaşık sayım). 40. turdaki bir istekte bu, toplamın binde birinden azı.";
+    ql.innerHTML = "";
+    const open = Q.filter(x => !on.has(x.by));
+    open.forEach(x => ql.append(h("li", null, x.q)));
+    if (!on.has("xml") && parts.length >= 4) ql.append(h("li", null, "Hangi kısım bağlam, hangisi talimat, hangisi örnek? (Uzadıkça ayrım bulanıklaşıyor.)"));
+    if (!ql.children.length) ql.append(h("li", { class:"ok" }, "Açık soru kalmadı. Meslektaşın işe başlayabilir; yine de ilk dakikayı izle."));
+  }
+  render();
+});
+
+/* ================= 4a. CoT tarihi ================= */
+Edu.widget("l3-cot", el => {
+  const { h } = Edu;
+  const S = [
+    { y:"2022", t:"Zero-shot chain-of-thought", p:"Soru: …\nCevap: Adım adım düşünelim.",
+      why:"Model her token için sabit miktarda hesap yapar. Ara adımları yazınca daha fazla hesap yapar ve sonraki token’lar bu ara sonuçlara bakarak üretilir. Yazılan metin bir çalışma belleği gibi çalışır (Kojima ve ark.).",
+      now:"Mekanizma hâlâ geçerli; ama artık bunu model kendisi yapıyor.", c:"var(--ok)" },
+    { y:"2023", t:"Optimizer’ın bulduğu cümleler", p:"Derin bir nefes al ve bu problem üzerinde adım adım çalış.",
+      why:"Prompt’ları otomatik deneyen bir yöntemin (OPRO) belirli bir model ve matematik veri setinde bulduğu ifade olarak aktarılıyor. Bu ayrıntı bu set için yeniden doğrulanmadı.",
+      now:"Modele özgü bir sonuç. Başka modele taşınabilir bir sihir değil; yayılan kısmı folklor.", c:"var(--ctx)" },
+    { y:"2024–25", t:"Reasoning modelleri", p:"(Prompt’ta ek bir şey gerekmez; model cevaptan önce düşünme token’ları üretir.)",
+      why:"Modeller düşünmeyi pekiştirmeli öğrenmeyle (doğrulanabilir ödüllerle) öğrendi (1. seviye). CoT prompt’tan modelin içine taşındı.",
+      now:"Düşünme ücretlidir: çıktı token’ı olarak sayılır ve gecikme ekler.", c:"var(--model)" },
+    { y:"2026", t:"Düşünmeyi ayarla, yazdırma", p:"effort: \"high\"           // Claude\nreasoning_effort: \"medium\" // OpenAI GPT-5.5 (varsayılan)",
+      why:"Anthropic: Fable 5.x, Opus 5 / 5.5 ve Sonnet 5.5’te düşünmeye güven; akıl yürütmeyi <thinking> etiketleriyle yazdırma isteği reddedilebilir. OpenAI: daha yüksek effort aşırı düşünme ve gereksiz aramaya yol açabilir.",
+      now:"Elle CoT yalnızca düşünme kapalıyken yedek. Kontrol prompt’ta değil, parametrede.", c:"var(--tool)" },
+    { y:"Bugün", t:"Prompt’a ne yazmalı?", p:"<task>Kök nedeni bul ve düzelt.</task>\n<done_when>dotnet test geçiyor; kök neden 2-3 cümle.</done_when>\n<examples>…3 çeşitli örnek…</examples>",
+      why:"Nasıl düşüneceğini değil, neyi başaracağını ve nasıl değerlendirileceğini yaz. Örnekler iç akıl yürütmeyi de şekillendirir.",
+      now:"Gerekçe istiyorsan çıktının parçası olarak iste: “Sonunda seçimini iki cümleyle gerekçelendir.”", c:"var(--acc)" }
+  ];
+  Edu.stepper(el, { steps:S, auto:4200, render(i, s, { body }){
+    body.innerHTML = "";
+    body.append(h("div", { class:"l3-tl" },
+      h("div", null, h("p", { class:"l3-year", style:{ color:s.c } }, s.y), h("p", { class:"l3-h" }, s.t), h("div", { class:"l3-box", text:s.p })),
+      h("div", null, h("p", { style:{ margin:"0 0 .5rem" } }, h("b", null, "Neden: "), s.why), h("p", { style:{ margin:0 } }, h("b", null, "Bugün: "), s.now))));
+  }});
+});
+
+/* ================= 4b. Prefill’den çıkış ================= */
+Edu.widget("l3-prefill", el => {
+  const { h, $, seg, json } = Edu;
+  const ERR = { type:"error", error:{ type:"invalid_request_error", message:"(temsili) Bu modelde son assistant turu önceden doldurulamaz." } };
+  const D = {
+    json:{
+      old:{ model:"claude-opus-5-5", max_tokens:1024, messages:[
+        { role:"user", content:"Bu log satırını JSON’a çevir: 2026-11-02 09:12 WARN order_id=1042 status_code=NULL" },
+        { role:"assistant", content:"{" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:1024,
+        tools:[ { name:"record_log_entry", description:"Ayrıştırılmış bir log satırını kaydeder.", strict:true,
+          input_schema:{ type:"object", properties:{ ts:{ type:"string" }, level:{ type:"string", enum:["INFO","WARN","ERROR"] }, order_id:{ type:"integer" }, status_code:{ type:["string","null"] } },
+            required:["ts","level","order_id","status_code"], additionalProperties:false } } ],
+        tool_choice:{ type:"tool", name:"record_log_entry" },
+        messages:[ { role:"user", content:"Bu log satırını ayrıştır: 2026-11-02 09:12 WARN order_id=1042 status_code=NULL" } ] },
+      hl:["tools","tool_choice"],
+      note:"Biçimi metinle “başlatmak” yerine şemayla garanti ediyorsun. strict: true, girdinin şemaya uymasını garanti eder; araç zorla çağrılır (4. seviye). Alternatif: structured outputs." },
+    pre:{
+      old:{ model:"claude-opus-5-5", max_tokens:1024, messages:[
+        { role:"user", content:"Bu stack trace’in kök nedeni ne?\n…InvalidCastException at OrderMapper.cs:88" },
+        { role:"assistant", content:"Kök neden:" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:1024,
+        system:"Önsöz olmadan doğrudan yanıt ver. İlk satır “Kök neden:” ile başlasın, ardından en fazla üç cümle.",
+        messages:[ { role:"user", content:"Bu stack trace’in kök nedeni ne?\n…InvalidCastException at OrderMapper.cs:88" } ] },
+      hl:["system"],
+      note:"Prefill’in yaptığı işi açık bir talimata çeviriyorsun. Pozitif ve somut: ne ile başlayacağını ve ne kadar uzun olacağını söylüyor." },
+    rem:{
+      old:{ model:"claude-opus-5-5", max_tokens:2048, messages:[
+        { role:"user", content:"(…uzun bir konuşmanın 30. turu…) Şimdi example.orders için rapor sorgusunu yaz." },
+        { role:"assistant", content:"[Kural: yalnızca SELECT, şema adı açık]\n" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:2048, messages:[
+        { role:"user", content:[
+          { type:"text", text:"<reminder>Yalnızca SELECT yaz; tablo adlarını şemayla birlikte kullan (example.orders gibi).</reminder>" },
+          { type:"text", text:"Şimdi example.orders için rapor sorgusunu yaz." } ] } ] },
+      hl:["content"],
+      note:"Hatırlatmayı modelin ağzına koymak yerine bir sonraki kullanıcı turuna ekliyorsun. Gerçekten kalıcı bir kuralsa yeri proje talimat dosyası; asla çiğnenmemesi gerekiyorsa veritabanı yetkisi gibi deterministik bir katman (6. seviye)." }
+  };
+  const out = $(".l3-prefill-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    out.append(
+      h("div", null, h("p", { class:"l3-h", style:{ color:"var(--risk)" } }, "Eski: prefill ile istek"), h("div", { class:"jsonv", html: json(d.old, { hl:["messages"] }) }),
+        h("p", { class:"l3-h", style:{ color:"var(--risk)", marginTop:".6rem" } }, "Güncel Claude modelinin cevabı: HTTP 400"), h("div", { class:"jsonv", html: json(ERR) })),
+      h("div", null, h("p", { class:"l3-h", style:{ color:"var(--ok)" } }, "Yeni: önerilen yol"), h("div", { class:"jsonv", html: json(d.neu, { hl:d.hl }) }),
+        h("p", { style:{ margin:".5rem 0 0" } }, d.note)));
+  });
+});
+
+/* ================= 5a. ACİL mesajını onarmak ================= */
+Edu.widget("l3-repair", el => {
+  const { h, tokenize } = Edu;
+  const CTX = ["example_app: PostgreSQL kullanan bir ASP.NET Core 8 API’si.",
+    "Bu sabahki deploy’dan beri GET /api/orders?customerId=42,",
+    "iptal edilmiş siparişi olan müşterilerde 500 dönüyor.",
+    "Log: System.InvalidCastException, OrderMapper.cs:88 (status_code NULL)."];
+  const TASK = ["Kök nedeni bul ve düzelt.", "Önce hatayı yeniden üreten, başarısız olan bir unit test yaz; sonra onu geçir."];
+  const CONS = ["Değişikliği küçük tut: OrderMapper dışında refactor yok.", "Nedeni: bu bugün hotfix olarak çıkacak; review eden kişinin küçük bir diff’e ihtiyacı var."];
+  const DONE = ["Bitti demek: dotnet test geçiyor; kök nedeni 2-3 cümleyle anlatıyorsun ve değişen dosyaları listeliyorsun."];
+  const STOP = ["Veritabanı şemasına dokunman gerekirse (ör. status_code’a NOT NULL) dur ve bana sor."];
+  const S = [
+    { t:"Başlangıç", L:["ACİL!!! Sen kıdemli bir uzman mühendissin.", "Siparişler sayfası bozuk. DÜZELT.", "Hiçbir şeyi BOZMA.", "500 dolar bahşiş veririm."],
+      why:"Tanıdık bir mesaj: aciliyet, rol, bahşiş, bağırma. Bilgi içeriği neredeyse sıfır: hangi sayfa, hangi hata, ne zamandan beri, bitti ne demek?",
+      move:"Siparişlerle ilgili controller, servis ve view dosyalarını tek tek açar. “Bozuk”un ne olduğunu bilmediği için gördüğü ilk tuhaflığı düzeltmeye başlayabilir. “Hiçbir şeyi bozma” ile ya hiçbir şeye dokunmaz ya da geniş, savunmacı değişiklikler yapar." },
+    { t:"Bağırmayı kaldır", L:["Sen kıdemli bir uzman mühendissin.", "Siparişler sayfası bozuk, düzelt.", "Mevcut davranışı bozma.", "500 dolar bahşiş veririm."],
+      why:"Büyük harf ve ünlemler yeni modellerde aşırı tetikliyor: “BOZMA” her değişikliği riskli gösterip agent’ı çekingenleştirebilir. Ton düzeldi ama henüz bilgi eklenmedi.",
+      move:"Davranış pek değişmez. Görev hâlâ belirsiz." },
+    { t:"Persona ve bahşişi çıkar", L:["Siparişler sayfası bozuk, düzelt.", "Mevcut davranışı bozma."],
+      why:"Ölçümlerde ne persona ne bahşiş doğruluğa anlamlı katkı yaptı (PSR 3 ve 4, 2025). Çıkarmak bir şey kaybettirmez; sadece gürültü azalır.",
+      move:"Değişen bir şey yok; çünkü çıkarılanlar zaten bilgi taşımıyordu. Asıl iş şimdi başlıyor." },
+    { t:"Somut bağlam ve kanıt ekle", L:[...CTX, "Düzelt.", "Mevcut davranışı bozma."],
+      why:"Modelin repo’dan çıkaramayacağı şeyler: ne zamandan beri, hangi istek, hangi müşteriler, log ne diyor. Bir bug raporunun “yeniden üretme” ve “gerçekleşen” kısmı.",
+      move:"Doğrudan OrderMapper.cs:88’e gider; status_code’un NULL gelebildiğini görür. Ama düzeltip doğrulayacak mı, yoksa öneri mi sunacak, belli değil." },
+    { t:"Eylemi ve sırayı açık yaz", L:[...CTX, ...TASK, "Mevcut davranışı bozma."],
+      why:"“Düzelt” yerine net bir iş tanımı: kök neden, önce kırmızı test, sonra yeşil. Böylece model başarılı ya da başarısız diye dönen bir kontrolle döngüyü kendisi kapatabilir.",
+      move:"Önce dotnet test --filter OrderMapper ile durumu görür, NULL status_code için başarısız bir test yazar, sonra düzeltir ve testi yeniden çalıştırır." },
+    { t:"Kısıtı gerekçesiyle yaz", L:[...CTX, ...TASK, ...CONS],
+      why:"“Bozma” belirsizdi. Yerine ölçülebilir bir kısıt ve nedeni geldi. Gerekçe, modelin “bu arada şunu da temizleyeyim” cazibesine karşı neden direnmesi gerektiğini anlatıyor.",
+      move:"Düzeltmeyi OrderMapper’la sınırlar; yan refactor’lardan kaçınır." },
+    { t:"Bitti tanımı ekle", L:[...CTX, ...TASK, ...CONS, ...DONE],
+      why:"Başarı ölçütü ve teslim biçimi. Yoksa model kendi ölçütünü uydurur, genellikle “derleniyor ve makul görünüyor”.",
+      move:"Testler geçince durur; kök nedeni ve değişen dosyaları istenen biçimde raporlar." },
+    { t:"Durma koşulu ekle", L:[...CTX, ...TASK, ...CONS, ...DONE, ...STOP],
+      why:"Hangi yan etkiye izin yok, hangi durumda soracak. OpenAI’nin “sonuç odaklı prompt” önerisindeki “izin verilen yan etkiler” ve “durma koşulları”.",
+      move:"Kalıcı çözüm şema değişikliği gerektiriyorsa kendi başına migration yazmaz; önerisini yazıp sorar." },
+    { t:"XML ile yapılandır", L:["<context>", ...CTX, "</context>", "<task>", ...TASK, "</task>", "<constraints>", ...CONS, ...STOP, "</constraints>", "<done_when>", ...DONE, "</done_when>"],
+      why:"İçerik aynı; etiketler bağlamı, görevi ve kısıtları birbirinden ayırıyor. Prompt’a uzun bir log ya da diff eklendiğinde bu ayrımın değeri artar.",
+      move:"Davranış önceki adıma çok yakın; fark, uzun girdilerde talimat ile verinin karışmaması." }
+  ];
+  Edu.stepper(el, { steps:S, auto:3800, render(i, s, { body }){
+    const prev = i ? S[i - 1].L : [];
+    const removed = prev.filter(x => !s.L.includes(x));
+    const box = h("div", { class:"l3-box l3-diff" });
+    removed.forEach(x => box.append(h("span", { class:"ln del" }, x)));
+    s.L.forEach(x => box.append(h("span", { class:"ln" + (i && !prev.includes(x) ? " add" : "") }, x)));
+    const n = tokenize(s.L.join("\n")).length;
+    body.innerHTML = "";
+    body.append(
+      h("p", { class:"l3-h" }, (i + 1) + ". " + s.t, " ", h("span", { class:"tag c" }, "≈ " + n + " token")),
+      box,
+      h("div", { class:"l3-trio" },
+        h("div", null, h("h5", null, "Neden"), s.why),
+        h("div", null, h("h5", null, "Agent’ın ilk hamlesi (temsili)"), s.move)));
+  }});
+});
+
+/* ================= 5b. Review, performans, test ================= */
+Edu.widget("l3-review", el => {
+  const { h, $, $$, seg } = Edu;
+  const D = {
+    review:{
+      before:"Bu kodu review et.",
+      after:[ "Aşağıdaki diff’i ", ["scope","yalnızca doğruluk hataları açısından incele (stil değil)"], ". Her bulgu için ",
+        ["shape","dosya:satır, P0–P3 önem derecesi, tek cümlelik bir hata senaryosu ve önerilen düzeltme"], " ver. ",
+        ["empty","P0–P2 düzeyinde bulgu yoksa bunu açıkça söyle."], " ",
+        ["ctx","Bağlam: example.orders.amount numeric(12,2); servis READ COMMITTED izolasyonuyla çalışıyor."], "\n<diff>…</diff>" ],
+      notes:{
+        scope:["Kapsam","Neye bakılacağını ve neye bakılmayacağını söylüyor. Bu olmadan stil yorumlarıyla dolu uzun bir liste gelir ve asıl hata kalabalıkta kaybolur."],
+        shape:["Çıktı biçimi","Bulgular karşılaştırılabilir, sıralanabilir ve takip edilebilir olur. Önem derecesi, hangisinin önce düzeltileceğine karar vermeni sağlar."],
+        empty:["Boş sonuca izin","Bunu söylemezsen model “bir şey bulmak” için zayıf bulgular üretmeye daha yatkın olur. Temiz bir diff için “bulgu yok” geçerli bir cevaptır."],
+        ctx:["Görünmeyen gerçekler","Diff’te görünmeyen tip ve izolasyon düzeyi; yuvarlama ve yarış durumu (lost update) gibi bulguları ancak bu bilgiyle yakalayabilir."] } },
+    perf:{
+      before:"Bu fonksiyonu iyileştirmek için bazı değişiklikler önerebilir misin?",
+      after:[ ["verb","Bu fonksiyonu performans için değiştir."], " ",
+        ["ctx","Her sipariş listesinde 40 kez çağrılıyor; profiler toplam sürenin %60’ını burada gösteriyor."], " ",
+        ["keep","İmzası ve dönüş değeri aynı kalsın; 12 yerden çağrılıyor."], " ",
+        ["verify","Mevcut birim testleri geçmeli; önce ve sonra süreyi BenchmarkDotNet ile ölçüp raporla."] ],
+      notes:{
+        verb:["Eylem fiili","Anthropic’in örneği: “değişiklik önerebilir misin?” öneri getirir, “değiştir” düzenleme getirir. Model kibar soruyu kelimesi kelimesine okur."],
+        ctx:["Ölçüm","Neden bu fonksiyon ve ne kadar önemli? Model doğru yere odaklanır ve senin aklına gelmeyen bir çözümü (önbellek, toplu sorgu) değerlendirebilir."],
+        keep:["Korunan sözleşme","Modelin göremeyeceği bir gerçek: 12 çağıran yer. İmzayı değiştiren “daha hızlı” çözümü baştan eler."],
+        verify:["Doğrulama","İyileşmeyi iddia değil ölçüm olarak ister. Testler davranışın korunduğunu, benchmark hızlanmayı gösterir."] } },
+    test:{
+      before:"Bu servis için test yaz.",
+      after:[ ["target","OrderTotalCalculator.Calculate için xUnit testleri yaz."], " ",
+        ["cases","Özellikle: boş sepet, indirimin tutarı aştığı durum, amount’un iki ondalığa yuvarlanması."], " ",
+        ["style","tests/Orders altındaki isimlendirme ve Arrange-Act-Assert düzenini izle; örnek: OrderMapperTests.cs."], " ",
+        ["rule","Test başarısız olursa üretim kodunu düzeltme, bana bildir; amaç mevcut davranışı belgelemek."], " ",
+        ["done","Bitti: dotnet test çalıştı; geçen testler ve varsa başarısız olanların listesi ve nedeni."] ],
+      notes:{
+        target:["Hedef","Hangi sınıf, hangi metot, hangi çatı. “Bu servis” bir agent için birden fazla şey olabilir."],
+        cases:["Önemli durumlar","Senin bildiğin riskli kenar durumları. Yoksa model kolay, “mutlu yol” testleriyle sayıyı doldurabilir."],
+        style:["Örnek dosya","Mevcut bir test dosyasını örnek göstermek, isimlendirme ve yapı için birkaç paragraf açıklamadan daha etkilidir (few-shot)."],
+        rule:["Kural + gerekçe","Agent’ın testi geçirmek için üretim kodunu “düzeltmesini” engeller ve nedenini söyler: amaç mevcut davranışı belgelemek."],
+        done:["Bitti","Başarısız test de geçerli bir sonuç; önemli olan raporlanması. Bu, testi zorla yeşile boyama eğilimini azaltır."] } }
+  };
+  const bad = $(".l3-rv-vs .bad", el), good = $(".l3-rv-vs .good", el), out = $(".l3-rv-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v];
+    bad.innerHTML = ""; good.innerHTML = "";
+    bad.append(h("div", { class:"l3-box", text:d.before }));
+    const box = h("div", { class:"l3-box" });
+    d.after.forEach(p => {
+      if (typeof p === "string") box.append(p);
+      else box.append(h("button", { type:"button", class:"l3-ann", "data-k":p[0], onclick:e => {
+        $$(".l3-ann", box).forEach(b => b.classList.toggle("on", b === e.currentTarget));
+        const n = d.notes[p[0]];
+        out.innerHTML = ""; out.append(h("b", null, n[0] + ": "), n[1]);
+      } }, p[1]));
+    });
+    good.append(box);
+    out.innerHTML = '<span class="muted">Altı çizili bir parçaya tıkla.</span>';
+  });
+});
+
+/* ================= 6a. System prompt irtifası ================= */
+Edu.widget("l3-altitude", el => {
+  const { h, $, seg, tokenize } = Edu;
+  const D = {
+    low:{ name:"Çok alçak: if/else yığını", c:"var(--risk)",
+      p:"Kullanıcı “sipariş” derse example_orders_search çağır.\nKullanıcı “iade” derse önce refund_policy.md oku, sonra “İadeniz 3 iş günü içinde” yaz.\nstatus_code ‘C’ ise “İptal edildi” yaz. ‘D’ ise “Teslim edildi” yaz. ‘P’ ise “Hazırlanıyor” yaz.\nKullanıcı kızgınsa “Yaşadığınız sorun için üzgünüz” diye başla.\nKullanıcı iki sipariş sorarsa ikisini ayrı ayrı çağır.\nKullanıcı İngilizce yazarsa İngilizce cevap ver.\nKullanıcı fatura sorarsa test.invoices’a bak…\n(…ve 60 kural daha)",
+      fail:["Öngörülmeyen ilk durumda çöker: yeni bir status_code (‘R’) geldiğinde ne yapacağını bilmez.", "Kurallar çelişmeye başlar (kızgın ve İngilizce yazan iade talebi?). Model uzlaştırmaya çalışırken token ve tutarlılık kaybeder.", "Bakımı zor: her olay bir kural daha ekler, dosya şişer, her satır dikkatten pay alır."] },
+    mid:{ name:"Doğru irtifa", c:"var(--ok)",
+      p:"Example Co’nun iç destek ekibine sipariş sorularında yardım eden bir asistansın.\n\nAmaç: Destek personelinin bir siparişin durumunu ve geçmişini hızlı ve doğru anlamasını sağlamak.\n\nİlkeler:\n- Sipariş verisi gereken sorularda araçlarla gerçek kayda bak; tahmin etme. Genel soruları araçsız cevapla.\n- Durum kodlarını example.status_codes’taki açıklamalarla insan diline çevir.\n- Veri yoksa ya da çelişkiliyse bunu açıkça söyle; personel müşteriye yanlış bilgi vermemeli.\n- İade ve tazminat kararı verme; bunlar personelin yetkisinde. İlgili kaydı ve politikayı göster.\n\nYanıt biçimi: önce tek cümlelik özet, sonra gerekirse kanıt (order_id, tarih, olay).",
+      fail:["Yeni bir durum kodu geldiğinde ilke yolu gösterir: tabloya bak, yoksa bilinmediğini söyle.", "Her ilke bir “neden” taşıyor; model istisnaları buna göre tartar.", "Kısa ve bakımı kolay. Ayrıntılı prosedürler (iade akışı gibi) gerekirse skill’e taşınabilir."] },
+    high:{ name:"Çok yüksek: boş öğüt", c:"var(--ctx)",
+      p:"Sen yardımsever bir asistansın. Kullanıcılara en iyi şekilde yardımcı ol. Doğru ve nazik ol.",
+      fail:["Somut sinyal yok: hangi kullanıcı, hangi veri, hangi sınırlar?", "Model ortak bir bağlam varsayar; iade sözü vermek gibi yetkisini aşan cevaplar verebilir.", "Araçları ne zaman kullanacağı belirsiz: ya hiç kullanmaz ya da her soruda kullanır."] }
+  };
+  const out = $(".l3-alt-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    out.append(
+      h("div", null, h("p", { class:"l3-h", style:{ color:d.c } }, d.name, " ", h("span", { class:"tag" }, "≈ " + tokenize(d.p).length + " token")), h("div", { class:"l3-box", text:d.p })),
+      h("div", null, h("p", { class:"l3-h" }, v === "mid" ? "Neden işe yarıyor" : "Tipik başarısızlık"), h("ul", { class:"l3-steps-mini" }, ...d.fail.map(x => h("li", null, x)))));
+  });
+});
+
+/* ================= 6b. Context stratejileri ================= */
+Edu.widget("l3-jit", el => {
+  const { h, $, seg } = Edu;
+  const D = {
+    pre:{ name:"Hepsini baştan yükle", total:240000, rel:3000, calls:0,
+      steps:["src/ altındaki ~400 dosyanın tamamı ilk istekle context’e giriyor.", "Model ilgili 2 dosyayı yüz binlerce token’ın içinde bulmak zorunda.", "Her sonraki tur bu yığını yeniden gönderiyor."],
+      note:"Tek turda cevap gelebilir, ama sinyal oranı çok düşük. Context rot riski en yüksek strateji; ilgili satırlar uzun bir yığının ortasında kalıyor." },
+    jit:{ name:"Just-in-time: ara, sonra oku", total:9200, rel:3500, calls:5,
+      steps:["CLAUDE.md (1.500): build/test komutları, para için decimal kuralı.", "Grep \"amount\" src/Orders → 40 satır (900).", "İki dosyayı oku: OrderTotalCalculator.cs, OrderMapper.cs (6.000).", "dotnet test --filter Total → 1 kırmızı test (800)."],
+      note:"Daha fazla tur ve araç çağrısı, ama context küçük ve odaklı. Claude Code’un varsayılan yaklaşımı bu: grep, glob, dosyanın başını okumak." },
+    hyb:{ name:"Hibrit: küçük harita + ihtiyaç anında", total:6900, rel:3500, calls:3,
+      steps:["CLAUDE.md’de kısa bir mimari harita (2.500): “Tutar hesapları src/Orders/Pricing altında; para decimal.”", "Grep \"Round\" src/Orders/Pricing → 12 satır (900).", "Tek dosyayı oku: OrderTotalCalculator.cs (3.500)."],
+      note:"Harita, aramayı doğru klasöre yönlendiriyor: daha az tur, daha az token. Anthropic’in önerdiği gibi çoğu zaman en iyisi hibrit." }
+  };
+  const out = $(".l3-jit-out", el);
+  const fmt = n => n.toLocaleString("tr-TR");
+  const usd = n => "$" + n.toFixed(2).replace(".", ",");
+  const MAX = 240000;
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    const sig = d.rel / d.total * 100;
+    const resent = d.total * 20;
+    const bar = (lab, val, max, col, txt) => h("div", { class:"l3-jbar" }, h("span", null, lab),
+      h("span", { class:"tr" }, h("i", { style:{ width: Math.max(0.6, val / max * 100) + "%", background: col } })), h("b", null, txt));
+    out.append(
+      h("p", { class:"l3-h", style:{ marginTop:".8rem" } }, d.name),
+      bar("Context’teki token", d.total, MAX, "var(--ctx)", fmt(d.total)),
+      bar("Gerçekten ilgili", d.rel, MAX, "var(--ok)", fmt(d.rel)),
+      bar("Sinyal oranı", sig, 100, "var(--tool)", "%" + (sig < 10 ? sig.toFixed(1).replace(".", ",") : Math.round(sig))),
+      h("div", { class:"stats" },
+        h("span", null, h("b", null, String(d.calls)), "araç çağrısı"),
+        h("span", null, h("b", null, fmt(resent)), "20 turda yeniden gönderilen girdi"),
+        h("span", null, h("b", null, usd(resent / 1e6 * 4)), "önbelleksiz ($4 / MTok)"),
+        h("span", null, h("b", null, usd(resent / 1e6 * 0.2)), "tamamı önbellekten okunsa ($0,20 / MTok)")),
+      h("ol", { class:"l3-steps-mini" }, ...d.steps.map(x => h("li", null, x))),
+      h("p", { style:{ margin:".5rem 0 0" } }, d.note),
+      h("p", { class:"hint" }, "Gerçek ölçüm (Chroma, Temmuz 2025, LongMemEval): ~300 token’lık odaklı girdi, ~113 bin token’lık tam girdiden her modelde daha iyi sonuç verdi. Önbellek fiyatlandırmasının ayrıntıları 2. seviyede."));
+  });
+});
+</script>

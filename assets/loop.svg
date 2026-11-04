@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 250" width="900" height="250" role="img" aria-label="Agent döngüsü: model araç ister, harness çalıştırır, sonuç modele döner">
+  <title>Agent döngüsü</title>
+  <style>
+    :root{--bg:#F5F6FA;--surface:#FFFFFF;--ink:#141B27;--muted:#5B6578;--line:#DCE1EA;--model:#8A2C9C;--model-bg:#F6E9F8;--harness:#0B7A70;--harness-bg:#E0F3F0;--ctx:#B06F00;--ctx-bg:#FCF1DA;--tool:#2456C9;--tool-bg:#E6EDFC}
+    @media (prefers-color-scheme:dark){:root{--bg:#0F131A;--surface:#161B24;--ink:#E7EAF0;--muted:#9BA5B6;--line:#2A3241;--model:#D58BE6;--model-bg:#2C1B33;--harness:#3CC8BA;--harness-bg:#112E2B;--ctx:#EDB24B;--ctx-bg:#33260D;--tool:#7EA6FF;--tool-bg:#16233F}}
+    text{font-family:"Segoe UI",system-ui,-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink)}
+    .bg{fill:var(--bg);stroke:var(--line)}
+    .t{font-size:16px;font-weight:700}
+    .s{font-size:12.5px;fill:var(--muted)}
+    .code{font-family:Consolas,"Cascadia Code",ui-monospace,monospace;font-size:13px;fill:var(--muted)}
+    .box{stroke-width:2}
+    .u{fill:var(--tool-bg);stroke:var(--tool)} .m{fill:var(--model-bg);stroke:var(--model)} .h{fill:var(--harness-bg);stroke:var(--harness)} .c{fill:var(--ctx-bg);stroke:var(--ctx)}
+    .path{fill:none;stroke:var(--line);stroke-width:2.5;stroke-dasharray:6 6}
+    .dot{fill:var(--ctx)}
+    .pulse{animation:pulse 6s infinite;transform-box:fill-box;transform-origin:center}
+    .p1{animation-delay:0s}.p2{animation-delay:1.5s}.p3{animation-delay:3s}.p4{animation-delay:4.5s}
+    @keyframes pulse{0%,20%{transform:scale(1.06)}25%,100%{transform:scale(1)}}
+    @media (prefers-reduced-motion:reduce){.pulse{animation:none}.dot{display:none}}
+  </style>
+  <rect class="bg" x="1" y="1" width="898" height="248" rx="18"/>
+  <path id="loop" class="path" d="M190 93 H760 C800 93 830 120 830 150 C830 182 805 200 770 200 H420 C385 200 350 170 350 124"/>
+  <g class="pulse p1"><rect class="box u" x="40" y="62" width="150" height="62" rx="12"/><text class="t" x="60" y="89">Kullanıcı</text><text class="s" x="60" y="110">“Testi düzelt”</text></g>
+  <g class="pulse p2"><rect class="box m" x="270" y="62" width="160" height="62" rx="12"/><text class="t" x="290" y="89">Model</text><text class="s" x="290" y="110">sonraki token’lar</text></g>
+  <g class="pulse p3"><rect class="box c" x="495" y="62" width="150" height="62" rx="12"/><text class="t" x="515" y="89">tool_use</text><text class="s" x="515" y="110">run_tests(…)</text></g>
+  <g class="pulse p4"><rect class="box h" x="690" y="62" width="170" height="62" rx="12"/><text class="t" x="710" y="89">Harness</text><text class="s" x="710" y="110">izin · sandbox · çalıştır</text></g>
+  <g><rect class="box c" x="560" y="172" width="170" height="56" rx="12"/><text class="t" x="580" y="197">tool_result</text><text class="s" x="580" y="215">“1 failed” → context</text></g>
+  <text class="code" x="40" y="168">while (stop_reason == "tool_use") {</text>
+  <text class="code" x="56" y="188">sonucu ekle; modeli yeniden çağır</text>
+  <text class="code" x="40" y="208">}</text>
+  <circle class="dot" r="7">
+    <animateMotion dur="6s" repeatCount="indefinite" rotate="auto"><mpath href="#loop"/></animateMotion>
+  </circle>
+</svg>

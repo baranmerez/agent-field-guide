@@ -1,0 +1,719 @@
+<section class="level" data-no="2" data-short="Context" data-title="Context window: modelin tek gerçekliği"
+  data-accent="ctx" data-time="80 dk"
+  data-lede="Model seni hatırlamaz. Hatırladığını sandığın her şey, her istekte baştan gönderilen bir metindir. Bu seviye o metnin nasıl büyüdüğünü, neden çürüdüğünü, nasıl sıkıştırıldığını ve faturanın neden cache’e bağlı olduğunu gösteriyor.">
+<style>
+.l2-rows{display:flex;flex-direction:column;gap:3px;margin-top:.6rem;max-height:340px;overflow-y:auto}
+.l2-row{display:grid;grid-template-columns:76px 1fr auto;gap:.5rem;align-items:center;font-size:.8rem;padding:.3rem .5rem;border-radius:7px;background:var(--paper);border:1px solid var(--line);border-left:4px solid var(--line)}
+.l2-row .r{font-family:var(--sans);font-weight:800;font-size:.68rem;letter-spacing:.04em;text-transform:uppercase}
+.l2-row .x{font-family:var(--mono);font-size:.76rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.l2-row .n{font-family:var(--mono);font-size:.74rem;color:var(--muted)}
+.l2-row.new{animation:l2in .5s ease;box-shadow:0 0 0 2px color-mix(in srgb,var(--ctx) 55%,transparent)}
+.l2-row.out{border-style:dashed}
+@keyframes l2in{from{opacity:0;transform:translateX(-8px)}}
+.l2-stack{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--soft);margin-top:.7rem}
+.l2-stack > i{display:block;height:100%;min-width:2px;border-right:1px solid var(--surface);transition:width .4s,background .3s}
+.l2-tbl table{min-width:520px}
+.l2-tbl td,.l2-tbl th{padding:.3rem .5rem;font-size:.78rem;font-family:var(--mono)}
+.l2-tbl th{font-family:var(--sans)}
+.l2-chart{width:100%;height:auto;display:block;background:var(--paper);border:1px solid var(--line);border-radius:10px;margin-top:.7rem}
+.l2-items{display:grid;gap:5px;margin-top:.6rem}
+.l2-item{display:grid;grid-template-columns:1fr auto;gap:.6rem;align-items:center;padding:.45rem .65rem;border-radius:8px;border:1px solid var(--line);background:var(--paper);font-size:.84rem;border-left:5px solid var(--line);transition:background .3s,border-color .3s}
+.l2-item .n{font-family:var(--mono);font-size:.75rem;color:var(--muted);white-space:nowrap}
+.l2-item.kept{border-left-color:var(--ok);background:var(--ok-bg)}
+.l2-item.cond{border-left-color:var(--ctx);background:var(--ctx-bg)}
+.l2-item.lost{border-left-color:var(--risk);background:var(--risk-bg)}
+.l2-item.lost .t{text-decoration:line-through;text-decoration-color:var(--risk)}
+.l2-item small{display:block;color:var(--muted);font-size:.76rem}
+.l2-tog{display:flex;flex-wrap:wrap;gap:.45rem}
+.l2-tog .btn{font-weight:600}
+.l2-big{font-family:var(--sans);font-weight:800;font-size:1.5rem;line-height:1.1}
+</style>
+
+  <!-- ============ 1. DURUMSUZ ============ -->
+  <div class="lesson" data-tab="Durumsuz API">
+    <h2>Model seni hatırlamaz</h2>
+    <p class="lead">LLM API’leri <span class="g" data-g="Stateless">durumsuzdur</span>. Her istekte modele konuşmanın tamamı yeniden gönderilir: system prompt, araç tanımları, önceki bütün mesajlar, araç sonuçları, görseller ve son mesajın. Model bir önceki çağrıdan hiçbir şey taşımaz; sunucu da senin için bir oturum tutmaz.</p>
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Bu, durumsuz bir HTTP servisidir. Oturum bilgisini sunucuda tutmayan, her istekte bütün durumu taşıyan bir istemci düşün: sepetteki her ürünü her istekte yeniden gönderen bir alışveriş istemcisi ya da her çağrıda bütün claim’leri taşıyan bir token. Sunucu basit kalır; bedelini her istekte büyüyen yük öder.</div>
+
+    <h3>Bir isteğin içinde neler var?</h3>
+    <p>Modelin o an gördüğü metnin tamamına <span class="g" data-g="Context window">context</span> denir. Bir coding agent’ın isteğinde tipik olarak şunlar bulunur:</p>
+    <div class="cols">
+      <div class="card h"><h4>System prompt</h4>Harness’ın kendi talimatları: rol, kurallar, araç kullanım biçimi. Çoğu zaman binlerce token.</div>
+      <div class="card t"><h4>Araç tanımları</h4>Her aracın adı, açıklaması ve JSON şeması. Çok sayıda MCP aracı bağlıysa on binlerce token’a çıkabilir.</div>
+      <div class="card ok"><h4>Proje bağlamı</h4>CLAUDE.md, AGENTS.md gibi kurallar dosyaları; her oturumda yeniden yüklenir.</div>
+      <div class="card c"><h4>Mesajlar</h4>Kullanıcı mesajları, modelin cevapları, araç çağrıları ve araç sonuçları. En hızlı büyüyen kısım: bir test çıktısı ya da okunan bir dosya tek başına binlerce token.</div>
+      <div class="card m"><h4>Düşünme blokları</h4>Opus, Sonnet ve Haiku 5.5’te önceki turların düşünme blokları sonraki turlarda korunur ve girdi olarak faturalanır. Eski modellerde API bunları ayıklıyordu.</div>
+    </div>
+    <p>Modelin ürettiği çıktı, bir sonraki turda girdinin parçası olur. Bir agent oturumu bu yüzden her adımda büyüyen bir <span class="g" data-g="Transcript">transcript</span> demektir. 30 turluk bir oturum, 1. turu 30 kez yeniden okur.</p>
+
+    <div class="fig" data-widget="l2-replay">
+      <p class="fig-title">Her istekte gerçekte ne gidiyor?</p>
+      <p class="fig-cap">Gerçekçi bir Claude Code oturumu: üç kullanıcı mesajı, altı model çağrısı. Adım adım ilerlet. Her adım API’ye giden <em>bir istek</em>; kesikli satır modelin o istekte ürettiği çıktı, sarı çerçeveli satırlar bu istekte yeni eklenenler. Alttaki sayaçları karşılaştır: senin yazdığın ile gönderilen arasındaki fark.</p>
+    </div>
+
+    <h3>“Hafıza” her zaman harness’ın işidir</h3>
+    <p>Model tarafında sihirli bir kalıcılık yok. “Hafıza” olarak sunulan her özellik, harness’ın bir metni bir sonraki isteğe geri koymasıdır:</p>
+    <ul>
+      <li>Kurallar dosyası (CLAUDE.md, AGENTS.md) her oturumun başında diskten okunup context’e eklenir.</li>
+      <li>Bir oturumu “devam ettirmek”, eski transcript’i diskten yükleyip yeniden göndermektir.</li>
+      <li>Uzun konuşmalarda eski kısımların özetlenip özetin gönderilmesi (compaction) yine metin işlemidir; 4. konu.</li>
+      <li>“Notlarını bir dosyaya yaz” demek, bilgiyi context dışına taşıyıp gerektiğinde geri okutmaktır.</li>
+    </ul>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Claude Code projemi biliyor, dün ona mimariyi anlattım.” Dünkü oturumda anlattığın şey dünkü transcript’teydi. Bugünkü oturum, sen ya da harness o bilgiyi yeniden yüklemedikçe onu görmez. Bilginin bir sonraki oturuma taşınmasını istiyorsan onu bir dosyaya yaz ve harness’ın o dosyayı yüklediğinden emin ol.</div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Her yeni görev için yeni oturum aç. Eski bir oturumda alakasız bir işe devam etmek, önceki işin bütün transcript’ini her istekte yeniden göndermek demek: hem para, hem dikkat dağınıklığı (3. konu). Taşınması gereken bilgiyi kısa bir not olarak yeni oturuma ver.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>API durumsuzdur: her istek system prompt, araçlar ve bütün geçmişi yeniden taşır.</li>
+      <li>Çıktı bir sonraki turun girdisidir; transcript her adımda büyür.</li>
+      <li>Hafıza, harness’ın metni geri koymasıdır; modelde kalıcılık yoktur.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. BÜTÇE ============ -->
+  <div class="lesson" data-tab="Boyut ve bütçe">
+    <h2>Pencere ne kadar büyük?</h2>
+    <p><span class="g" data-g="Context window">Context window</span>, tek bir istekte modelin işleyebileceği en fazla token sayısıdır. Girdi ve üretilecek çıktı birlikte bu sınıra sayılır. Kasım 2026 itibarıyla büyük sağlayıcıların güncel modellerinde tablo şöyle:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Sağlayıcı</th><th>Modeller</th><th>Context</th><th>En fazla çıktı</th><th>Not</th></tr></thead>
+      <tbody>
+        <tr><td>Anthropic</td><td>Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5</td><td>1M</td><td>128K</td><td>1M varsayılan, ek başlık yok, standart fiyat. Batch’te beta başlığıyla 300K çıktı. Haiku 5.5’te 100K üstü prompt’lar daha yüksek fiyat kademesinde.</td></tr>
+        <tr><td>OpenAI</td><td>GPT-6 ailesi</td><td>1,05M</td><td>128K</td><td>272K üstü prompt’larda girdi ~2×, çıktı ~1,5× fiyat.</td></tr>
+        <tr><td>Google</td><td>Gemini 4 Argon</td><td>1M</td><td>—</td><td>Gemini 3.1 Pro’da da 1M; 200K üstü daha pahalı kademe.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Anthropic dokümanındaki kaba ölçü: güncel Claude tokenizer’ında 1M token ≈ 555 bin İngilizce kelime. Türkçe metin daha çok token tuttuğu için aynı pencereye daha az Türkçe kelime sığar (0. seviye).</p>
+
+    <h3>Sınırı aşınca ne olur?</h3>
+    <ul>
+      <li><b>Yalnızca girdi sınırı aşıyorsa:</b> istek reddedilir, HTTP 400 “prompt is too long”.</li>
+      <li><b>Girdi + <code>max_tokens</code> sınırı aşıyorsa:</b> 4.5 ve sonrası modellerde istek kabul edilir; model pencere dolunca durur ve <code>stop_reason</code> <code>model_context_window_exceeded</code> olur. Cevabın yarıda kesilmiş olabileceğini kodunda ele almalısın.</li>
+    </ul>
+    <p>Bazı modeller pencerenin ne kadarının kaldığını kendisi de görür: Sonnet 5, Sonnet 4.6 ve Haiku 4.5 gibi modellere toplam bütçe ve her araç çağrısından sonra “şu kadar token kaldı” bilgisi enjekte edilir. Daha yeni Opus ve Sonnet 5.5’te bunun yerine isteğe bağlı görev bütçeleri var.</p>
+
+    <h3>Bir agent’ta token’lar nereye gider?</h3>
+    <p>“1M token, bütün repoyu koyarım” düşüncesi iki yerden yanlış. Birincisi pencere, sen daha tek satır yazmadan sabit bir yükle dolar: sistem prompt’u, araç tanımları, kurallar dosyası. İkincisi agent’ın kendi çalışması (dosya okumak, test çalıştırmak, log incelemek) pencerenin en büyük tüketicisidir. Tek bir başarısız test koşusunun çıktısı, bütün konuşmandan daha uzun olabilir.</p>
+
+    <div class="fig" data-widget="l2-budget">
+      <p class="fig-title">Context bütçe planlayıcısı</p>
+      <p class="fig-cap">Bir oturumun context’ini kalem kalem kur. Varsayılan değerler orta ölçekli bir coding oturumu için temsili örnek; kendi oturumunun dökümüne göre değiştir. <code>max_tokens</code> rezervi de pencereye sayılır.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Claude Code’da <code>/context</code> komutu context’in o anki dağılımını gösterir: sistem prompt’u, araçlar, MCP sunucuları, kurallar dosyaları, mesajlar. Kullanmadığın MCP sunucularını kapatmak, her istekteki sabit yükü doğrudan azaltır. Kendi agent’ını yazıyorsan yanıttaki <code>usage</code> alanını log’la; tahmin etme, ölç.</div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Pencerenin büyük olması, içine koyduğun her şeyin eşit dikkatle okunacağı anlamına gelmiyor. “Sığıyor” ile “iyi çalışıyor” farklı şeyler. Bir sonraki konu bunun ölçümü.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Kasım 2026’da büyük sağlayıcıların güncel modellerinde pencere ~1M token, çıktı sınırı 128K.</li>
+      <li>Girdi ve max_tokens birlikte sayılır; aşım 400 hatası ya da yarıda kalan bir cevap demektir.</li>
+      <li>Sabit yük (system, araçlar, kurallar) ve araç çıktıları pencerenin büyük kısmını yer; ölç ve buda.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/models/overview">Anthropic: Modellere genel bakış</a></li>
+      <li><a href="https://developers.openai.com/api/docs/models">OpenAI: Modeller</a> · <a href="https://developers.openai.com/api/docs/pricing">Fiyatlar</a></li>
+      <li><a href="https://aistudio.google.com/docs/models">Google: Gemini modelleri</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. CONTEXT ROT ============ -->
+  <div class="lesson" data-tab="Context rot">
+    <h2>Daha fazla context daha iyi değildir</h2>
+    <p>0. seviyedeki attention sezgisini hatırla: her token önceki her token’a bakar ve bu “bakış” bir softmax ile paylaştırılır. Context’e eklenen her token, sınırlı bir attention bütçesinden pay alır. Alakasız token’lar alakalı olanların sinyalini sulandırır. Bu sezginin iki güçlü ölçümü var.</p>
+
+    <h3>Lost in the middle</h3>
+    <p>Liu ve arkadaşlarının (TACL 2024) çalışmasında modellere 20 belge verildi ve sorunun cevabı bunlardan birine yerleştirildi. Doğruluk U şeklinde çıktı: cevap ilk ya da son belgedeyken en yüksek, ortadayken en düşük. Etki base modellerde de görüldü, yani yalnızca sohbet eğitiminin bir yan etkisi değil. Belge sayısını 20’den 50’ye çıkarmak ise neredeyse hiç fayda sağlamadı. Bu olguya <span class="g" data-g="Lost in the middle">lost in the middle</span> deniyor.</p>
+
+    <h3>Context rot</h3>
+    <p>Chroma’nın Temmuz 2025 çalışması, aralarında Claude Opus 4, Sonnet 4, GPT-4.1, Gemini 2.5 ve Qwen3’ün de bulunduğu 18 modeli test etti. Bulgular:</p>
+    <ul>
+      <li>Performans, görev basit olsa bile girdi uzadıkça düşüyor ve düşüş düzgün değil.</li>
+      <li>Aranan bilgi (iğne) ile soru arasındaki anlamsal benzerlik azaldıkça düşüş hızlanıyor.</li>
+      <li>Tek bir yanıltıcı (distractor) bile zarar veriyor; dört tanesi daha fazla. Bazı yanıltıcılar diğerlerinden çok daha zararlı.</li>
+      <li>Sürpriz: rastgele karıştırılmış samanlıklar, mantıksal olarak tutarlı olanlardan 18 modelin hepsinde daha iyi sonuç verdi.</li>
+      <li>LongMemEval’de (306 prompt) odaklı girdi (~300 token), tam girdiden (~113 bin token) <b>her modelde</b> daha iyiydi. Düşünme açıkken fark kapandı ama kaybolmadı.</li>
+      <li>Tekrarlanan kelimeleri kopyalama gibi önemsiz bir görevde bile doğruluk uzunlukla düştü; bazı modeller birkaç yüz kelimeden sonra rastgele kelimeler üretmeye başladı.</li>
+    </ul>
+    <p>Anthropic’in kendi dokümanı da terimi benimsiyor: daha fazla context otomatik olarak daha iyi değil; token sayısı arttıkça doğruluk ve hatırlama düşüyor. Buna <span class="g" data-g="Context rot">context rot</span> deniyor.</p>
+
+    <div class="fig" data-widget="l2-needle">
+      <p class="fig-title">İğne nerede, samanlık ne kadar büyük?</p>
+      <p class="fig-cap"><b>Temsili eğri:</b> aşağıdaki sayılar gerçek bir ölçüm değil; yukarıdaki iki çalışmanın <em>yönlerini</em> (U şekli, uzunlukla düşüş, yanıltıcı ve benzerlik etkisi) birleştiren bir öğretim modeli. Kesin değerler modele ve göreve göre çok değişir. İğnenin konumunu, context uzunluğunu ve yanıltıcı sayısını değiştir.</p>
+    </div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Context 1M oldu, artık RAG’e, seçici dosya okumaya gerek yok; her şeyi koyarım.” Pencere büyüdü ama dikkat bütçesi aynı mantıkla paylaşılıyor. Ölçümler, ilgili birkaç bin token’ın, alakasız yüz binlerce token’ın içine gömülmüş aynı bilgiden daha iyi sonuç verdiğini gösteriyor. Ayrıca her token parasını da alıyor.</div>
+
+    <h3>Bunun mühendislik sonuçları</h3>
+    <ol class="steps">
+      <li><b>Az ama ilgili.</b> Elli dosyayı okutup “şimdi düzelt” demek yerine ilgili üç dosyayı okut. Agent’a dosya yolu ve satır aralığı vermek, ona “her yeri ara” demekten iyidir.</li>
+      <li><b>Kritik talimat başta ya da sonda.</b> Uzun bir context’in ortasına gömülen bir kısıt en kolay kaybolan şeydir. Kalıcı kurallar kurallar dosyasında (başta), görevin özü son mesajda.</li>
+      <li><b>Gürültülü araç çıktısını buda.</b> 4 bin satırlık test log’unu bütünüyle context’e koymak yerine başarısız testleri filtrele. Benzer görünen ama alakasız log satırları tam olarak “yanıltıcı” tanımına uyar.</li>
+      <li><b>Yeni iş, yeni oturum.</b> Önceki görevin kalıntıları bir sonraki görev için yanıltıcıdır.</li>
+      <li><b>Keşfi alt agent’a ver.</b> Geniş bir aramayı ayrı bir context’te yaptırıp yalnızca özetini ana oturuma getirmek, ana context’i temiz tutar (4. konu).</li>
+    </ol>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Doğruluk, context uzadıkça düşer; ortadaki bilgi uçtakilere göre daha kolay kaybolur.</li>
+      <li>Yanıltıcılar ve düşük anlamsal benzerlik düşüşü hızlandırır.</li>
+      <li>Odaklı context neredeyse her zaman tam context’ten iyidir: daha doğru, daha hızlı, daha ucuz.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://arxiv.org/abs/2307.03172">Liu ve ark., Lost in the Middle (TACL 2024)</a></li>
+      <li><a href="https://www.trychroma.com/research/context-rot">Chroma: Context Rot (Temmuz 2025)</a> · <a href="https://github.com/chroma-core/context-rot">kod</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. COMPACTION ============ -->
+  <div class="lesson" data-tab="Compaction">
+    <h2>Pencere dolunca: sıkıştırmak, budamak, dağıtmak</h2>
+    <p>Uzun bir agent oturumu er geç pencerenin sınırına ya da en azından context rot’un belirginleştiği bölgeye gelir. Harness bir şey yapmak zorundadır. Anthropic’in context engineering yazısı ve dokümanları birkaç teknik tarif ediyor:</p>
+    <div class="cols">
+      <div class="card c"><h4><span class="g" data-g="Compaction">Compaction</span></h4>Geçmiş bir model tarafından özetlenir; özet, orijinal mesajların yerine geçer ve oturum özetle devam eder.</div>
+      <div class="card c"><h4>Araç sonucu temizleme</h4>Eski araç sonuçları (okunan dosyalar, test çıktıları) context’ten silinir. Anthropic bunu “en güvenli, en hafif dokunuşlu compaction” olarak tanımlıyor: gerekirse araç yeniden çağrılır.</div>
+      <div class="card ok"><h4>Yapılandırılmış notlar</h4>Agent ilerlemeyi, kararları ve açık işleri pencere dışındaki bir dosyaya yazar; gerektiğinde geri okur.</div>
+      <div class="card h"><h4><span class="g" data-g="Sub-agent">Alt agent’lar</span></h4>Keşif ayrı bir context’te on binlerce token harcayarak yapılır; ana oturuma yalnızca 1.000–2.000 token’lık bir özet döner.</div>
+      <div class="card t"><h4><span class="g" data-g="Just-in-time retrieval">Tam zamanında getirme</span></h4>Context’te içerik yerine dosya yolları ve kimlikler tutulur; içerik gerektiğinde yüklenir. Claude Code kurallar dosyasını baştan yükler, gerisini glob ve grep ile arar.</div>
+    </div>
+
+    <h3>Claude Code’da compaction</h3>
+    <p>Claude Code’un compaction’ı geçmişi özetler: mimari kararları, açık hataları ve uygulama ayrıntılarını korumaya çalışır; tekrar eden araç çıktılarını atar. Ardından oturum, özet ve <b>en son erişilen 5 dosya</b> ile devam eder. <code>/compact</code> bunu elle tetikler; pencere dolmaya yaklaşınca otomatik olarak da çalışır. API tarafında da benzer araçlar var: Claude 4.6 ve sonrası için beta durumundaki sunucu tarafı compaction ve eski araç sonuçlarını ya da düşünme bloklarını temizleyen <span class="g" data-g="Context editing">context editing</span>.</p>
+
+    <h3>Özetleme kayıplıdır</h3>
+    <p>Özeti bir model yazar; neyin önemli olduğuna o karar verir. Tam bir hata mesajı, bir dosyanın kesin satır numarası, konuşmanın başında söylediğin küçük ama kritik bir kısıt özette kaybolabilir. Uzun bir oturumun sonunda agent’ın “unuttuğu” şeylerin çoğu buradan gelir. Sorun, kaybın sessiz olması: agent sana “şu kuralı unuttum” demez, kuralı hiç duymamış gibi davranır.</p>
+
+    <div class="fig" data-widget="l2-compact">
+      <p class="fig-title">Compaction’dan ne sağ çıkar?</p>
+      <p class="fig-cap">156 bin token’lık bir oturumun içeriği. “Sıkıştır”a bas ve her parçanın akıbetini gör. Sonra önlemleri açıp tekrar dene. <b>Temsili:</b> özeti bir model yazdığı için neyin kalacağı her seferinde farklı olabilir; burada tipik bir sonuç gösteriliyor.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Kaybolmaması gereken her şeyi konuşmanın dışına koy. Kalıcı kurallar kurallar dosyasına (CLAUDE.md, AGENTS.md): harness onları diskten yeniden yükler. Kesin hata metinleri, kararlar ve yapılacaklar için agent’tan bir not dosyası tutmasını iste. Elle compaction yaparken neyi koruması gerektiğini söyle (Claude Code’da <code>/compact</code> komutuna talimat ekleyebilirsin). Ve mümkünse compaction’a hiç gerek kalmadan, iş bitince yeni bir oturuma geç.</div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Compaction’ın gizli bir maliyeti var: mesaj geçmişi tamamen değiştiği için prompt cache’in mesaj kısmı geçersiz olur ve bir sonraki istek o kısmı yeniden yazar. Bir sonraki konudaki simülasyonda bunu fiyatıyla göreceksin.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Dolan pencereye karşı teknikler: compaction, araç sonucu temizleme, notlar, alt agent’lar, tam zamanında getirme.</li>
+      <li>Compaction kayıplı ve sessizdir; kesin değerler ve erken kısıtlar ilk kaybolanlardır.</li>
+      <li>Kalıcı bilgiyi konuşmaya değil dosyaya yaz; harness onu her seferinde geri yükler.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows (compaction ve context editing)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. PROMPT CACHING ============ -->
+  <div class="lesson" data-tab="Prompt caching">
+    <h2>Aynı öneki iki kez hesaplama</h2>
+    <p>Durumsuz API’nin bedeli, her istekte bütün geçmişin yeniden işlenmesi. <span class="g" data-g="Prompt caching">Prompt caching</span> bu bedeli büyük ölçüde siler. Mekanizma 0. seviyeden tanıdık: sağlayıcı, bir prompt önekinin işlenmiş KV cache’ini saklar. Sonraki bir istek bayt bayt aynı önekle başlıyorsa o kısmın prefill’i atlanır. Sonuç hem daha ucuz hem daha hızlıdır (TTFT kısalır).</p>
+    <p>Kilit kelime <span class="g" data-g="Prefix">önek</span>. Cache, isteğin başından itibaren eşleşen kısmı kullanır. Öneğin başında tek bir karakter değişirse, ondan sonraki her şey geçersiz olur. Bu yüzden altın kural: <b>sabit içerik başa, değişken içerik sona</b>.</p>
+
+    <h3>Anthropic’te nasıl çalışıyor? (Kasım 2026)</h3>
+    <ul>
+      <li><b>Önek sırası:</b> araçlar → system → mesajlar. Araçlardaki bir değişiklik her şeyi, system’deki bir değişiklik system ve mesajları geçersiz kılar.</li>
+      <li><b>İki kullanım:</b> otomatik caching (istekte tek bir üst düzey <code>cache_control</code>; konuşma büyüdükçe <span class="g" data-g="Cache breakpoint">breakpoint</span> ileri kayar) ya da en fazla 4 açık breakpoint.</li>
+      <li><b>Geriye bakma:</b> eşleşme bulunamazsa sistem en fazla 20 blok geriye giderek önceki bir cache yazımını arar.</li>
+      <li><b>En küçük önek:</b> 5.x modellerinde 512 token (eski modellerde 1.024–4.096). Altında sessizce cache yapılmaz.</li>
+      <li><b><span class="g" data-g="TTL">TTL</span>:</b> varsayılan 5 dakika ve her isabette ücretsiz yenilenir; istersen 1 saat.</li>
+      <li><b>Isınma:</b> cache girdisi ancak ilk cevap başladıktan sonra oluşur. Aynı anda gönderilen soğuk paralel isteklerin hepsi ıskalar.</li>
+      <li><b>Yalıtım:</b> cache organizasyon ya da çalışma alanı bazında ayrıdır.</li>
+      <li><b>Pencere:</b> cache’lenmiş token’lar da context penceresinde yer kaplar. Cache fiyatı düşürür, pencereyi büyütmez.</li>
+    </ul>
+    <div class="tbl"><table>
+      <thead><tr><th>Fiyat (taban girdiye göre)</th><th>Çarpan</th><th>Opus 5.5 örneği ($/MTok)</th></tr></thead>
+      <tbody>
+        <tr><td>Normal girdi</td><td>1×</td><td>4</td></tr>
+        <tr><td><span class="g" data-g="Cache write">Cache yazma</span>, 5 dk TTL</td><td>1,25×</td><td>5</td></tr>
+        <tr><td>Cache yazma, 1 sa TTL</td><td>2×</td><td>8</td></tr>
+        <tr><td><span class="g" data-g="Cache read">Cache okuma</span></td><td>0,1× genel; Opus 5.5 ve Sonnet 5.5’te 0,05×; Fable 5.1’de 0,025×</td><td>0,20</td></tr>
+        <tr><td>Çıktı</td><td>—</td><td>20</td></tr>
+      </tbody>
+    </table></div>
+    <p>Cache’i neyin bozduğunu bilmek, nasıl kullanacağını bilmekten daha önemli:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Değişiklik</th><th>Geçersiz olan</th></tr></thead>
+      <tbody>
+        <tr><td>Araç tanımları (bir MCP sunucusu bağlandı ya da ayrıldı, bir aracın açıklaması değişti)</td><td>Her şey</td></tr>
+        <tr><td>System prompt (içine yazılan saat damgası dahil), web arama ya da alıntı ayarları</td><td>System + mesajlar</td></tr>
+        <tr><td><code>tool_choice</code>, görseller, düşünme ayarı, effort</td><td>Mesajlar</td></tr>
+      </tbody>
+    </table></div>
+<pre data-title="Açık breakpoint’li istek (kısaltılmış)"><code>{
+  "model": "claude-opus-5-5",
+  "max_tokens": 4096,
+  "tools": [ ...araç tanımları... ],
+  "system": [
+    { "type": "text", "text": "Sen example_app deposunda çalışan bir kod asistanısın...",
+      "cache_control": { "type": "ephemeral" } }
+  ],
+  "messages": [ ...önceki mesajlar...,
+    { "role": "user", "content": [
+      { "type": "text", "text": "Testleri çalıştır.",
+        "cache_control": { "type": "ephemeral", "ttl": "1h" } } ] }
+  ]
+}
+
+// yanıttaki usage alanı: cache’in çalıştığını buradan doğrula
+"usage": { "input_tokens": 212, "cache_creation_input_tokens": 1840,
+           "cache_read_input_tokens": 48210, "output_tokens": 377 }</code></pre>
+
+    <div class="fig" data-widget="l2-cache">
+      <p class="fig-title">Cache simülatörü: tur tur dolan context ve fatura</p>
+      <p class="fig-cap">Bir agent oturumu: her tur bir kullanıcı mesajı, bir araç çağrısı ve araç sonucu, bir cevap (iki istek). Çubuk, son isteğin bloklarını gösteriyor: yeşil cache’ten okundu, sarı cache’e yazıldı, kırmızı cache’siz işlendi, mavi çıktı. Breakpoint’ler araçlardan sonra, system’den sonra ve her isteğin sonunda. Turları ilerlet, sonra cache’i bozan şeyleri tek tek dene: saat damgası, araç değişikliği, mola, compaction. Token boyutları gerçekçi aralıklardan seçildi; fiyatlar Kasım 2026 resmi listesi.</p>
+    </div>
+
+    <h3>OpenAI ve Google’da durum</h3>
+    <p>Mekanizma aynı, ayrıntılar farklı. OpenAI’da caching otomatik ve varsayılan olarak açık; işlenmiş önekin tamamı eşleşmeli. GPT-5.6 ve sonrasında en küçük önek 1.024 token, açık breakpoint ve 30 dakika (varsayılan) ya da 12 saat TTL destekleniyor; yazma 1,25× (30 dk) ya da 2,5× (12 sa), okuma 0,1× (GPT-6.1 Sol ve Terra’da 0,05×). Cache’ler tek tek makinelerde durduğu için yönlendirmeyi etkileyen <code>prompt_cache_key</code> ve öneğin ilk token’ları isabet oranını etkiliyor. Google’da 2.5 ve sonrası modellerde örtük caching varsayılan olarak açık; Gemini 4 Argon ve 3.x’te en küçük önek 4.096 token.</p>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Kendi agent’ını yazıyorsan: araç listesini oturum boyunca sabit tut, system prompt’a saat ya da istek kimliği koyma (gerekiyorsa son mesaja koy), effort ve düşünme ayarını oturum ortasında değiştirme, paralel bir dağıtımdan önce cache’i tek bir istekle ısıt. Ve her zaman <code>cache_read_input_tokens</code> ile <code>cache_creation_input_tokens</code>’ı izle: önek 512 token’ın altındaysa ya da bir şey her istekte değişiyorsa, cache sessizce çalışmıyordur.</div>
+
+    <div class="keep"><h3>Akılda kalsın</h3><ul>
+      <li>Prompt caching, bayt bayt aynı önekin KV cache’ini saklamaktır: önekte değişiklik, sonrasını geçersiz kılar.</li>
+      <li>Sıra araçlar → system → mesajlar; sabit olan başa, değişken olan sona.</li>
+      <li>5.5 modellerinde okuma taban fiyatın 0,05 katı; yazma 1,25× (5 dk) ya da 2× (1 sa). TTL isabetle yenilenir.</li>
+      <li>Saat damgası, araç değişikliği, effort değişikliği, uzun mola ve compaction cache’i bozar.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic: Prompt caching</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing">Fiyatlandırma</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI: Prompt caching</a> · <a href="https://developers.openai.com/api/docs/pricing">Fiyatlar</a></li>
+      <li><a href="https://aistudio.google.com/docs/caching">Google: Context caching</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. MALİYET ============ -->
+  <div class="lesson" data-tab="Maliyet ve hız">
+    <h2>Faturayı ve bekleme süresini hesaplamak</h2>
+    <p>Artık bütün parçalar elinde: token (birim), durumsuzluk (her tur her şeyi yeniden gönderir), prefill/decode asimetrisi (çıktı pahalı ve yavaş), caching (tekrarlanan önek ucuz). Bunları birleştirince maliyet ve gecikme için gerçekçi bir model kurabilirsin.</p>
+
+    <h3>Fiyat listesi (Kasım 2026)</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>Girdi $/MTok</th><th>Çıktı $/MTok</th><th>Cache okuma</th></tr></thead>
+      <tbody>
+        <tr><td>Claude Fable 5.1</td><td>10</td><td>50</td><td>0,025× → 0,25</td></tr>
+        <tr><td>Claude Opus 5.5</td><td>4</td><td>20</td><td>0,05× → 0,20</td></tr>
+        <tr><td>Claude Sonnet 5.5</td><td>2</td><td>10</td><td>0,05× → 0,10</td></tr>
+        <tr><td>GPT-6 Astra</td><td>10</td><td>50</td><td>1 (0,1×)</td></tr>
+        <tr><td>GPT-6.1 Sol</td><td>2</td><td>10</td><td>0,05×</td></tr>
+        <tr><td>Gemini 4 Argon</td><td>2 (kampanya; 1 Aralık’tan itibaren 4)</td><td>10 (kampanya; 1 Aralık’tan itibaren 20)</td><td>0,10 (30 Kasım’a kadar)</td></tr>
+      </tbody>
+    </table></div>
+    <p>Her yerde çıktı, girdinin yaklaşık 5 katı. Etkileşimsiz işler için Anthropic ve OpenAI’ın Batch seçenekleri %50 indirim sunuyor. Fiyatlar sık değiştiği için hesap yapmadan önce fiyat sayfasını kontrol et.</p>
+
+    <h3>Bir oturumun maliyet modeli</h3>
+    <p>Sabit bir önek (system + araçlar) P, her turda eklenen yeni girdi a ve her turdaki çıktı o olsun. t. turdaki istek yaklaşık <code>P + (t−1)·(a+o) + a</code> token’dır. Cache olmadan N tur boyunca gönderilen toplam girdi, N’nin karesiyle büyür: transcript her tur bir kez daha okunur. Cache varken önceki önek okuma fiyatından (taban fiyatın küçük bir kesri), yalnızca yeni eklenen kısım yazma fiyatından ödenir. Uzun oturumlarda fark katlarla ölçülür.</p>
+
+    <div class="fig" data-widget="l2-cost">
+      <p class="fig-title">Oturum maliyeti hesaplayıcısı</p>
+      <p class="fig-cap">Modeli ve oturum profilini ayarla. Hesap, her turda önceki öneğin TTL içinde cache’ten okunduğunu varsayar (gerçekte molalar ve cache bozucular bunu azaltır). Türkçe çarpanı bir <b>varsayım</b>: kendi metinlerinde ölçtüğün oranı gir.</p>
+    </div>
+
+    <h3>Gecikme modeli</h3>
+    <p>Toplam süre ≈ TTFT + çıktı token’ı / decode hızı. TTFT, cache’lenmemiş girdinin uzunluğuyla büyür; caching onu kısaltır. Decode kısmı ise çıktı uzunluğuyla doğru orantılıdır ve caching onu etkilemez. Düşünme token’ları görünmese de çıktı tarafına eklenir. Claude’da düşünme gösterimini <code>omitted</code> bırakmak, düşünme akış olarak gönderilmediği için ilk metin token’ının daha erken gelmesini sağlar. Mutlak decode hızları modele, katmana ve yüke göre çok değişir; kendi ortamında ölç. Anthropic, Opus için daha yüksek fiyatlı bir “fast mode” da sunuyor.</p>
+
+    <div class="cols">
+      <div class="card ok"><h4>Ucuzlatan</h4>Sabit önek ve yüksek cache isabeti, odaklı context, kısa çıktı formatı, iş için yeterli en küçük model, uygun effort, etkileşimsiz işte Batch.</div>
+      <div class="card r"><h4>Pahalılaştıran</h4>Cache bozucular, gürültülü araç çıktıları, tek oturumda alakasız işler, gereksiz yüksek effort, uzun açıklamalar, büyük pencere kademelerine taşan prompt’lar.</div>
+      <div class="card t"><h4>Ölç</h4>Her yanıtta <code>usage</code>: input, cache okuma, cache yazma, output. Bunları log’la ve tur başına maliyeti izle; sürprizlerin çoğu bir cache bozucudur.</div>
+    </div>
+
+    <div class="keep"><h3>Seviye 2: Akılda kalsın</h3><ul>
+      <li>API durumsuzdur; her istek bütün transcript’i yeniden taşır ve cache olmadan maliyet tur sayısının karesiyle büyür.</li>
+      <li>Pencere ~1M olsa da context rot gerçek: odaklı context daha doğru, daha hızlı, daha ucuz.</li>
+      <li>Compaction kayıplıdır; kalıcı bilgi dosyada yaşamalı.</li>
+      <li>Prompt caching önek eşleşmesidir: sabit başa, değişken sona; bozucuları tanı.</li>
+      <li>Çıktı girdinin ~5 katı; decode süresi çıktı uzunluğuyla, TTFT cache’lenmemiş girdiyle büyür.</li>
+    </ul></div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Fiyatlandırma</a></li>
+      <li><a href="https://developers.openai.com/api/docs/pricing">OpenAI: Fiyatlar</a></li>
+      <li><a href="https://aistudio.google.com/docs/pricing">Google: Gemini fiyatları</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/thinking">Anthropic: Thinking (display ve gecikme)</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+(() => {
+Edu.glossary({
+  "Stateless": "Durumsuz. Sunucunun istekler arasında oturum tutmadığı API biçimi; LLM API’lerinde her istek bütün konuşmayı yeniden taşır.",
+  "Context window": "Modelin tek bir istekte işleyebileceği en fazla token sayısı. Girdi ve üretilecek çıktı birlikte sayılır. Kısaca context: modelin o an gördüğü metnin tamamı.",
+  "Transcript": "Bir oturumun bütün mesaj geçmişi: kullanıcı mesajları, model cevapları, araç çağrıları ve sonuçları. Her istekte yeniden gönderilir.",
+  "Lost in the middle": "Uzun context’in ortasındaki bilginin, başta ya da sonda olandan daha kolay gözden kaçması; doğruluğun konuma göre U şeklinde değişmesi.",
+  "Context rot": "Girdi uzadıkça, görev basit olsa bile modelin doğruluk ve hatırlama performansının düşmesi.",
+  "Compaction": "Sıkıştırma. Uzayan geçmişin bir model tarafından özetlenip özetin orijinal mesajların yerine konması. Kayıplıdır.",
+  "Context editing": "Eski araç sonuçlarını ya da düşünme bloklarını context’ten temizleyerek yer açma yöntemi.",
+  "Sub-agent": "Alt agent. Ayrı bir context’te çalışan, keşif ya da yan görev yapıp ana oturuma yalnızca kısa bir özet döndüren agent.",
+  "Just-in-time retrieval": "Tam zamanında getirme. Context’te içerik yerine dosya yolu ve kimlik tutup içeriği yalnızca gerektiğinde yükleme.",
+  "Prompt caching": "Bir prompt önekinin işlenmiş hâlinin (KV cache) sağlayıcıda saklanması; aynı önekle gelen sonraki istekler o kısmı ucuz ve hızlı işler.",
+  "Prefix": "Önek. İsteğin başından itibaren önceki istekle bayt bayt aynı olan kısım. Cache yalnızca önek eşleşmesiyle çalışır.",
+  "Cache breakpoint": "Cache’e yazılacak önekin bittiği nokta. Anthropic’te cache_control ile işaretlenir; otomatik modda konuşmanın sonuna kayar.",
+  "TTL": "Time to live. Cache girdisinin kullanılmadan ne kadar yaşayacağı; Anthropic’te varsayılan 5 dakika, isabetle yenilenir, istenirse 1 saat.",
+  "Cache write": "Öneğin ilk kez cache’e yazılması. Taban girdi fiyatının 1,25 katı (5 dk TTL) ya da 2 katı (1 sa TTL).",
+  "Cache read": "Cache’teki önekin yeniden kullanılması. Taban girdi fiyatının küçük bir kesri (Opus ve Sonnet 5.5’te 0,05×)."
+});
+
+const L2 = {
+  fmt(n, d=0){ return Number(n).toLocaleString("tr-TR", { maximumFractionDigits:d, minimumFractionDigits:d }); },
+  k(n){ return n >= 1e6 ? (n/1e6).toFixed(n % 1e6 ? 2 : 0) + "M" : n >= 1000 ? (n/1000).toFixed(n >= 1e4 ? 0 : 1) + "K" : String(Math.round(n)); },
+  usd(x){ return "$" + (x >= 10 ? x.toFixed(2) : x >= 1 ? x.toFixed(3) : x.toFixed(4)); },
+  range(label, id, min, max, step, val){
+    const { h } = Edu;
+    const inp = h("input", { type:"range", id, min, max, step, value: val });
+    const out = h("output", { for: id });
+    return { wrap: h("div", { class:"range" }, h("label", { for: id }, label), inp, out), inp, out };
+  },
+  toggle(label, on){
+    const { h } = Edu;
+    const b = h("button", { type:"button", class:"btn ghost sm", "aria-pressed": on ? "true" : "false" }, label);
+    b.addEventListener("click", () => b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"));
+    return b;
+  },
+  on(b){ return b.getAttribute("aria-pressed") === "true"; },
+  rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; },
+  MODELS: { opus:{ n:"Opus 5.5", i:4, o:20, rd:0.05 }, sonnet:{ n:"Sonnet 5.5", i:2, o:10, rd:0.05 }, fable:{ n:"Fable 5.1", i:10, o:50, rd:0.025 } },
+  ROLE: { system:["SYSTEM","var(--harness)"], tools:["TOOLS","var(--tool)"], md:["CLAUDE.md","var(--ok)"], user:["USER","var(--tool)"], asst:["ASSISTANT","var(--model)"], tool_use:["TOOL_USE","var(--model)"], tool_result:["TOOL_RESULT","var(--ctx)"], summary:["ÖZET","var(--ctx)"], files:["DOSYALAR","var(--ctx)"] }
+};
+
+/* ---------- 1. Durumsuz istek tekrarı ---------- */
+Edu.widget("l2-replay", el => {
+  const { h, esc, stepper, json } = Edu;
+  const FIX = [
+    { r:"system", x:"Claude Code sistem prompt’u: rol, kurallar, araç kullanımı…", n:3200 },
+    { r:"tools", x:"Read, Edit, Write, Bash, Grep, Glob … (araç tanımları ve JSON şemaları)", n:8000 },
+    { r:"md", x:"CLAUDE.md: “example.orders üzerinde DELETE yok; testler xUnit”", n:1500 }
+  ];
+  const REQ = [
+    { add:[{ r:"user", x:"OrderService’teki NullReferenceException’ı bul.", n:14, me:true }], out:{ r:"tool_use", x:"Read(src/OrderService.cs)", n:40 } },
+    { add:[{ r:"tool_result", x:"src/OrderService.cs (412 satır)…", n:5200 }], out:{ r:"asst", x:"Satır 88’de customer null olabilir: GetById sonucu kontrol edilmiyor…", n:260 } },
+    { add:[{ r:"user", x:"Düzelt ve testleri çalıştır.", n:9, me:true }], out:{ r:"tool_use", x:"Edit(src/OrderService.cs, satır 86–90)", n:350 } },
+    { add:[{ r:"tool_result", x:"Edit uygulandı.", n:30 }], out:{ r:"tool_use", x:"Bash(dotnet test)", n:40 } },
+    { add:[{ r:"tool_result", x:"dotnet test çıktısı: 214 test, 214 geçti…", n:3800 }], out:{ r:"asst", x:"Null kontrolü ekledim, 214 testin hepsi geçti. Değişiklik…", n:180 } },
+    { add:[{ r:"user", x:"Teşekkürler, commit mesajı öner.", n:11, me:true }], out:{ r:"asst", x:"fix(order): müşteri bulunamadığında null kontrolü", n:60 } }
+  ];
+  const steps = []; let msgs = [], typed = 0, total = 0;
+  REQ.forEach((q, i) => {
+    if (i > 0) msgs = msgs.concat([{ ...REQ[i-1].out, prev:true }]);
+    msgs = msgs.concat(q.add);
+    q.add.forEach(m => { if (m.me) typed += m.n; });
+    const inTok = FIX.reduce((a, b) => a + b.n, 0) + msgs.reduce((a, b) => a + b.n, 0);
+    total += inTok;
+    steps.push({ msgs: msgs.slice(), newIdx: msgs.length - q.add.length - (i > 0 ? 1 : 0), out: q.out, inTok, typed, total, i });
+  });
+  const view = h("div", { class:"seg", role:"group", "aria-label":"Görünüm" }, h("button", { type:"button", "data-v":"list", "aria-pressed":"true" }, "Bloklar"), h("button", { type:"button", "data-v":"json", "aria-pressed":"false" }, "Ham JSON (kısaltılmış)"));
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, view));
+  let mode = "list", cur = steps[0];
+  const row = (m, cls) => { const [lab, col] = L2.ROLE[m.r]; return `<div class="l2-row ${cls || ""}" style="border-left-color:${col}"><span class="r" style="color:${col}">${lab}</span><span class="x" title="${esc(m.x)}">${esc(m.x)}</span><span class="n">${L2.fmt(m.n)}</span></div>`; };
+  function paint(body, s){
+    const head = `<p style="margin:0 0 .3rem"><b>İstek #${s.i + 1}</b> <span class="muted">· model çağrısı</span></p>`;
+    let mid;
+    if (mode === "list"){
+      mid = `<div class="l2-rows">${FIX.map(m => row(m)).join("")}${s.msgs.map((m, k) => row(m, k >= s.newIdx ? "new" : "")).join("")}${row(s.out, "out")}</div>`;
+    } else {
+      const toMsg = m => m.r === "user" ? { role:"user", content:m.x } : m.r === "tool_result" ? { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_…", content:m.x }] } : m.r === "tool_use" ? { role:"assistant", content:[{ type:"tool_use", id:"toolu_…", name:m.x.split("(")[0], input:{ "…":"…" } }] } : { role:"assistant", content:m.x };
+      mid = `<div class="jsonv">${json({ model:"claude-opus-5-5", max_tokens:8192, system:FIX[0].x + " + " + FIX[2].x, tools:["… 12 araç tanımı …"], messages:s.msgs.map(toMsg) }, { hl:["messages"] })}</div>`;
+    }
+    const stats = `<div class="stats"><span>Senin yazdığın (toplam)<b>${L2.fmt(s.typed)} token</b></span><span>Bu istekte giden girdi<b>${L2.fmt(s.inTok)} token</b></span><span>Oturum boyunca gönderilen<b>${L2.fmt(s.total)} token</b></span><span>Model çağrısı<b>${s.i + 1}</b></span></div>`;
+    const note = s.i === 0 ? "İlk istek bile sabit yükle başlıyor: sen 14 token yazdın, model 12.700’den fazlasını okudu." : s.i === 1 ? "Kullanıcı hiçbir şey yazmadı ama yeni bir istek gitti: harness aracı çalıştırıp sonucu ekledi ve modeli yeniden çağırdı. Önceki bütün bloklar tekrar gönderildi." : s.i === 4 ? "Test çıktısı tek başına konuşmanın tamamından uzun. Araç çıktıları context’in en büyük tüketicisi." : s.i === 5 ? "Altı istekte yaklaşık 34 token yazdın; API’ye 100 binden fazla girdi token’ı gitti. Cache olmasa her biri tam fiyat." : "Önceki çıktı (kesikli) bu istekte girdinin parçası oldu.";
+    body.innerHTML = head + mid + stats + `<p class="hint">${note}</p>`;
+  }
+  const st = stepper(el, { steps, auto:3600, render(i, s, { body }){ cur = s; paint(body, s); } });
+  Edu.seg(view, v => { mode = v; const body = el.querySelector(".stp-body"); if (body) paint(body, cur); });
+});
+
+/* ---------- 2. Bütçe planlayıcı ---------- */
+Edu.widget("l2-budget", el => {
+  const { h, seg } = Edu;
+  const IT = [
+    { k:"sys", l:"System prompt (harness)", max:20000, step:500, v:4000, c:"var(--harness)" },
+    { k:"tools", l:"Araç tanımları (MCP dahil)", max:80000, step:1000, v:14000, c:"var(--tool)" },
+    { k:"md", l:"Kurallar dosyaları", max:30000, step:500, v:3000, c:"var(--ok)" },
+    { k:"files", l:"Okunan dosyalar", max:500000, step:5000, v:90000, c:"var(--ctx)" },
+    { k:"out", l:"Araç çıktıları (test, log)", max:300000, step:5000, v:60000, c:"color-mix(in srgb,var(--ctx) 55%,var(--risk))" },
+    { k:"conv", l:"Konuşma", max:200000, step:2000, v:20000, c:"var(--muted)" },
+    { k:"think", l:"Önceki düşünme blokları", max:150000, step:2000, v:30000, c:"var(--model)" },
+    { k:"res", l:"max_tokens rezervi", max:128000, step:2000, v:32000, c:"repeating-linear-gradient(135deg,var(--faint) 0 5px,transparent 5px 10px)" }
+  ];
+  let W = 1000000;
+  const sw = h("div", { class:"seg", role:"group", "aria-label":"Pencere" }, h("button", { type:"button", "data-v":"1000000", "aria-pressed":"true" }, "1M (güncel Claude)"), h("button", { type:"button", "data-v":"200000", "aria-pressed":"false" }, "200K (eski nesil)"));
+  const ranges = IT.map(it => { const r = L2.range(it.l, "l2-b-" + it.k, 0, it.max, it.step, it.v); r.it = it; return r; });
+  const grid = h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,300px),1fr))", gap:".3rem .9rem", marginTop:".8rem" } }, ...ranges.map(r => r.wrap));
+  const stack = h("div", { class:"l2-stack", "aria-hidden":"true" });
+  const leg = h("div", { class:"legend-row" }, ...IT.map(it => h("span", null, h("i", { class:"sw", style:{ background: it.c } }), it.l)));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const msg = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sw), grid, stack, leg, stats, msg);
+  function upd(){
+    let input = 0; const vals = {};
+    ranges.forEach(r => { const v = +r.inp.value; vals[r.it.k] = v; r.out.textContent = L2.k(v); if (r.it.k !== "res") input += v; });
+    const all = input + vals.res, scale = Math.max(W, all);
+    stack.innerHTML = IT.map(it => `<i style="width:${vals[it.k] / scale * 100}%;background:${it.c}" title="${it.l}: ${L2.fmt(vals[it.k])}"></i>`).join("") + (all > W ? "" : `<i style="flex:1;background:transparent;border:0"></i>`);
+    const fixed = vals.sys + vals.tools + vals.md;
+    stats.innerHTML = `<span>Girdi<b>${L2.fmt(input)}</b></span><span>Girdi + rezerv<b>%${(all / W * 100).toFixed(1)}</b></span><span>Sabit yük<b>%${(fixed / Math.max(1, input) * 100).toFixed(0)}</b></span><span>≈ İngilizce kelime<b>${L2.fmt(input * 0.555)}</b></span>`;
+    msg.innerHTML = input > W ? `<span class="tag r">400</span> Girdi tek başına pencereyi aşıyor: istek <code>prompt is too long</code> hatasıyla reddedilir.` :
+      all > W ? `<span class="tag c">Kesilme riski</span> Girdi sığıyor ama girdi + max_tokens sığmıyor. İstek kabul edilir; model pencere dolunca durur ve <code>stop_reason</code> <code>model_context_window_exceeded</code> olur. Cevabın yarım kalabileceğini kodunda ele al.` :
+      input > W * 0.5 ? `<span class="tag c">Sığıyor ama</span> Pencerenin yarısından fazlası dolu. Teknik olarak sorun yok; context rot açısından odak zayıflıyor ve her tur bu kadar token yeniden gönderiliyor.` :
+      `<span class="tag ok">Rahat</span> Girdi pencerenin %${(input / W * 100).toFixed(0)}’i. Araç çıktıları ve okunan dosyalar sabit yükün ${(vals.files + vals.out) / Math.max(1, fixed) >= 1 ? ((vals.files + vals.out) / Math.max(1, fixed)).toFixed(1) + " katı" : "altında"}.`;
+  }
+  seg(sw, v => { W = +v; upd(); });
+  ranges.forEach(r => r.inp.addEventListener("input", upd));
+});
+
+/* ---------- 3. İğne (temsili) ---------- */
+Edu.widget("l2-needle", el => {
+  const { h, seg } = Edu;
+  const LEN = [1000, 4000, 16000, 64000, 128000, 256000, 512000, 1000000];
+  const rPos = L2.range("İğnenin konumu", "l2-n-pos", 0, 100, 1, 50);
+  const rLen = L2.range("Context uzunluğu", "l2-n-len", 0, LEN.length - 1, 1, 4);
+  let dis = 0, sim = "hi";
+  const sd = h("div", { class:"seg", role:"group", "aria-label":"Yanıltıcı sayısı" }, ...[0,1,4].map((d, i) => h("button", { type:"button", "data-v":d, "aria-pressed": i === 0 ? "true" : "false" }, d + " yanıltıcı")));
+  const ss = h("div", { class:"seg", role:"group", "aria-label":"Soru ile iğnenin benzerliği" }, h("button", { type:"button", "data-v":"hi", "aria-pressed":"true" }, "Yüksek benzerlik"), h("button", { type:"button", "data-v":"lo", "aria-pressed":"false" }, "Düşük benzerlik"));
+  const chart = h("div");
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("p", { class:"hint" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, rPos.wrap, rLen.wrap), h("div", { class:"ctrl" }, sd, ss), chart, stats, note);
+  const acc = (pos, len) => {
+    const ln = Math.log10(len / 1000) / 3;
+    let a = 0.97 - 0.22 * ln;
+    a -= (0.06 + 0.16 * ln) * Math.pow(Math.sin(Math.PI * pos), 1.4);
+    a -= ({ 0:0, 1:0.04, 4:0.1 })[dis] * (0.5 + ln);
+    if (sim === "lo") a -= 0.03 + 0.12 * ln;
+    return Math.max(0.05, Math.min(0.99, a));
+  };
+  function upd(){
+    const pos = +rPos.inp.value / 100, len = LEN[+rLen.inp.value];
+    rPos.out.textContent = "%" + Math.round(pos * 100); rLen.out.textContent = L2.k(len);
+    const W = 600, H = 190, X = p => 34 + p * (W - 54), Y = v => H - 24 - v * (H - 44);
+    const pts = []; for (let k = 0; k <= 50; k++) pts.push(X(k / 50) + "," + Y(acc(k / 50, len)));
+    const focus = sim === "lo" ? 0.94 : 0.97;
+    const a = acc(pos, len);
+    chart.innerHTML = `<svg class="l2-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Konuma göre temsili doğruluk eğrisi">${[0, .5, 1].map(v => `<line x1="34" x2="${W-20}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--line)"/><text x="28" y="${Y(v)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">${v}</text>`).join("")}<line x1="34" x2="${W-20}" y1="${Y(focus)}" y2="${Y(focus)}" style="stroke:var(--ok);stroke-dasharray:5 5"/><text x="${W-20}" y="${Y(focus)-6}" text-anchor="end" style="fill:var(--ok);font:600 11px var(--sans)">odaklı kısa context</text><polyline points="${pts.join(" ")}" style="fill:none;stroke:var(--ctx);stroke-width:3"/><circle cx="${X(pos)}" cy="${Y(a)}" r="7" style="fill:var(--risk)"/><text x="34" y="${H-6}" style="fill:var(--muted);font:11px var(--sans)">baş</text><text x="${W-20}" y="${H-6}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">son</text></svg>`;
+    stats.innerHTML = `<span>Temsili doğruluk<b>%${Math.round(a * 100)}</b></span><span>Aynı bilgi, odaklı context<b>%${Math.round(focus * 100)}</b></span><span>Fark<b>${Math.round((focus - a) * 100)} puan</b></span>`;
+    note.textContent = pos > .25 && pos < .75 ? "Ortadasın: U eğrisinin dibi. Kritik bir talimatı buraya gömme." : "Uçlardasın: başta ve sonda bilgi daha iyi bulunuyor. Ama uzunluk ve yanıltıcılar eğrinin tamamını aşağı çekiyor.";
+  }
+  seg(sd, v => { dis = +v; upd(); });
+  seg(ss, v => { sim = v; upd(); });
+  [rPos, rLen].forEach(r => r.inp.addEventListener("input", upd));
+});
+
+/* ---------- 4. Compaction ---------- */
+Edu.widget("l2-compact", el => {
+  const { h, $ } = Edu;
+  const IT = [
+    { id:"rule", t:"2. tur: “example.order_items testlerine dokunma, değiştirme.”", n:30 },
+    { id:"err", t:"8. tur: tam hata metni “23503: update or delete on table orders violates foreign key constraint …”", n:180 },
+    { id:"dec", t:"12. tur: karar: silme yerine status_code = 'ARCHIVED' kullanılacak.", n:60 },
+    { id:"line", t:"15. tur: OrderService.cs satır 214’teki geçici çözüm, kaldırılacak.", n:40 },
+    { id:"bug", t:"Açık hata: iade akışında amount negatif olabiliyor.", n:50 },
+    { id:"logs", t:"Test çıktıları (6 koşu)", n:38000 },
+    { id:"reads", t:"Okunan 14 dosyanın içerikleri", n:96000 },
+    { id:"chat", t:"Sohbet ve ara açıklamalar", n:22000 }
+  ];
+  const tMd = L2.toggle("Kuralı CLAUDE.md’ye yaz", false);
+  const tNotes = L2.toggle("Agent NOTES.md tutsun", false);
+  const tIns = L2.toggle("/compact’a talimat: “hata metinlerini aynen koru”", false);
+  const bC = h("button", { class:"btn", type:"button" }, "Sıkıştır");
+  const b0 = h("button", { class:"btn ghost", type:"button" }, "↺ Önceki hâl");
+  const list = h("div", { class:"l2-items", "aria-live":"polite" });
+  const stats = h("div", { class:"stats" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"l2-tog" }, tMd, tNotes, tIns), h("div", { class:"ctrl" }, bC, b0), stats, list, note);
+  let done = false;
+  function fate(id){
+    const md = L2.on(tMd), nt = L2.on(tNotes), ins = L2.on(tIns);
+    switch (id){
+      case "rule": return md ? ["kept", "Diskteki CLAUDE.md’den yeniden yüklendi: özete bağlı değil."] : ["lost", "Erken, kısa bir cümleydi; özet onu önemli bulmadı. Agent artık bu kuralı hiç duymamış gibi davranır."];
+      case "err": return ins ? ["kept", "Talimat sayesinde özete aynen kopyalandı."] : nt ? ["kept", "NOTES.md’de aynen duruyor; gerektiğinde okunur."] : ["cond", "Özette “FK hatası alındı” olarak geçiyor; hata kodu ve kısıt adı kayıp."];
+      case "dec": return ["kept", "Mimari karar: özetin korumaya çalıştığı türden bilgi."];
+      case "line": return nt ? ["kept", "NOTES.md’de satır numarasıyla duruyor."] : ["lost", "Kesin satır numarası özette yok."];
+      case "bug": return ["kept", "Açık hata: özet bunları korumaya çalışır."];
+      case "logs": return ["lost", "Tekrarlanan araç çıktısı atıldı (bilinçli). Gerekirse testler yeniden çalıştırılır."];
+      case "reads": return ["cond", "En son erişilen 5 dosya yeniden yüklendi (~15 bin token); diğer 9 dosya gitti."];
+      case "chat": return ["cond", "Birkaç paragraflık özete indi."];
+    }
+  }
+  const LBL = { kept:"korundu", cond:"özetlendi", lost:"kayboldu" };
+  function draw(){
+    list.innerHTML = "";
+    const before = IT.reduce((a, b) => a + b.n, 0);
+    IT.forEach(it => {
+      let cls = "", sub = "";
+      if (done){ const [f, why] = fate(it.id); cls = f; sub = `<small>${LBL[f]}: ${why}</small>`; }
+      list.append(h("div", { class:"l2-item " + cls, html:`<div><span class="t">${Edu.esc(it.t)}</span>${sub}</div><span class="n">${L2.fmt(it.n)}</span>` }));
+    });
+    const after = 2500 + 15000 + (L2.on(tMd) ? 1500 : 0);
+    stats.innerHTML = done ? `<span>Önce<b>${L2.fmt(before)}</b></span><span>Sonra<b>≈ ${L2.fmt(after)}</b></span><span>Kazanılan yer<b>%${Math.round((1 - after / before) * 100)}</b></span>` : `<span>Context<b>${L2.fmt(before)} token</b></span><span>Durum<b>sıkıştırılmadı</b></span>`;
+    const lost = done ? IT.filter(it => fate(it.id)[0] === "lost" && it.id !== "logs").length : 0;
+    note.innerHTML = !done ? "Önce olduğu gibi sıkıştır. Sonra üç önlemi açıp tekrar sıkıştır ve farkı karşılaştır." :
+      lost ? `<span class="tag r">Sessiz kayıp</span> ${lost} kritik bilgi kayboldu. Agent bunları “unuttuğunu” söylemeyecek. Ayrıca mesaj geçmişi değiştiği için bir sonraki istek prompt cache’in mesaj kısmını yeniden yazacak.` :
+      `<span class="tag ok">Kritik bilgi güvende</span> Kalıcı olan dosyada yaşıyor, özet yalnızca akışı taşıyor. Mesaj geçmişi yine de değişti: bir sonraki istekte cache’in mesaj kısmı yeniden yazılacak.`;
+  }
+  bC.onclick = () => { done = true; draw(); };
+  b0.onclick = () => { done = false; draw(); };
+  [tMd, tNotes, tIns].forEach(b => b.addEventListener("click", draw));
+  draw();
+});
+
+/* ---------- 5. Cache simülatörü ---------- */
+Edu.widget("l2-cache", el => {
+  const { h, seg } = Edu;
+  let model = "opus", ttl = 5, cacheOn = true;
+  const sm = h("div", { class:"seg", role:"group", "aria-label":"Model" }, ...Object.entries(L2.MODELS).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.n)));
+  const st = h("div", { class:"seg", role:"group", "aria-label":"TTL" }, h("button", { type:"button", "data-v":"5", "aria-pressed":"true" }, "TTL 5 dk"), h("button", { type:"button", "data-v":"60", "aria-pressed":"false" }, "TTL 1 sa"));
+  const sc = h("div", { class:"seg", role:"group", "aria-label":"Caching" }, h("button", { type:"button", "data-v":"on", "aria-pressed":"true" }, "Cache açık"), h("button", { type:"button", "data-v":"off", "aria-pressed":"false" }, "Cache kapalı"));
+  const rGap = L2.range("Turlar arası süre (dk)", "l2-c-gap", 0.5, 10, 0.5, 1);
+  const bNext = h("button", { class:"btn", type:"button" }, "Sonraki tur ▶");
+  const b5 = h("button", { class:"btn ghost", type:"button" }, "5 tur ▶▶");
+  const tStamp = L2.toggle("System’e saat damgası", false);
+  const bTool = h("button", { class:"btn ghost sm", type:"button" }, "Araç tanımını değiştir");
+  const bEff = h("button", { class:"btn ghost sm", type:"button" }, "Effort’u değiştir");
+  const bBreak = h("button", { class:"btn ghost sm", type:"button" }, "6 dk mola ver");
+  const bComp = h("button", { class:"btn ghost sm", type:"button" }, "Compact");
+  const b0 = h("button", { class:"btn ghost sm", type:"button" }, "↺ Baştan");
+  const stack = h("div", { class:"l2-stack", "aria-hidden":"true" });
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "cache okuma"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ctx)" } }), "cache yazma"), h("span", null, h("i", { class:"sw", style:{ background:"var(--risk)" } }), "cache’siz"), h("span", null, h("i", { class:"sw", style:{ background:"var(--tool)" } }), "çıktı"));
+  const meter = h("div", { class:"meter", style:{ marginTop:".6rem" } }, h("i", { style:{ background:"var(--ctx)" } }));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  const tbl = h("div", { class:"tbl l2-tbl" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sm, st, sc), h("div", { class:"ctrl" }, rGap.wrap, bNext, b5),
+    h("div", { class:"l2-tog", style:{ marginTop:".7rem" } }, tStamp, bTool, bEff, bBreak, bComp, b0), stack, leg, h("p", { class:"hint", style:{ margin:".3rem 0 0" } }, "Pencere doluluğu (1M):"), meter, stats, note, tbl);
+
+  let S;
+  function reset(){
+    S = { rnd:L2.rng(11), t:0, turn:0, req:0, toolVer:0, effVer:0, msgId:0, extraGap:0, pending:[],
+      blocks:[{ k:"tools", id:"tools", n:8000 }, { k:"system", id:"sys", n:3000 }, { k:"md", id:"md", n:4000 }],
+      cache:new Map(), cost:0, base:0, log:[], last:null };
+    rGap.out.textContent = (+rGap.inp.value).toFixed(1);
+    draw(); note.innerHTML = "Sabit önek hazır: araçlar 8K, system 3K, CLAUDE.md 4K. <b>Sonraki tur</b>’a bas.";
+  }
+  const R = (a, b) => Math.round(a + S.rnd() * (b - a));
+  const sigOf = (k, b) => { if (b.k === "tools") return "T" + S.toolVer; if (b.k === "system") return "S" + (L2.on(tStamp) ? "@" + S.req : "") ; if (b.k === "md") return "M"; return b.id + (k === 3 ? "|e" + S.effVer : ""); };
+  function prefixSigs(){ const out = []; let acc = ""; S.blocks.forEach((b, k) => { acc += "/" + sigOf(k, b); out.push(acc); }); return out; }
+  function request(outTok){
+    const M = L2.MODELS[model], sigs = prefixSigs(), n = S.blocks.length;
+    const ttlMin = ttl;
+    for (const [k, v] of S.cache) if (S.t - v > ttlMin) S.cache.delete(k);
+    let hit = -1;
+    if (cacheOn) for (let k = n - 1; k >= 0; k--){ if (S.cache.has(sigs[k])){ hit = k; break; } }
+    const cum = []; let a = 0; S.blocks.forEach(b => { a += b.n; cum.push(a); });
+    const total = a, readT = hit >= 0 ? cum[hit] : 0;
+    let writeT = 0, unc = 0;
+    if (!cacheOn || total < 512) unc = total - readT; else writeT = total - readT;
+    const st = S.blocks.map((b, k) => !cacheOn || total < 512 ? (k <= hit ? "r" : "u") : (k <= hit ? "r" : "w"));
+    if (cacheOn && total >= 512){ [0, 2, n - 1].forEach(k => { if (k < n) S.cache.set(sigs[k], S.t); }); if (hit >= 0) S.cache.set(sigs[hit], S.t); }
+    const wMul = ttl === 5 ? 1.25 : 2;
+    const c = (readT * M.i * M.rd + writeT * M.i * wMul + unc * M.i + outTok * M.o) / 1e6;
+    const base = (total * M.i + outTok * M.o) / 1e6;
+    S.req++;
+    return { total, readT, writeT, unc, outTok, c, base, st, hitIdx:hit };
+  }
+  function turn(){
+    const reasons = [];
+    if (S.extraGap){ reasons.push("mola"); }
+    const gap = (+rGap.inp.value) + S.extraGap; S.extraGap = 0;
+    if (S.turn > 0) S.t += gap;
+    if (S.pending.length) reasons.push(...S.pending); S.pending = [];
+    if (S.turn > 0 && gap > ttl) reasons.push("TTL doldu (" + gap + " dk > " + ttl + " dk)");
+    if (L2.on(tStamp)) reasons.push("system’de saat damgası");
+    if (S.turn === 0) reasons.push("ilk istek: cache soğuk");
+    S.turn++;
+    S.blocks.push({ k:"user", id:"u" + (++S.msgId), n:R(200, 800) });
+    const r1 = request(R(80, 200));
+    S.blocks.push({ k:"tool_use", id:"a" + (++S.msgId), n:r1.outTok });
+    S.blocks.push({ k:"tool_result", id:"r" + (++S.msgId), n:R(1000, 20000) });
+    S.t += 0.1;
+    const r2 = request(R(300, 2000));
+    S.blocks.push({ k:"asst", id:"a" + (++S.msgId), n:r2.outTok });
+    const sum = (k) => r1[k] + r2[k];
+    S.cost += r1.c + r2.c; S.base += r1.base + r2.base;
+    S.last = r2; S.lastIn = r2.total;
+    S.log.push({ turn:S.turn, t:S.t, inp:r1.total + r2.total, rd:sum("readT"), wr:sum("writeT"), un:sum("unc"), out:sum("outTok"), c:r1.c + r2.c, why:reasons.join(", ") || (cacheOn ? "önek isabeti" : "cache kapalı") });
+    draw();
+    const lg = S.log[S.log.length - 1];
+    note.innerHTML = !cacheOn ? `<span class="tag r">Cache kapalı</span> Her tur bütün transcript tam fiyatla yeniden işleniyor.` :
+      lg.rd === 0 ? `<span class="tag r">Tam ıska</span> Hiçbir önek eşleşmedi (${Edu.esc(lg.why)}). Her şey yeniden yazıldı: ${L2.fmt(lg.wr)} token × ${ttl === 5 ? "1,25" : "2"}.` :
+      lg.wr > lg.rd ? `<span class="tag c">Kısmi isabet</span> Öneğin bir kısmı okundu, büyük kısmı yeniden yazıldı (${Edu.esc(lg.why)}).` :
+      `<span class="tag ok">İsabet</span> Önceki önek cache’ten okundu; yalnızca yeni eklenen ${L2.fmt(lg.wr)} token yazıldı. ${lg.why && lg.why !== "önek isabeti" ? "(" + Edu.esc(lg.why) + ")" : ""}`;
+  }
+  function draw(){
+    const r = S.last, tot = S.blocks.reduce((a, b) => a + b.n, 0);
+    if (!r){ stack.innerHTML = S.blocks.map(b => `<i style="width:${b.n / tot * 100}%;background:var(--soft)" title="${b.k}: ${b.n}"></i>`).join(""); }
+    else {
+      const all = r.total + r.outTok; const col = { r:"var(--ok)", w:"var(--ctx)", u:"var(--risk)" };
+      const blocks = S.blocks.slice(0, r.st.length);
+      stack.innerHTML = blocks.map((b, k) => `<i style="width:${b.n / all * 100}%;background:${col[r.st[k]]}" title="${b.k}: ${L2.fmt(b.n)} token"></i>`).join("") + `<i style="width:${r.outTok / all * 100}%;background:var(--tool)" title="çıktı: ${r.outTok}"></i>`;
+    }
+    meter.firstChild.style.width = Math.min(100, tot / 1e6 * 100) + "%";
+    const sav = S.base ? (1 - S.cost / S.base) * 100 : 0;
+    stats.innerHTML = `<span>Tur<b>${S.turn}</b></span><span>Context<b>${L2.k(tot)}</b></span><span>Toplam maliyet<b>${L2.usd(S.cost)}</b></span><span>Cache olmasaydı<b>${L2.usd(S.base)}</b></span><span>Tasarruf<b>%${sav.toFixed(0)}</b></span>`;
+    const rows = S.log.slice(-8).reverse().map(l => `<tr><td>${l.turn}</td><td>${l.t.toFixed(1)} dk</td><td>${L2.k(l.inp)}</td><td style="color:var(--ok)">${L2.k(l.rd)}</td><td style="color:var(--ctx)">${L2.k(l.wr)}</td><td style="color:var(--risk)">${L2.k(l.un)}</td><td style="color:var(--tool)">${L2.k(l.out)}</td><td>${L2.usd(l.c)}</td><td style="font-family:var(--body)">${Edu.esc(l.why)}</td></tr>`).join("");
+    tbl.innerHTML = `<table><thead><tr><th>Tur</th><th>Saat</th><th>Girdi</th><th>Okuma</th><th>Yazma</th><th>Cache’siz</th><th>Çıktı</th><th>Maliyet</th><th>Neden</th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="muted">Henüz istek yok. Her tur iki istekten oluşur; satırlar ikisinin toplamı.</td></tr>`}</tbody></table>`;
+  }
+  seg(sm, v => { model = v; if (S) draw(); });
+  seg(st, v => { ttl = +v; });
+  seg(sc, v => { cacheOn = v === "on"; });
+  rGap.inp.addEventListener("input", () => rGap.out.textContent = (+rGap.inp.value).toFixed(1));
+  bNext.onclick = turn;
+  b5.onclick = () => { for (let i = 0; i < 5; i++) turn(); };
+  bTool.onclick = () => { S.toolVer++; S.pending.push("araç tanımı değişti"); note.innerHTML = "Araç tanımı değişti. Bir sonraki tur: araçlar öneğin en başında olduğu için <b>her şey</b> geçersiz."; };
+  bEff.onclick = () => { S.effVer++; S.pending.push("effort değişti"); note.innerHTML = "Effort değişti. Bir sonraki tur: araçlar ve system okunur, <b>mesajların tamamı</b> yeniden yazılır."; };
+  bBreak.onclick = () => { S.extraGap = 6; note.innerHTML = "6 dakikalık mola eklendi. 5 dk TTL’de bir sonraki turda cache boşalmış olacak; 1 sa TTL’de yaşıyor."; };
+  bComp.onclick = () => {
+    const keep = S.blocks.slice(0, 3);
+    S.blocks = keep.concat([{ k:"summary", id:"sum" + (++S.msgId), n:2000 }, { k:"files", id:"f" + (++S.msgId), n:15000 }]);
+    S.pending.push("compaction"); draw();
+    note.innerHTML = "Geçmiş, 2K’lık özet + son 5 dosya (15K) ile değiştirildi. Araçlar ve system hâlâ cache’te; mesaj kısmı bir sonraki turda yeniden yazılacak.";
+  };
+  b0.onclick = reset;
+  reset();
+});
+
+/* ---------- 6. Maliyet hesaplayıcı ---------- */
+Edu.widget("l2-cost", el => {
+  const { h, seg } = Edu;
+  let model = "opus", cacheOn = true;
+  const sm = h("div", { class:"seg", role:"group", "aria-label":"Model" }, ...Object.entries(L2.MODELS).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.n)));
+  const sc = h("div", { class:"seg", role:"group", "aria-label":"Caching" }, h("button", { type:"button", "data-v":"on", "aria-pressed":"true" }, "Cache açık (5 dk)"), h("button", { type:"button", "data-v":"off", "aria-pressed":"false" }, "Cache kapalı"));
+  const rN = L2.range("Tur sayısı", "l2-k-n", 1, 100, 1, 40);
+  const rP = L2.range("Sabit önek (token)", "l2-k-p", 2000, 60000, 1000, 15000);
+  const rA = L2.range("Tur başına yeni girdi", "l2-k-a", 500, 30000, 500, 6000);
+  const rO = L2.range("Tur başına çıktı", "l2-k-o", 100, 4000, 100, 800);
+  const rT = L2.range("Varsayım: Türkçe çarpanı", "l2-k-t", 1, 2, 0.05, 1);
+  const grid = h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,300px),1fr))", gap:".3rem .9rem", marginTop:".8rem" } }, rN.wrap, rP.wrap, rA.wrap, rO.wrap, rT.wrap);
+  const chart = h("div");
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--risk)" } }), "cache olmadan (kümülatif)"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "cache ile (kümülatif)"));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sm, sc), grid, chart, leg, stats, note);
+  function upd(){
+    const M = L2.MODELS[model], N = +rN.inp.value, P = +rP.inp.value, tr = +rT.inp.value, a = Math.round(+rA.inp.value * tr), o = Math.round(+rO.inp.value * tr);
+    rN.out.textContent = N; rP.out.textContent = L2.k(P); rA.out.textContent = L2.k(+rA.inp.value); rO.out.textContent = L2.k(+rO.inp.value); rT.out.textContent = tr.toFixed(2) + "×";
+    let cNo = 0, cYes = 0, sent = 0; const cn = [], cy = [];
+    for (let t = 1; t <= N; t++){
+      const prompt = P + (t - 1) * (a + o) + a;
+      sent += prompt;
+      cNo += (prompt * M.i + o * M.o) / 1e6;
+      const read = t === 1 ? 0 : P + (t - 2) * (a + o) + a, write = prompt - read;
+      cYes += (read * M.i * M.rd + write * M.i * 1.25 + o * M.o) / 1e6;
+      cn.push(cNo); cy.push(cYes);
+    }
+    const shown = cacheOn ? cYes : cNo;
+    const W = 600, H = 200, mx = Math.max(cNo, 1e-9), X = t => 40 + (t - 1) / Math.max(1, N - 1) * (W - 60), Y = v => H - 24 - v / mx * (H - 44);
+    const pl = (arr, col) => `<polyline points="${arr.map((v, i) => X(i + 1) + "," + Y(v)).join(" ")}" style="fill:none;stroke:${col};stroke-width:2.5"/>`;
+    chart.innerHTML = `<svg class="l2-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kümülatif maliyet grafiği"><line x1="40" x2="${W-20}" y1="${Y(0)}" y2="${Y(0)}" style="stroke:var(--line)"/><text x="36" y="${Y(mx)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">${L2.usd(mx)}</text><text x="36" y="${Y(0)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">0</text>${pl(cn, "var(--risk)")}${pl(cy, "var(--ok)")}<text x="${W-20}" y="${H-5}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">tur →</text></svg>`;
+    const last = P + (N - 1) * (a + o) + a, uniq = P + N * (a + o);
+    stats.innerHTML = `<span>Seçili ayarla toplam<b>${L2.usd(shown)}</b></span><span>Cache olmadan<b>${L2.usd(cNo)}</b></span><span>Cache ile<b>${L2.usd(cYes)}</b></span><span>Gönderilen toplam girdi<b>${L2.k(sent)}</b></span><span>Benzersiz içerik<b>${L2.k(uniq)}</b></span>`;
+    note.innerHTML = `${N} turda API’ye <b>${L2.k(sent)}</b> girdi token’ı gitti; oturumdaki benzersiz içerik yalnızca ${L2.k(uniq)}. Yani her token ortalama <b>${(sent / uniq).toFixed(1)} kez</b> yeniden işlendi.` +
+      (cacheOn ? ` Cache bu tekrarları ${M.n} için taban fiyatın ${M.rd} katına indiriyor: maliyet ${(cNo / cYes).toFixed(1)} kat düşük.` : ` Cache kapalıyken her tekrar tam fiyat.`) +
+      (last > 1e6 ? ` <span class="tag r">Pencere aşıldı</span> Son tur ${L2.k(last)} token: 1M sınırını geçiyor. Gerçekte bundan önce compaction gerekirdi.` : last > 5e5 ? ` <span class="tag c">Dikkat</span> Son tur ${L2.k(last)} token: context rot bölgesi.` : "");
+  }
+  seg(sm, v => { model = v; upd(); });
+  seg(sc, v => { cacheOn = v === "on"; upd(); });
+  [rN, rP, rA, rO, rT].forEach(r => r.inp.addEventListener("input", upd));
+});
+})();
+</script>

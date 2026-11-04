@@ -1,0 +1,987 @@
+<section class="level" data-no="6" data-short="Harness" data-title="Harness: modelin etrafındaki her şey"
+  data-accent="harness" data-time="50 dk"
+  data-lede="Modelin dışındaki her şey harness’tır: talimatlar, araçlar, izinler, sandbox, hook’lar, context yönetimi, arayüz. Bir agent’ın gerçek işte ne kadar iyi çalıştığını çoğu zaman modelden çok bu katman belirler.">
+
+  <!-- ================= 1. DENKLEM ================= -->
+  <div class="lesson" data-tab="Denklem">
+    <h2>Modelin dışındaki her şey</h2>
+    <p class="lead">Başlarken sayfasındaki denklemi hatırla: <span class="g" data-g="Agent = Model + Harness">Agent = Model + Harness</span>. 3. seviyeden 5. seviyeye kadar bu denklemin parçalarını tek tek kurduk: prompt’u yazdık, araç tanımladık, araçları bir döngüye soktuk. Bu seviyede geri çekilip bütün resme bakıyoruz. O döngünün etrafında ne var, neden var ve bir agent’ın başarısını ne kadar belirliyor?</p>
+
+    <p>Terimi bugünkü haliyle en net tanımlayan yazı, LangChain’den Vivek Trivedy’nin 10 Mart 2026 tarihli “The Anatomy of an Agent Harness” yazısı. Tanım kasıtlı olarak geniş: harness, modelin kendisi olmayan her kod parçası, her yapılandırma ve her yürütme mantığıdır. Yazının akılda kalan cümlesi şu: “If you’re not the model, you’re the harness.” Yani modelin ağırlıkları dışında agent’a dokunan her şey bu tarafta duruyor.</p>
+    <p>Trivedy bileşenleri beş grupta topluyor:</p>
+    <ul>
+      <li><b>System prompt’lar.</b> Modele kim olduğunu, hangi ortamda çalıştığını, araçları nasıl kullanacağını anlatan metinler.</li>
+      <li><b>Araçlar, skill’ler, MCP sunucuları ve açıklamaları.</b> Modelin dünyaya uzanan elleri ve bu ellerin nasıl tarif edildiği.</li>
+      <li><b>Paketlenmiş altyapı.</b> Dosya sistemi, <span class="g" data-g="Sandbox">sandbox</span>, tarayıcı: komutların gerçekten çalıştığı yer.</li>
+      <li><b>Orkestrasyon.</b> Subagent’lar, bir agent’tan diğerine devir (handoff), görevin türüne göre model seçimi.</li>
+      <li><b>Hook’lar ve <span class="g" data-g="Middleware">middleware</span>.</b> Compaction, “devam et” mantığı, lint kontrolleri gibi döngünün belirli anlarında araya giren kod.</li>
+    </ul>
+
+    <h3>Üreticiler de aynı dili konuşuyor</h3>
+    <p>Bu sadece bir framework şirketinin pazarlama çerçevesi değil. Anthropic’in Claude Code dokümantasyonu da Claude Code’u tam bu kelimeyle tarif ediyor: modelin etrafında araçları sağlayan ve context’i yöneten katman, yani bir <span class="g" data-g="Agentic harness">agentic harness</span>. Daha somut bir işaret de var: 2025’te Claude Code SDK’nın adı <span class="g" data-g="Claude Agent SDK">Claude Agent SDK</span> olarak değişti. Gerekçe basitti: aynı harness kod yazmayan agent’ları da çalıştırıyordu. Dosya sistemi, bash, arama, izinler ve context yönetimi; bunlar “kodlama” özellikleri değil, genel amaçlı bir agent’ın ihtiyaç duyduğu altyapı.</p>
+    <p>LangChain’in kurucusu Harrison Chase de “Deep Agents” yazısında aynı şeyi söylemişti: Claude Code’u bu kadar yetenekli yapan şey yalnızca model değil; bir planlama aracı, bir dosya sistemi, subagent’lar ve çok ayrıntılı bir system prompt’tan oluşan genel bir harness. Bu dört parçayı başka bir modelin etrafına koyduğunda da “derin” çalışan bir agent elde ediyorsun.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>İşletim sistemi ile program arasındaki ilişkiyi düşün. Program bir dosyaya yazmak istediğinde bunu kendisi yapmaz; bir sistem çağrısı yapar, çekirdek izinlere bakar, işlemi yürütür ve sonucu döndürür. Program diskin nasıl çalıştığını bilmez, sadece çağrının sonucunu görür. Model burada program, tool call sistem çağrısı, harness da çekirdek ve çalışma zamanı. Bir başka benzetme: model iş mantığı, harness ise framework, DI kabı, middleware zinciri ve altyapının tamamı. İş mantığı ne kadar iyi olursa olsun, yanlış yapılandırılmış bir framework’te kötü çalışır.</div>
+
+    <h3>Bir turda model aslında ne kadar şey üretiyor?</h3>
+    <p>Bu ayrımın neden önemli olduğunu görmenin en iyi yolu, tek bir agent turunu parçalarına ayırmak. Aşağıdaki şema, Claude Code’a “kırmızı testi düzelt” dediğinde perde arkasında akan parçaları gösteriyor. Her parçaya tıkla ve onu kimin ürettiğine bak. Sonra “Yalnız model” filtresini seç: modelin ürettiği şeyin, yani birkaç cümle metin ve birkaç JSON nesnesinin, bütünün ne kadar küçük bir kısmı olduğunu göreceksin.</p>
+
+    <div class="fig" data-widget="l6-who">
+      <p class="fig-title">Bir agent turunun anatomisi: kim üretti?</p>
+      <p class="fig-cap">Bir Claude Code oturumundan sadeleştirilmiş parçalar, akış sırasıyla. Parçaya tıkla; kimin ürettiğini, ne işe yaradığını ve senin neyi kontrol edebildiğini gör. Filtreyle yalnız modelin ya da yalnız harness’ın payını öne çıkar.</p>
+      <div class="ctrl" style="margin-top:0">
+        <div class="seg l6-who-f" role="group" aria-label="Filtre">
+          <button type="button" data-v="all" aria-pressed="true">Hepsi</button>
+          <button type="button" data-v="m">Yalnız model</button>
+          <button type="button" data-v="h">Yalnız harness</button>
+        </div>
+        <span class="muted l6-who-cnt"></span>
+      </div>
+      <div class="l6-tr" style="margin-top:.8rem"></div>
+      <div class="panel live l6-who-out" aria-live="polite"><span class="muted">Bir parçaya tıkla.</span></div>
+    </div>
+
+    <p>Şemada dikkat etmen gereken üç şey var. Birincisi, modelin ürettiği her şey bir <b>istek</b>: “şu komutu çalıştırmak istiyorum”, “şu dosyayı şöyle değiştirmek istiyorum”. O isteği gerçeğe dönüştüren, reddeden, kırpan, biçimlendiren ve geri besleyen her adım harness’ın. İkincisi, senin yazdığın şeyler (mesajın ve CLAUDE.md) modele senin istediğin yerde ve şekilde değil, harness’ın seçtiği yerde ve şekilde ulaşıyor. Üçüncüsü, compaction özeti gibi bazı parçalar karışık: metni bir model yazıyor, ama ne zaman yazılacağına, neyin korunacağına ve nereye konacağına harness karar veriyor.</p>
+
+    <h3>Bu ayrım pratikte neyi değiştirir?</h3>
+    <ol class="steps">
+      <li><b>Hata ayıklama.</b> Agent kötü bir şey yaptığında ilk soru “model mi yanlış karar verdi, yoksa harness ona doğru kararı verebileceği bilgiyi, aracı ya da geri bildirimi mi vermedi?” olmalı. İkincisi şaşırtıcı derecede sık. Önemli bir dosyayı görmezden geldiyse context’e bak; yanlış komut çalıştırdıysa araç açıklamasına ve izinlere; aynı hatayı tekrarlıyorsa ortamın verdiği geri bildirime.</li>
+      <li><b>Seçim kararları.</b> “Hangi model en iyi?” sorusu eksik bir soru. Bu seviyenin 3. konusunda göreceğin gibi aynı model farklı harness’larda çok farklı sonuç veriyor. Doğru soru: “Benim işim için hangi model ve harness çifti en iyi?”</li>
+      <li><b>Güvenlik.</b> Modelin ne üreteceğini garanti edemezsin. Harness’ın neyi çalıştıracağını ise tam olarak kontrol edebilirsin. Garanti verilebilecek tek yer harness olduğu için güvenlik de orada kurulur (10. seviye).</li>
+    </ol>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Harness dediğin bir arayüz; asıl iş modelde.” Arayüz harness’ın en dış ve en görünür katmanı, ama en etkili katmanı değil. Claude Code dokümantasyonu terminal, IDE, masaüstü, web ve CI yüzeylerinin hepsinin aynı döngüyü çalıştırdığını söylüyor. Değişen yüzey; araç seti, izinler, context yönetimi ve hook’lar aynı kalıyor. Davranışı belirleyen de o içerideki katmanlar.</div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>En pahalı refleks şu: agent bir kuralı çiğnediğinde prompt’a bir cümle daha, sonra bir “IMPORTANT” daha eklemek. Kural harness’ın zorlayabileceği türdense (bir dosyayı okumamak, bir komutu çalıştırmamak, bitirmeden testi geçirmek) prompt yanlış katman. Bu seviyenin 5. konusu tam olarak bu kararı veriyor.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Harness, modelin ağırlıkları dışında agent’a dokunan her şeydir: prompt’lar, araçlar, altyapı, orkestrasyon, hook’lar.</li>
+        <li>Model yalnızca istek üretir. İsteği gerçeğe dönüştüren, reddeden ve geri besleyen harness’tır.</li>
+        <li>Claude Code SDK’nın Claude Agent SDK’ya dönüşmesi, iyi bir coding harness’ın aslında genel amaçlı bir agent altyapısı olduğunu gösteriyor.</li>
+        <li>Agent hatasında önce sor: karar mı yanlıştı, yoksa karar için gereken bilgi, araç ya da geri bildirim mi eksikti?</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain, Vivek Trivedy: The Anatomy of an Agent Harness (10 Mart 2026)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works</a></li>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 2. KATMANLAR ================= -->
+  <div class="lesson" data-tab="Katmanlar">
+    <h2>Bir coding harness’ın dokuz katmanı</h2>
+    <p class="lead">5. seviyedeki while döngüsü harness’ın iskeletiydi. Gerçek bir coding harness bu iskeletin etrafına, her biri agent’ların gerçek dünyada başarısız olduğu belirli bir yolu kapatan katmanlar örer. Referans olarak Claude Code’u kullanıyoruz, çünkü dokümantasyonu bu katmanları açıkça anlatıyor; Codex CLI ve diğerlerinde de karşılıkları var (7. seviye).</p>
+
+    <p>Aşağıdaki liste Kasım 2026 itibarıyla Claude Code dokümantasyonuna dayanıyor. Ad ve ayrıntılar sürümden sürüme değişebilir; kavramlar kalıcı.</p>
+
+    <h3>1. System prompt ve system reminder’lar</h3>
+    <p>Harness’ın her isteğin başına koyduğu talimat: kimlik, çalışma kuralları, ortam bilgisi (işletim sistemi, çalışma dizini, git durumu). Bunun yanında konuşmanın içine yerleştirilen <b>system reminder</b>’lar var: CLAUDE.md içeriği, seçilen çıktı stili, “bu dosya sen okuduktan sonra değişti” notları, commit’lere eklenecek imza satırları. Hepsini harness yazar ve yerleştirir; sen içeriğin bir kısmını kontrol edersin, yerini değil.</p>
+
+    <h3>2. Araçlar, MCP ve skill’ler</h3>
+    <p>Yerleşik araçlar dosya işlemleri, arama, komut çalıştırma, web ve kod zekası gibi grupları kapsıyor. Bağladığın MCP sunucularının araçları ise varsayılan olarak <b>ertelenmiş</b> yükleniyor: tool search sayesinde context’te yalnızca araç adları ve sunucu talimatları duruyor, tam tanım gerektiğinde geliyor (4. seviye). Skill’ler de aynı mantıkla çalışıyor: önce yalnız ad ve açıklama, gerekince içerik.</p>
+
+    <h3>3. İzinler ve sandbox</h3>
+    <p>Hangi aracın sorulmadan, hangisinin onayla çalışacağı, hangisinin hiç çalışmayacağı. Claude Code’da birkaç <span class="g" data-g="İzin modu">izin modu</span> var: bir sınıflandırıcının karar verdiği Auto, her şeyi soran Manual, düzenlemeleri kendiliğinden kabul eden Accept edits ve hiçbir şeyi değiştirmeden plan çıkaran Plan. Bunların üstünde allow ve <span class="g" data-g="Deny kuralı">deny kuralları</span>, en altta da komutların dosya sistemi ve ağ erişimini işletim sistemi düzeyinde sınırlayan sandbox duruyor.</p>
+
+    <h3>4. Checkpoint’ler ve oturum kaydı</h3>
+    <p>Harness, düzenlenen dosyaların anlık görüntüsünü alır; <kbd>Esc</kbd> <kbd>Esc</kbd> ile geri sarabilirsin. Oturumun tamamı JSONL dosyası olarak saklanır; devam ettirme (resume) ve dallandırma (fork) bunun üzerine kurulu. <span class="g" data-g="Checkpoint">Checkpoint</span>, agent’a hata yapma özgürlüğü veren katmandır: geri alabildiğin bir şeyi daha rahat denetirsin.</p>
+
+    <h3>5. Context yönetimi</h3>
+    <p>Pencere dolmaya yaklaşınca otomatik compaction, <code>/context</code> ile dökümü görme ve araç çıktılarına konan üst sınır. Claude Code’da bir araç yanıtı en fazla 25.000 token olabiliyor; fazlası kırpılıyor. Bu katmanın mekanizmasını 2. seviyede gördük; burada önemli olan, bunların hepsinin model değil harness kararı olması.</p>
+
+    <h3>6. Bellek</h3>
+    <p>CLAUDE.md (ekiple paylaşılan proje talimatları), CLAUDE.local.md (sana özel, repoya girmeyen) ve Claude’un kendi tuttuğu otomatik bellek dosyası MEMORY.md. Dokümantasyona göre otomatik bellekten oturum başında ilk 200 satır ya da ilk 25 KB yükleniyor. Bellek, modelin durumsuzluğuna karşı harness’ın çözümü: model her oturumu sıfırdan başlar, dosyalar başlamaz.</p>
+
+    <h3>7. Hook’lar</h3>
+    <p>Döngünün belirli olaylarında (araç çağrısından önce, sonra, oturum başında, model “bitti” dediğinde) senin kodunun çalıştığı noktalar. İki türü ayırt et: <code>command</code> ve <code>http</code> hook’ları <b>deterministiktir</b>, yani bir script ya da HTTP uç noktası karar verir. <code>prompt</code> ve <code>agent</code> türündeki hook’larda ise kararı yine bir model verir. Bu fark, bir kuralı nereye koyacağını seçerken belirleyici (5. konu). Söz dizimi 8. seviyede.</p>
+
+    <h3>8. Subagent’lar</h3>
+    <p>Ayrı bir context penceresinde çalışan, işini bitirince yalnızca özetini döndüren yardımcı agent’lar. Temiz bir pencereyle de, mevcut konuşmanın bir kopyasıyla (fork) da başlatılabiliyorlar. Asıl değerleri paralellikten çok context yalıtımı: keşif sırasında okunan onlarca dosya ana pencereye girmiyor.</p>
+
+    <h3>9. Arayüzler</h3>
+    <p>Terminal, IDE eklentisi, masaüstü uygulaması, web, Slack, CI. Dokümantasyon hepsinin aynı döngüyü çalıştırdığını vurguluyor. Arayüz değişince davranışın değişmemesi gerekir; değişiyorsa genellikle farklı bir izin modu ya da farklı bir ayar dosyası devrededir.</p>
+
+    <div class="fig" data-widget="l6-onion">
+      <p class="fig-title">Harness soğanı</p>
+      <p class="fig-cap">Halkalara ya da alttaki etiketlere tıkla (klavyeyle Tab ve Enter da çalışır). Merkezde model, dışa doğru dünyaya daha yakın katmanlar. “Kim karar veriyor?” görünümü halkaları deterministik ve model kararlı olarak boyar.</p>
+      <div class="seg l6-on-mode" role="group" aria-label="Görünüm">
+        <button type="button" data-v="layer" aria-pressed="true">Katmanlar</button>
+        <button type="button" data-v="kind">Kim karar veriyor?</button>
+      </div>
+      <div class="l6-onion-wrap" style="margin-top:.8rem">
+        <div class="l6-onion"><svg viewBox="0 0 344 344" role="group" aria-label="Harness katmanları şeması"></svg></div>
+        <div class="panel live l6-on-out" aria-live="polite" style="margin-top:0"><b>Bir katman seç.</b><p class="muted">Her katman, agent’ların gerçek dünyada başarısız olduğu belirli bir yolu kapatmak için var.</p></div>
+      </div>
+      <div class="legend-row l6-on-legend" style="margin-top:.7rem"></div>
+      <div class="l6-pills" role="group" aria-label="Katmanlar"></div>
+    </div>
+
+    <h3>Deterministik ile model kararlı arasındaki çizgi</h3>
+    <p>Soğanın “Kim karar veriyor?” görünümü bu seviyenin en önemli fikrini gösteriyor. Bazı katmanlar <span class="g" data-g="Deterministik katman">deterministik</span>: deny kuralı, sandbox, <code>command</code> hook’u, araç çıktısı sınırı. Bunlar her seferinde aynı girdiye aynı tepkiyi verir; test edilebilir, denetlenebilir. Bazıları ise sonunda modelin yorumuna kalır: CLAUDE.md, skill açıklamaları, <code>prompt</code> hook’ları, Auto modundaki sınıflandırıcı. Claude Code dokümantasyonu bunu açıkça söylüyor: CLAUDE.md bir rehberdir ve Claude belirli bir durumda bir satırın geçerli olmadığına karar verebilir. Hook’lar, deny kuralları ve <span class="g" data-g="Managed settings">managed settings</span> ise harness tarafından zorlanır.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Kod incelemesinde “şöyle yapalım” yorumu ile CI’daki zorunlu kontrol arasındaki fark. Yorum bir rehberdir; geliştirici iyi bir gerekçeyle uymayabilir. Branch koruma kuralı ise kimseye sormaz. CLAUDE.md inceleme yorumuna, hook ve deny kuralı branch korumasına benzer.</div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Bir agent’ın neyle çalıştığını merak ettiğinde tahmin etme, harness’a sor. Claude Code’da <code>/context</code> context’in dökümünü, <code>/permissions</code> etkin kuralları, <code>/hooks</code> kayıtlı hook’ları gösterir. Codex CLI’nin de benzer durum komutları var. Bir davranışın kaynağını bulmanın en hızlı yolu budur.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Coding harness’ın dokuz katmanı: talimatlar, araçlar, izinler ve sandbox, checkpoint’ler, context yönetimi, bellek, hook’lar, subagent’lar, arayüzler.</li>
+        <li>Her katman belirli bir başarısızlık yolunu kapatır. Bir katman eksikse o başarısızlık er geç yaşanır.</li>
+        <li>Katmanların bir kısmı deterministik (zorlanır), bir kısmı model kararlı (rehberdir). Kritik kurallar deterministik tarafa aittir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code docs: Best practices</a></li>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain: The Anatomy of an Agent Harness</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 3. AYNI MODEL, FARKLI HARNESS ================= -->
+  <div class="lesson" data-tab="Aynı model, farklı sonuç">
+    <h2>Aynı model, farklı harness, farklı sonuç</h2>
+    <p class="lead">“Harness önemlidir” iddiası sezgisel olarak doğru geliyor, ama ne kadar önemli? Bu konuda elimizde birkaç ölçüm var. Hiçbiri kusursuz değil; o yüzden her birini kaynağı, yöntemi ve zayıf yanıyla birlikte okuyacağız.</p>
+
+    <h3>Kanıt 1: modeli sabitle, sadece harness’ı değiştir</h3>
+    <p>LangChain, kendi açık kaynak coding agent’ı deepagents-cli üzerinde modeli <code>gpt-5.2-codex</code> olarak sabitledi ve yalnızca prompt’u, araçları ve middleware’i değiştirdi. <span class="g" data-g="Terminal-Bench">Terminal-Bench</span> 2.0 skoru %52,8’den %66,5’e çıktı. İki değişiklik öne çıkıyor. Birincisi, döngüye açık bir <b>planla, kur, doğrula, düzelt</b> yapısı eklenmesi: agent işi bitirdiğini söylemeden önce doğrulama adımından geçmek zorunda. İkincisi, yazının “reasoning sandwich” dediği şey: planlama ve doğrulama adımlarında yüksek, uygulama adımlarında orta reasoning effort. Sonuç bir üreticinin kendi ürünü hakkındaki ölçümü; yani <span class="tag c">vendor-reported</span>. Yine de yönü açık: aynı ağırlıklar, yaklaşık 14 puan fark.</p>
+
+    <h3>Kanıt 2: sadece düzenleme aracını değiştir</h3>
+    <p>Can Bölük’ün 12 Şubat 2026 tarihli yazısı daha da dar bir değişkeni ölçüyor: dosya düzenleme formatı. 16 model, 180 görev. Satırların kısa içerik hash’leriyle etiketlendiği bir <span class="g" data-g="Hashline">“hashline”</span> formatı, 16 modelin 14’ünde <span class="g" data-g="apply_patch">apply_patch</span>’i ortalama yaklaşık 15 puan geçmiş. En uç örnek Grok Code Fast 1: %6,7’den %68,3’e. Bu tek yazarlı bir şirket blogu <span class="tag c">vendor blogu, tek yazar</span>; bağımsız tekrarını görmedik. Ama mekanizması makul ve bir sonraki konuda inceleyeceğiz: format, modelin hata yapabileceği yüzeyi değiştiriyor.</p>
+
+    <h3>Kanıt 3: arayüz tasarımı akademik bir sonuç olarak</h3>
+    <p>SWE-agent makalesi (Yang ve diğ., NeurIPS 2024) agent ile bilgisayar arasındaki arayüze “ACI” adını verdi. 100 satırlık pencereli bir dosya görüntüleyici, sözdizimi bozuk düzenlemeleri reddeden linter’lı bir düzenleme komutu ve kısa arama çıktıları. GPT-4 Turbo yalnız shell ile SWE-bench Lite’ta %11,0’dan bu arayüzle %18,0’a çıktı; düzenleme eylemi kaldırılınca %10,3’e düştü. Rakamlar ikincil özetlerden; makalenin tablosu esastır <span class="tag c">ikincil kaynak</span>.</p>
+
+    <div class="fig" data-widget="l6-evidence">
+      <p class="fig-title">Model sabit, harness değişken: ölçümler</p>
+      <p class="fig-cap">Her çalışmada gri çubuk “önce”, renkli çubuk “sonra”. Rozetler kaynağın türünü gösteriyor. Son sekme doğrulanmamış bir derleme; ancak uyarısını okuyarak aç.</p>
+      <div class="seg l6-ev-f" role="group" aria-label="Çalışma">
+        <button type="button" data-v="all" aria-pressed="true">Hepsi</button>
+        <button type="button" data-v="lc">LangChain</button>
+        <button type="button" data-v="edit">Edit formatı</button>
+        <button type="button" data-v="swe">SWE-agent</button>
+        <button type="button" data-v="tb">Doğrulanmamış</button>
+      </div>
+      <div class="l6-ev-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Küçük bir değişiklik neden bu kadar büyük fark yaratıyor?</h3>
+    <p>İlk bakışta şaşırtıcı: bir düzenleme formatı ya da bir doğrulama adımı nasıl onlarca puan getirir? Cevap, agent görevlerinin uzun adım zincirleri olmasında. Anthropic’in “Building effective agents” yazısı bunu açıkça söylüyor: agent’larda hatalar birikir. Basit bir hesapla düşün (açıklayıcı bir hesap, ölçüm değil): her adımı %98 olasılıkla doğru yapan bir agent, 50 adımlık bir görevi hiç hata yapmadan yaklaşık %36 olasılıkla bitirir (0,98<sup>50</sup>). Adım başı başarıyı %99’a çıkarırsan bu oran yaklaşık %60’a çıkar. Adım başına tek bir puanlık iyileşme, görev düzeyinde yirmi puandan fazla fark ediyor.</p>
+    <p>Harness tam olarak bu adım başı olasılığı etkiliyor. Belirsiz bir hata mesajı bir adımı boşa harcatır; uygulanamayan bir yama bir turu yeniden okumaya harcatır; doğrulayıcının olmaması küçük bir hatanın yirmi adım boyunca taşınmasına izin verir. Bunun tersi de geçerli: iyi bir harness hatayı tamamen önleyemese bile onu <b>erken ve ucuz</b> yakalar. Testin hemen kırmızı yanması, linter’ın bozuk düzenlemeyi reddetmesi, hook’un yanlış dosyaya yazmayı nedeniyle birlikte durdurması; hepsi zincirin bir sonraki halkasına sağlam bir zeminle geçilmesini sağlıyor. SWE-agent’taki linter’lı düzenleme komutu ve LangChain’deki doğrulama adımı aynı fikrin iki uygulaması.</p>
+    <p>Bu yüzden harness’ı değerlendirirken “model ne kadar akıllı” sorusu kadar şu sorular da önemli: hatayı kaç adım sonra görüyor, gördüğünde ne kadar net görüyor, düzeltmesi ne kadar tura mal oluyor?</p>
+
+    <h3>Bu sayıları nasıl okumalı?</h3>
+    <p>Terminal-Bench liderlik tablolarında aynı modelin farklı harness’larla çok farklı skorlar aldığını gösteren derlemeler dolaşıyor. Nisan 2026 civarına ait bir ikincil derleme, Claude Opus 4.6 ile en iyi harness’ın yaklaşık %82, Claude Code’un yaklaşık %58 aldığını, yani tek modelde 24 puanlık bir aralık olduğunu söylüyor. Bunu doğrulayamadık; şemada ayrı sekmede ve uyarıyla duruyor. LangChain’in yazısı da Opus 4.6’nın Claude Code içinde diğer harness’ların çok gerisinde kaldığını ayrıca belirtiyor.</p>
+    <p>Bu tür bir farkı okurken önemli bir ayrımı unutma: <b>liderlik tablosu harness’ları benchmark için ayarlanır.</b> Etkileşimsiz çalışırlar, zaman aşımlarını görevlere göre seçerler, her şeye izin verirler. Ürün harness’ları ise başka şeyleri optimize eder: kullanıcıya sormak, izinler, sandbox, maliyet, geri alınabilirlik. Claude Code’un bir benchmark’ta geride kalması, onun senin repoda daha kötü olacağı anlamına gelmez; benchmark’ın ölçmediği şeylere bütçe harcadığı anlamına gelebilir. Tersi de doğru: benchmark’ta parlayan bir harness’ın izin modeli senin şirketin için kabul edilemez olabilir.</p>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“X modeli Y modelinden şu kadar puan iyi.” Model karşılaştırmaları çoğu zaman sessizce bir harness’ı da içerir. Raporlanan skor, o modelin o harness’la, o ayarlarla aldığı skordur. Bir model kartındaki sayıyı kendi araç zincirine taşıyamazsın; taşıdığında harness farkı kadar sapma beklemelisin.</div>
+
+    <h3>Hata ayıklarken: model mi, harness mı?</h3>
+    <p>Bu kanıtların günlük işteki karşılığı bir hata ayıklama alışkanlığı. Agent beklemediğin bir şey yaptığında suçu hemen modele yüklemek yerine şu sırayla bak: context’te ne vardı, araç ne döndürdü, hangi kural devredeydi, ortam ne geri bildirim verdi? Aşağıdaki şema sık görülen belirtiler için bu kontrol sırasını gösteriyor.</p>
+
+    <div class="fig" data-widget="l6-debug">
+      <p class="fig-title">Belirti → bakılacak katman</p>
+      <p class="fig-cap">Bir belirtiye tıkla. Kontrol sırası, olası katman ve ilk çalıştıracağın komut çıkar. Bu bir karar ağacı değil, bir el feneri: hangi katmana önce bakacağını gösterir.</p>
+      <div class="l6-cards l6-dbg-list"></div>
+      <div class="panel live l6-dbg-out" aria-live="polite"><span class="muted">Bir belirti seç.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Model sabitken yalnızca harness’ı değiştirmek birkaç puandan onlarca puana kadar fark yaratabiliyor (LangChain 52,8 → 66,5, vendor-reported).</li>
+        <li>Düzenleme formatı gibi küçük görünen bir araç kararı bile büyük fark yaratabiliyor.</li>
+        <li>Benchmark harness’ları benchmark için ayarlıdır; ürün harness’ları güvenlik, izin ve maliyet için. Skorları buna göre oku.</li>
+        <li>Agent hatasında suçlamadan önce context, araç çıktısı, kurallar ve geri bildirim sırasıyla bak.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://blog.langchain.com/improving-deep-agents-with-harness-engineering">LangChain: Improving deep agents with harness engineering (vendor-reported)</a></li>
+      <li><a href="https://stencil.so/blog/the-harness-problem">Can Bölük: The harness problem (12 Şubat 2026, vendor blogu)</a></li>
+      <li><a href="https://arxiv.org/abs/2405.15793">Yang ve diğ.: SWE-agent: Agent-Computer Interfaces (NeurIPS 2024)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (hataların birikmesi)</a></li>
+      <li><a href="https://www.tbench.ai/leaderboard/terminal-bench/2.0">Terminal-Bench 2.0 liderlik tablosu</a></li>
+      <li><a href="https://qepo17.pages.dev/til/2026-04-02-terminal-bench-harness-gap">Terminal-Bench harness farkı derlemesi (ikincil, doğrulanmamış, Nisan 2026)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 4. BİRLİKTE EĞİTİM ================= -->
+  <div class="lesson" data-tab="Birlikte eğitim">
+    <h2>Model ve harness birlikte evrilir</h2>
+    <p class="lead">Önceki konudaki farkların bir kısmının açıklaması basit: modeller boşlukta eğitilmiyor. Laboratuvarlar modellerini RL aşamasında belirli araç adları, belirli düzenleme formatları ve belirli çalışma ortamlarıyla eğitiyor. Model, eğitildiği harness’a benzeyen bir ortamda en iyi performansı veriyor.</p>
+
+    <h3>Üreticilerin kendi sözleri</h3>
+    <p>OpenAI’ın Codex prompting rehberi bu konuda alışılmadık derecede açık. Rehber, modelin bu diff formatında çok iyi olacak şekilde eğitildiğini söyleyerek kendi <code>apply_patch</code> uygulamalarının birebir kullanılmasını “kuvvetle” öneriyor. Modelin ağırlıklı olarak özel bir terminal aracıyla eğitildiğini ve AGENTS.md talimatlarına sıkı uyacak şekilde eğitildiğini de belirtiyor. Bu üç cümle, Codex modelini kendi harness’ına koyacak herkes için bir yapılandırma talimatı aslında.</p>
+    <p>Anthropic tarafında aynı fikir “Anthropic şemalı istemci araçları” olarak karşına çıkıyor. <code>bash</code>, <code>text_editor</code>, <code>memory</code>, <code>computer</code> ve <code>browser</code> araçlarının şemaları modele <span class="g" data-g="Trained-in araç">eğitimle işlenmiş</span>; dokümantasyon Claude’un bu birebir araç imzalarını kullanan binlerce başarılı gidişat üzerinde optimize edildiğini söylüyor. Pratik sonucu: bu araçlar, aynı işi yapan ama senin uydurduğun adlarla ve şemayla tanımlanmış araçlardan daha güvenilir çağrılıyor.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Bir kütüphanenin “resmi” istemcisi ile kendi yazdığın sarmalayıcı arasındaki fark. Resmi istemci, sunucunun beklediği her kenar durumunu bilir; senin sarmalayıcın çoğu durumda çalışır, nadir bir durumda sessizce yanlış davranır. Burada “sunucu” modelin alışkanlıkları: eğitildiği formatta konuşursan sürpriz azalır.</div>
+
+    <h3>Diff formatı neden bu kadar önemli?</h3>
+    <p>Bir dosyayı düzenlemek, modelin üretmesi gereken en hassas çıktılardan biri. Model dosyanın tamamını yeniden yazmaz; harness’ın uygulayacağı bir değişiklik tarifi üretir. Bu tarif üç ana biçimde gelir ve her birinin farklı bir zayıf noktası var:</p>
+    <ul>
+      <li><b>Bul-değiştir</b> (Claude’un <code>text_editor</code> aracındaki <code>str_replace</code>, Claude Code’daki Edit aracı): model eski metni birebir yazar, harness onu dosyada arar ve yenisiyle değiştirir. Eski metin tam olarak bir kez geçmelidir. Bir boşluk farkı “bulunamadı”, iki eşleşme “belirsiz” hatası verir.</li>
+      <li><b>Bağlamlı yama</b> (Codex’in <code>apply_patch</code>’i): model değişecek satırları ve çevresindeki bağlam satırlarını bir yama biçiminde yazar. Harness hunk’ı bağlam satırlarıyla yerleştirir. Bağlam satırlarında bir sapma yamayı uygulanamaz kılar.</li>
+      <li><b>Satır referanslı</b> (hashline gibi): dosya okunurken her satır kısa bir içerik hash’iyle etiketlenir; model düzenlemeyi “şu satır, şu hash” diye tarif eder. Eski metni yeniden yazmak zorunda kalmaz. Hash tutmuyorsa (dosya değişmişse) harness düzenlemeyi reddeder.</li>
+    </ul>
+    <p>Her formatta modelin yanlış yapabileceği şey farklı. Bul-değiştirde eski metni harfi harfine hatırlaması gerekiyor; yamada bağlamı doğru kopyalaması; satır referansında doğru satırı seçmesi. Bir model hangi formatta eğitildiyse o formatın hatalarından kaçınmayı öğrenmiştir. Başka bir format verdiğinde, o formatın hatalarını yeniden öğrenmesi gerekir ve öğrenemez, çünkü ağırlıkları donmuştur.</p>
+
+    <div class="fig" data-widget="l6-edit">
+      <p class="fig-title">Aynı düzenleme, üç format, dört durum</p>
+      <p class="fig-cap">example_app’teki <code>OrderMapper.cs</code> dosyasının 88. satırında <code>status_code</code> NULL geldiğinde patlayan bir cast var. Bir format seç, sonra bir durum seç: harness düzenlemeyi nasıl karşılıyor? Hashline gösterimi şematiktir.</p>
+      <div class="ctrl" style="margin-top:0">
+        <div class="seg l6-ed-fmt" role="group" aria-label="Format">
+          <button type="button" data-v="sr" aria-pressed="true">str_replace</button>
+          <button type="button" data-v="ap">apply_patch</button>
+          <button type="button" data-v="hl">hashline</button>
+        </div>
+        <div class="seg l6-ed-sc" role="group" aria-label="Durum">
+          <button type="button" data-v="ok" aria-pressed="true">Normal</button>
+          <button type="button" data-v="ws">Boşluk farkı</button>
+          <button type="button" data-v="dup">Satır iki yerde</button>
+          <button type="button" data-v="moved">Dosya kaydı</button>
+        </div>
+      </div>
+      <pre class="l6-ed-code" style="margin:.8rem 0 0"><code></code></pre>
+      <div class="panel live l6-ed-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Fazla uyum da bir risk</h3>
+    <p>LangChain’in harness anatomisi yazısı ilginç bir argüman ileri sürüyor: Claude Code ve Codex gibi ürünler, model ve harness döngüdeyken post-training’den geçiyor; bu bir tür aşırı uyuma (overfitting) dönüşebilir. Araç mantığını değiştirdiğinde performans düşebilir; dolayısıyla bir görev için en iyi harness, modelin eğitildiği harness olmak zorunda değil. Bu bir argüman, o yazıda ölçülmüş bir sonuç değil. Ama hashline sonucu bu argümanla uyumlu: bazı modeller kendi “doğal” formatlarından farklı bir formatta daha iyi sonuç vermiş.</p>
+    <p>İki gözlem birlikte şunu söylüyor: <b>eğitim formatı güçlü bir varsayılandır, dogma değildir.</b> Kendi harness’ını kuruyorsan önce modelin eğitildiği araç adları ve formatlarla başla. Başka bir formatı denemek istiyorsan, bunu kendi görevlerinde ölçerek yap (9. seviyede eval’ler).</p>
+
+    <h3>Pratik sonuçlar</h3>
+    <ol class="steps">
+      <li><b>Model değiştirmek, harness’ı da değiştirmektir.</b> Aynı aracın içinde modeli değiştirdiğinde davranış farkının bir kısmı, yeni modelin o aracın formatlarına alışık olmamasından gelebilir. Tersi de geçerli: bir Codex modelini Codex dışı bir araçta kullanırken apply_patch yerine başka bir düzenleme biçimi verilmişse beklediğin kaliteyi görmeyebilirsin.</li>
+      <li><b>Talimat dosyasının adı da formatın parçası.</b> Codex, AGENTS.md’ye uymak üzere eğitilmiş; Claude Code CLAUDE.md’yi yükler. Aynı repoda iki aracı kullanıyorsan iki dosyayı tutarlı tut ya da birini diğerine yönlendir (7. ve 8. seviye).</li>
+      <li><b>Araç adları önemsiz değil.</b> Kendi harness’ında bir araca rastgele bir ad vermek yerine, modelin eğitimde gördüğü adlara yakın adlar seçmek tutarlılık kazandırabilir. Bunu destekleyen üçüncü taraf deneyimler var ama doğrulanmış sayılarını görmedik; kendi eval’inle dene.</li>
+      <li><b>“Hangi model en iyi?” sorusunu kapat.</b> Yerine “hangi model ve harness çifti, benim görevlerimde, benim ölçütlerimle en iyi?” sorusunu koy.</li>
+    </ol>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Agent sık sık “eşleşme bulunamadı” ya da “yama uygulanamadı” hatası alıyorsa sorunu modelin zekasında aramadan önce şunlara bak: dosyada sekme ve boşluk karışık mı, satır sonları CRLF ile LF arasında karışık mı, bir formatter dosyayı agent okuduktan sonra değiştirmiş mi? Bunların hepsi format düzeyindeki sürtünmedir ve çoğu harness ya da repo ayarıyla çözülür.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Modeller belirli araç adları ve formatlarla eğitilir; Codex için apply_patch ve terminal aracı, Claude için bash, text_editor ve diğer trained-in şemalar.</li>
+        <li>Her düzenleme formatının kendine özgü hata yüzeyi var: birebir eşleşme, bağlam kopyalama ya da doğru satır seçimi.</li>
+        <li>Eğitim formatı güçlü bir varsayılandır; başka formatlar daha iyi olabilir, ama bunu kendi görevlerinde ölçerek bil.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide">OpenAI Cookbook: Codex prompting guide</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude API docs: How tool use works</a></li>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain: The Anatomy of an Agent Harness</a></li>
+      <li><a href="https://stencil.so/blog/the-harness-problem">Can Bölük: The harness problem (vendor blogu)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 5. KURALIN DOĞRU YERİ ================= -->
+  <div class="lesson" data-tab="Kuralın doğru yeri">
+    <h2>Bir kural nereye yazılır?</h2>
+    <p class="lead">Ekipte bir kural belirledin: “migrations klasöründeki uygulanmış dosyalara dokunulmaz.” Bunu agent’a nasıl öğretirsin? Çoğu kişinin ilk cevabı “CLAUDE.md’ye yazarım.” Bazen doğru cevap bu. Çoğu zaman değil. Bu konu, bir kuralı harness’ın hangi katmanına koyacağına karar vermeyi öğretiyor.</p>
+
+    <h3>Temel ayrım: rehber mi, zorlama mı?</h3>
+    <p>Önceki konularda gördüğün ayrım burada karar ölçütüne dönüşüyor. Harness katmanlarını yumuşaktan serte bir merdiven gibi diz:</p>
+    <ol>
+      <li><b>CLAUDE.md / AGENTS.md.</b> Her istekte context’te duran rehber. Model okur, çoğu zaman uyar, ama bir satırın o durumda geçerli olmadığına karar verebilir. Her satır her görevde biraz dikkat tüketir.</li>
+      <li><b>Skill.</b> Talep üzerine yüklenen prosedür. Uzun ve nadiren gereken bilgi için doğru yer: yalnız adı ve açıklaması sürekli context’te durur.</li>
+      <li><b>Araç tasarımı.</b> Kuralı aracın kendisine gömmek. Salt okunur bir veritabanı aracı, yazma kuralını prompt’tan daha iyi taşır, çünkü yazma yeteneği hiç yoktur (4. seviye).</li>
+      <li><b>İzin kuralı.</b> allow, ask, deny. Harness araç çağrısını bir desene göre durdurur. Basit, hızlı, deterministik; ama desenler dolanılabilir.</li>
+      <li><b>Hook.</b> Bir olayda çalışan senin kodun. <span class="g" data-g="PreToolUse">PreToolUse</span> çağrıyı engelleyebilir ve modele nedenini söyleyebilir; <span class="g" data-g="PostToolUse">PostToolUse</span> her düzenlemeden sonra bir şey çalıştırabilir; Stop hook’u model “bitti” dediğinde kontrol yapıp onu işe geri gönderebilir (5. seviye). <code>command</code> türündeki hook deterministiktir.</li>
+      <li><b>Sandbox.</b> İşletim sistemi düzeyinde dosya ve ağ sınırı. Harness’taki desenleri dolanan bir komutu bile keser.</li>
+      <li><b>Harness dışı: git hook’u, CI.</b> Agent olsun insan olsun herkes için geçerli son kapı. Geri bildirimi geç gelir ama kimse atlayamaz.</li>
+    </ol>
+    <p>Claude Code dokümantasyonunun bu konudaki tavsiyesi tek cümleyle özetlenebilir: bir CLAUDE.md satırına sürekli vurgu ekliyorsan ve Claude yine de kaçırıyorsa, o satır bir hook’a aittir. Dokümantasyon “IMPORTANT eklemek muhtemelen düzeltmez” diye de ekliyor. 3. seviyede gördüğün gibi yeni modellerde büyük harfli, bağıran talimatlar ayrıca aşırı tetiklenmeye yol açıyor: kural alakasız durumlarda da uygulanmaya başlıyor.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Veritabanında iş kuralını nereye koyduğun sorusu. Uygulama kodundaki bir <code>if</code> çoğu zaman yeterlidir ama başka bir istemci onu atlayabilir. CHECK constraint ya da foreign key ise kimseye sormaz. Kritik bütünlük kuralları constraint’e, esnek iş kuralları koda gider. Burada CLAUDE.md uygulama kodundaki <code>if</code>’e, hook ve sandbox constraint’e benzer.</div>
+
+    <h3>Karar için dört soru</h3>
+    <ol class="steps">
+      <li><b>İstisnası var mı?</b> Kuralın meşru istisnaları varsa ve onları ayırt etmek yargı istiyorsa yumuşak katmana yaz (CLAUDE.md), gerekçesiyle birlikte. Deterministik bir kontrol istisnaları da keser.</li>
+      <li><b>İhlalin bedeli ne?</b> Bir ihlal geri alınamaz bir hasar, güvenlik açığı ya da veri kaybı demekse kural zorlanmalı: deny kuralı, hook ya da sandbox. “Çoğu zaman uyar” yetmez.</li>
+      <li><b>Kural bir eylem mi, bir yargı mı?</b> “Her düzenlemeden sonra formatter çalıştır” bir eylemdir; bir hook her seferinde yapar. “Kod okunaklı olsun” bir yargıdır; deterministik bir kontrol ona karar veremez.</li>
+      <li><b>Ne kadar sık gerekli?</b> Her görevde lazım olan kısa kural CLAUDE.md’ye, ayda bir lazım olan uzun prosedür skill’e.</li>
+    </ol>
+
+    <div class="fig" data-widget="l6-place">
+      <p class="fig-title">Bu kural nereye ait?</p>
+      <p class="fig-cap">Bir kural kartına tıkla. Merdivende önerilen katman yeşil çerçeveyle, bir kat daha yumuşak ve daha sert alternatifler kesikli çizgiyle işaretlenir. Altta neden orada olduğunu ve alternatiflerde ne olacağını okuyabilirsin. Puan yok; amaç akıl yürütmeyi görmek.</p>
+      <div class="l6-place">
+        <div><p class="muted" style="margin:0 0 .4rem">Kurallar</p><div class="l6-cards l6-pl-cards"></div></div>
+        <div><p class="muted" style="margin:0 0 .4rem">Yumuşaktan serte katmanlar</p><div class="l6-ladder"></div></div>
+      </div>
+      <div class="panel live l6-pl-out" aria-live="polite"><span class="muted">Bir kural kartı seç.</span></div>
+    </div>
+
+    <h3>Aynı kural, iki yer: bir oturumu izle</h3>
+    <p>Farkı soyut bırakmayalım. Aşağıdaki simülasyonda aynı kural iki ayrı ekipte iki ayrı yerde duruyor. Sol ekip kuralı CLAUDE.md’ye yazmış, sağ ekip bir PreToolUse hook’u yazmış. İki agent da aynı görevi alıyor ve görevin ortasında aynı cazibeyle karşılaşıyor.</p>
+
+    <div class="fig" data-widget="l6-enforce">
+      <p class="fig-title">CLAUDE.md mi, hook mu? Aynı oturum, iki sonuç</p>
+      <p class="fig-cap">Adım adım ilerle. Sol şerit kuralın CLAUDE.md’de durduğu ekip, sağ şerit aynı kuralın PreToolUse hook’uyla zorlandığı ekip. JSON’lar sadeleştirilmiştir; gerçek hook söz dizimi 8. seviyede.</p>
+    </div>
+
+    <p>Simülasyonda modelin “kötü niyetli” olmadığına dikkat et. Kuralı okudu, anladı ve sonra o durumda kuralın geçerli olmadığına dair makul görünen bir gerekçe üretti. Bu, CLAUDE.md’nin tam olarak tasarlandığı davranış: rehberler yorumlanır. Hook ise yorum yapmaz. Üstelik iyi bir hook yalnızca engellemez, modele <b>ne yapması gerektiğini</b> de söyler; engelleme mesajı bir sonraki turda modelin girdisi olur ve agent doğru yola geçer.</p>
+
+    <h3>Sert katmanın da bir bedeli var</h3>
+    <p>Her kuralı en sert katmana koymak da doğru cevap değil. Deterministik bir kontrol istisnayı tanımaz: meşru bir işi de engeller. Engellenen bir agent ise durmaz, başka bir yol arar. Simülasyondaki hook yalnızca <code>Edit</code> ve <code>Write</code> araçlarını izliyorsa, model bir sonraki denemede aynı değişikliği bash üzerinden <code>sed -i</code> ile yapmayı deneyebilir. Bu kötü niyet değil; model görevi bitirmeye çalışıyor ve önüne konan engeli bir teknik sorun gibi görüyor. Bu yüzden iyi bir engel iki şey yapar: kapsamı gerçek riski kapatacak kadar geniş tutar (gerekirse sandbox’la), ve engel mesajında meşru alternatifi açıkça söyler. Alternatifi olan bir agent kestirme aramaz.</p>
+    <p>Harness’lar da bu gerilimi bilerek emniyet supapları koyuyor. Claude Code dokümantasyonuna göre (Kasım 2026 itibarıyla) auto modu art arda 3, toplamda 20 engellemeden sonra karar vermeyi bırakıp kullanıcıya sormaya dönüyor; Stop hook’u da art arda 8 kez engellediğinde harness onu geçersiz sayıyor (5. seviye). Mesaj açık: sert bir katman sonsuza kadar “hayır” derse agent ya kilitlenir ya da etrafından dolaşmaya çalışır. Sert katman kararlı olmalı, ama döngüyü çıkmaza sokmamalı.</p>
+    <p>Pratik bir kural olarak şöyle düşün: rehber katmanlar (CLAUDE.md, skill) agent’ın <b>doğru yolu seçmesini</b> sağlar; zorlayıcı katmanlar (izin, hook, sandbox) <b>yanlış yolun kapalı olmasını</b> sağlar. İyi bir kurulumda ikisi birlikte çalışır: agent çoğu zaman engelle hiç karşılaşmaz, çünkü rehber onu zaten doğru yola sokmuştur; karşılaştığında da engel ona nereye gideceğini söyler.</p>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Deterministik katmanlar da delinebilir. Bir deny deseni <code>Read</code> aracını kesse bile aynı dosya bash ile <code>cat</code> edilebilir; bir komut deseni farklı yazımlarla dolanılabilir. Kritik bir kural için tek katmana güvenme: deny kuralı ile sandbox’ı birlikte kullan, ve mümkünse sırrın kendisini agent’ın ortamından çıkar. Bu derinlemesine savunma fikrini 10. seviye ayrıntılandırıyor.</div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Bir kuralı zorlayan katmana taşıdığında CLAUDE.md’den silme; kısa bir gerekçe olarak bırak. Örneğin “migrations klasörü bir hook ile korunuyor; şema değişikliği için yeni migration oluştur.” Model böylece engelle karşılaşmadan doğru yolu seçer, sen de bir turu ve token’ları kurtarırsın.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>CLAUDE.md bir rehberdir; model bir satırın geçerli olmadığına karar verebilir. Hook, deny kuralı, managed settings ve sandbox zorlanır.</li>
+        <li>Vurgu ekleyip duruyorsan kural yanlış katmanda: onu bir hook’a ya da izin kuralına taşı.</li>
+        <li>Karar soruları: istisna var mı, ihlalin bedeli ne, eylem mi yargı mı, ne sıklıkla gerekli?</li>
+        <li>İyi bir engel, nedenini ve doğru yolu da söyler. Kritik kurallarda birden fazla katman kullan.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code docs: Best practices (CLAUDE.md, hook’lar, vurgu)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works (izinler, hook türleri)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude prompting best practices (aşırı tetiklenme)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 6. KENDİ HARNESS’IN ================= -->
+  <div class="lesson" data-tab="Kendi harness’ın">
+    <h2>Kendi harness’ını kurarken</h2>
+    <p class="lead">Bir gün Claude Code ya da Codex’in hazır davranışı yetmeyecek: bir iç sistemle konuşan bir destek agent’ı, gece çalışan bir bakım agent’ı, CI’da çalışan bir inceleme adımı. O zaman harness’ın bir kısmını kendin kuracaksın. Bu konu, sıfırdan yazarken neyi atlamaman gerektiğini gösteriyor.</p>
+
+    <h3>Önce sıfırdan yazma</h3>
+    <p>İlk öneri şaşırtıcı gelebilir: mümkünse harness’ı sıfırdan yazma. Claude Agent SDK, Claude Code’u çalıştıran harness’ın programlanabilir hali; araçlar, izinler, hook’lar, context yönetimi ve subagent’lar hazır geliyor. OpenAI Agents SDK de kendi döngüsünü, devirlerini ve <code>max_turns</code> korumasını sağlıyor. Kendi döngünü yazmak öğretici bir alıştırma; ama üretimde her katmanı yeniden yazmak, her katmanın kapattığı başarısızlık yolunu yeniden keşfetmek demek.</p>
+    <p>Anthropic’in Agent SDK yazısı agent’ın çalışmasını dört adımlı bir döngü olarak tarif ediyor: <b>bağlam topla, eylem yap, işi doğrula, tekrarla.</b> Doğrulama için üç seçenek sayıyor: kurallar (lint, test), görsel geri bildirim (ekran görüntüsü) ve LLM-as-judge. Sonuncusu için yazı açık konuşuyor: genellikle çok sağlam bir yöntem değil. Yani mümkün olan her yerde deterministik doğrulayıcı.</p>
+
+    <h3>Minimum harness kontrol listesi</h3>
+    <p>5. seviyedeki döngüyü hatırla: bir model çağrısı, bir <code>stop_reason</code> kontrolü, araçları çalıştırıp sonuçları geri ekleyen birkaç satır. Bu iskeleti üretime taşımak için her biri bir başarısızlık yolunu kapatan parçalar ekliyorsun. Aşağıdaki şemada parçaları tek tek aç ve döngünün nasıl büyüdüğüne bak. Sağ alttaki sayaç önemli bir gerçeği gösteriyor: hangi parçayı eklersen ekle, modelin olduğu satır tek. Geri kalan her şey sıradan, test edilebilir yazılım.</p>
+
+    <div class="fig" data-widget="l6-builder">
+      <p class="fig-title">Döngüden harness’a: parça parça</p>
+      <p class="fig-cap">Bir parçayı işaretle; döngüye eklenen satırlar renkli görünür ve parçanın kapattığı başarısızlık yolu altta listelenir. Kod Python benzeri sözde koddur.</p>
+      <div class="l6-opts"></div>
+      <div class="l6-code" role="region" aria-label="Üretilen döngü kodu"></div>
+      <div class="stats l6-b-stats"></div>
+      <div class="panel live l6-b-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Sık yapılan hatalar</h3>
+    <ul>
+      <li><b>Durma koşulu yok.</b> <code>while True</code> ile başlayan döngü, model takıldığında faturayı da sonsuza taşır. <code>max_turns</code> ve bir token ya da maliyet bütçesi ilk eklenecek iki şey.</li>
+      <li><b>Hata mesajları modele göre yazılmamış.</b> “failed” diyen bir araç sonucu, modelin aynı çağrıyı tekrar etmesine yol açar. Ne olduğunu ve nasıl düzeltileceğini söyleyen hata metni döngüyü kısaltır (4. seviye).</li>
+      <li><b>Doğrulayıcı yok.</b> Model “bitti” dediğinde biter. Doğrulama döngünün içinde değilse “bitti”, “bitmiş gibi görünüyor” demektir (5. seviye).</li>
+      <li><b>İzin kontrolü modelin içinde.</b> “Tehlikeli komut çalıştırma” cümlesi system prompt’ta duruyor ama yürütücüde hiçbir kontrol yok. Model ne kadar iyi olursa olsun bu bir güvenlik sınırı değil.</li>
+      <li><b>Gözlemlenebilirlik sonradan düşünülmüş.</b> Her turun isteğini, yanıtını ve araç sonuçlarını kaydetmeyen bir harness’ta hata ayıklamak, log’suz bir dağıtık sistemde hata ayıklamak gibidir. Claude Code’un oturumları JSONL olarak saklamasının bir nedeni bu.</li>
+      <li><b>Context sınırı yok.</b> Bir aracın 200 KB log döndürmesine izin vermek, birkaç tur sonra hem kaliteyi hem bütçeyi bitirir. Çıktıları kırp ve kırptığında modele daralmanın yolunu söyle.</li>
+    </ul>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Bu liste, dış bir servise güvenilmez bir istemciden gelen istekleri işleyen bir API gateway’in listesine çok benziyor: zaman aşımı, hız ve bütçe sınırı, yetkilendirme, girdi doğrulama, yanıt boyutu sınırı, denetim kaydı. Fark şu ki “istemci” burada senin kendi agent’ın. Güvenilmezliği kötü niyetten değil, olasılıksal olmasından geliyor.</div>
+
+    <h3>Harness’ı da test et</h3>
+    <p>Harness’ın en güzel yanı, sıradan yazılım olması. Modeli birim testine sokamazsın ama harness’ı sokabilirsin. İzin eşleştiricisini bir komut listesiyle test et: <code>git push --force</code> reddediliyor mu, <code>git status</code> geçiyor mu? Hook script’lerini sabit JSON girdileriyle çalıştır ve çıkış kodlarını kontrol et. Kırpma fonksiyonunun kırptığında modele daralma ipucu verdiğini doğrula. Gerçek oturumların JSONL kayıtlarını sakla; harness’ta bir değişiklik yaptığında aynı araç çağrılarını yeniden oynatıp yeni kuralların neyi engellediğini gör. Modelin davranışını ölçmek eval işidir (9. seviye); harness’ın davranışını ölçmek ise bildiğin test işi.</p>
+
+    <h3>Ne zaman kendi harness’ın, ne zaman hazır olanı?</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Durum</th><th>Makul seçim</th><th>Neden</th></tr></thead>
+      <tbody>
+        <tr><td>Geliştiricinin kendi makinesinde kod işi</td><td>Claude Code, Codex CLI</td><td>Bütün katmanlar hazır; ayar dosyası, CLAUDE.md / AGENTS.md ve hook’larla şekillenir.</td></tr>
+        <tr><td>CI’da tekrarlanan bir agent adımı</td><td>Hazır CLI’nin etkileşimsiz modu ya da Agent SDK</td><td>Aynı döngü; izinler ve çıktı biçimi script’ten kontrol edilir (9. seviye).</td></tr>
+        <tr><td>İç sistemle konuşan alan agent’ı</td><td>Agent SDK + kendi araçların ya da MCP sunucun</td><td>Döngü ve context yönetimi hazır; değer senin araç tasarımında.</td></tr>
+        <tr><td>Adımları önceden belli bir iş</td><td>Workflow: sabit kod + birkaç model çağrısı</td><td>Agent gerekmez; daha ucuz ve öngörülebilir (5. seviye).</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Kendi harness’ını kurduğunda güvenlik de senin sorumluluğuna geçer. Araç sonuçları güvenilmeyen girdidir; bir web sayfası ya da bir veritabanı satırı modele talimat gibi görünen metin taşıyabilir. Yetki kısıtlama, ağ yalıtımı ve geri alınamaz eylemler için insan onayı harness’ın işi. 10. seviyeyi okumadan dış dünyaya açılan bir agent yayınlama.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Mümkünse sıfırdan yazma: Claude Agent SDK ya da OpenAI Agents SDK katmanların çoğunu hazır verir.</li>
+        <li>Minimum üretim harness’ı: durma koşulu, izin kontrolü, çıktı sınırı, deterministik doğrulayıcı, context yönetimi, checkpoint, oturum kaydı.</li>
+        <li>Ne eklersen ekle, modelin olduğu satır tek; harness’ın geri kalanı sıradan, test edilebilir yazılım.</li>
+        <li>LLM-as-judge son çare doğrulayıcıdır; önce test, lint ve tip denetimi.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+      <li><a href="https://openai.github.io/openai-agents-python/running_agents/">OpenAI Agents SDK: Running agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){
+  const s = document.createElement("style");
+  s.textContent = `
+.l6-tr{display:flex;flex-direction:column;gap:.35rem}
+.l6-seg{display:block;width:100%;text-align:left;cursor:pointer;border:1px solid var(--line);border-left:5px solid var(--c,var(--line));border-radius:9px;padding:.5rem .7rem;background:var(--paper);color:var(--ink);font-family:var(--mono);font-size:.78rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;transition:opacity .2s,background .2s}
+.l6-seg:hover{background:var(--soft)}
+.l6-seg:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.l6-seg .l6-w{display:block;font-family:var(--sans);font-size:.68rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--c);margin-bottom:.15rem}
+.l6-seg.sel{background:var(--cb);border-color:var(--c)}
+.l6-tr[data-f="m"] .l6-seg:not(.l6-k-m),.l6-tr[data-f="h"] .l6-seg:not(.l6-k-h){opacity:.28}
+.l6-onion-wrap{display:grid;grid-template-columns:minmax(0,340px) 1fr;gap:1.1rem;align-items:start}
+@media (max-width:720px){.l6-onion-wrap{grid-template-columns:1fr}}
+.l6-onion svg{width:100%;height:auto;max-width:340px;display:block;margin:0 auto}
+.l6-onion .ring{cursor:pointer;transition:fill .25s,fill-opacity .25s,stroke-width .2s}
+.l6-onion .ring.sel{stroke:var(--ink);stroke-width:2.5}
+.l6-onion .ring:focus{outline:none}
+.l6-onion .ring:focus-visible{stroke:var(--acc);stroke-width:3}
+.l6-onion text{font-family:var(--sans);pointer-events:none}
+.l6-pills{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.8rem}
+.l6-pill{font-family:var(--sans);font-size:.78rem;font-weight:600;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:999px;padding:.25rem .65rem;cursor:pointer}
+.l6-pill[aria-pressed="true"]{border-color:var(--harness);background:var(--harness-bg);color:var(--harness)}
+.l6-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:.4rem}
+.l6-card{text-align:left;font-family:var(--body);font-size:.84rem;line-height:1.4;font-weight:500;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:.55rem .7rem;cursor:pointer}
+.l6-card:hover{border-color:var(--muted)}
+.l6-card[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l6-place{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media (max-width:720px){.l6-place{grid-template-columns:1fr}}
+.l6-ladder{display:flex;flex-direction:column;gap:.3rem}
+.l6-rung{display:grid;grid-template-columns:1.5rem 1fr auto;gap:.5rem;align-items:center;border:1px solid var(--line);border-radius:9px;padding:.42rem .6rem;background:var(--paper);font-size:.84rem;line-height:1.35;transition:background .25s,border-color .25s,box-shadow .25s}
+.l6-rung .n{font-family:var(--mono);font-size:.74rem;color:var(--muted);text-align:center}
+.l6-rung small{color:var(--muted);font-size:.72rem}
+.l6-rung .badge{font-family:var(--sans);font-size:.66rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase;border-radius:999px;padding:.08rem .45rem;white-space:nowrap}
+.l6-rung.rec{border-color:var(--ok);background:var(--ok-bg);box-shadow:inset 0 0 0 1px var(--ok)}
+.l6-rung.rec .badge{background:var(--ok);color:var(--surface)}
+.l6-rung.soft{border-style:dashed;border-color:var(--ctx)}
+.l6-rung.soft .badge{background:var(--ctx-bg);color:var(--ctx)}
+.l6-rung.hard{border-style:dashed;border-color:var(--risk)}
+.l6-rung.hard .badge{background:var(--risk-bg);color:var(--risk)}
+.l6-lanes{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+@media (max-width:680px){.l6-lanes{grid-template-columns:1fr}}
+.l6-lane{border:1px solid var(--line);border-radius:12px;padding:.7rem .8rem;background:var(--paper);min-width:0}
+.l6-lane h4{margin:0 0 .35rem;font-size:.9rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.l6-lane.bad{border-color:color-mix(in srgb,var(--risk) 50%,var(--line))}
+.l6-lane.good{border-color:color-mix(in srgb,var(--ok) 50%,var(--line))}
+.l6-lane p{margin:.3rem 0;font-size:.86rem}
+.l6-lane .jsonv{max-height:260px;font-size:.74rem}
+.l6-stepnote{font-size:.88rem;margin:0 0 .6rem}
+.l6-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:.4rem}
+.l6-opt{display:flex;gap:.5rem;align-items:flex-start;border:1px solid var(--line);border-radius:9px;padding:.45rem .6rem;background:var(--paper);font-size:.84rem;line-height:1.35;cursor:pointer}
+.l6-opt input{margin-top:.18rem;accent-color:var(--harness);flex:none}
+.l6-opt small{display:block;color:var(--muted);font-size:.74rem}
+.l6-code{font-family:var(--mono);font-size:.74rem;line-height:1.6;white-space:pre;overflow-x:auto;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;margin:.8rem 0 0}
+.l6-code span{display:block}
+.l6-code .add{background:var(--harness-bg);color:var(--harness);border-left:3px solid var(--harness);margin-left:-.85rem;padding-left:calc(.85rem - 3px)}
+.l6-code .mdl{background:var(--model-bg);color:var(--model);border-left:3px solid var(--model);margin-left:-.85rem;padding-left:calc(.85rem - 3px);font-weight:700}
+.l6-study{border:1px solid var(--line);border-radius:12px;padding:.7rem .85rem;margin-top:.7rem;background:var(--paper)}
+.l6-study h4{margin:0 0 .2rem;font-size:.92rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.l6-study p{margin:.25rem 0;font-size:.84rem;color:var(--muted)}
+.l6-study .bars{margin-top:.5rem}
+.l6-study .bar{grid-template-columns:minmax(70px,150px) 1fr 52px}
+.l6-study .bar.before .fill{background:var(--faint)}
+.l6-study.warnbox{border-color:color-mix(in srgb,var(--ctx) 55%,var(--line))}
+`;
+  document.head.append(s);
+})();
+
+Edu.glossary({
+  "Agent = Model + Harness": "Bu setin temel denklemi: bir agent, karar veren model ile onu döngüye sokan, araç veren, sınırlayan ve geri besleyen yazılımın (harness) toplamıdır.",
+  "Agentic harness": "Modelin etrafında araçları sağlayan ve context’i yöneten katman. Anthropic, Claude Code’u bu terimle tarif eder.",
+  "Claude Agent SDK": "Claude Code’u çalıştıran harness’ın programlanabilir hali. 2025’te Claude Code SDK adından, kodlama dışı agent’ları da çalıştırdığı için bu ada geçti.",
+  "Middleware": "Agent döngüsünün belirli anlarında araya giren kod: compaction, devam ettirme mantığı, lint kontrolleri gibi.",
+  "Sandbox": "Agent’ın çalıştırdığı komutların dosya sistemi ve ağ erişimini işletim sistemi düzeyinde sınırlayan yalıtım katmanı. Harness’taki desenleri dolanan komutları bile keser.",
+  "İzin modu": "Harness’ın araç çağrılarını ne kadar sorarak çalıştıracağını belirleyen genel ayar. Claude Code’da Auto, Manual, Accept edits ve Plan gibi modlar.",
+  "Deny kuralı": "Belirli bir araç ya da komut desenini harness düzeyinde yasaklayan kural. Deterministiktir ama desen dolanılabilir; kritik durumda sandbox ile birlikte kullanılır.",
+  "Hook": "Agent döngüsünün belirli olaylarında (araç öncesi/sonrası, oturum başı, durma) çalışan, senin yazdığın kod. command/http türleri deterministik, prompt/agent türleri model kararlıdır.",
+  "PreToolUse": "Bir araç çağrısı çalışmadan hemen önce tetiklenen hook olayı. Çağrıyı engelleyebilir ve modele nedenini bildirebilir.",
+  "PostToolUse": "Bir araç çağrısı tamamlandıktan sonra tetiklenen hook olayı. Formatter ya da lint çalıştırmak gibi her seferinde yapılması gereken işler için.",
+  "Checkpoint": "Harness’ın düzenlemelerden önce aldığı dosya anlık görüntüsü. Agent’ın yaptığı değişikliği geri sarmayı sağlar.",
+  "Managed settings": "Organizasyonun merkezi olarak dağıttığı ve kullanıcının ya da projenin geçersiz kılamadığı harness ayarları.",
+  "Deterministik katman": "Aynı girdiye her seferinde aynı tepkiyi veren harness katmanı: deny kuralı, sandbox, command hook’u. Model kararlı katmanların (CLAUDE.md gibi) aksine zorlanır.",
+  "apply_patch": "OpenAI Codex modellerinin eğitildiği bağlamlı yama formatı ve bunu uygulayan araç. OpenAI, birebir kendi uygulamasının kullanılmasını önerir.",
+  "Trained-in araç": "Şeması modelin eğitimine işlenmiş araç (Claude için bash, text_editor, memory, computer, browser). Uydurma bir şemaya göre daha güvenilir çağrılır.",
+  "Edit formatı": "Modelin dosya değişikliğini tarif ettiği biçim: bul-değiştir, bağlamlı yama ya da satır referanslı. Her birinin farklı bir hata yüzeyi vardır.",
+  "Hashline": "Satırların kısa içerik hash’leriyle etiketlendiği, düzenlemenin satır ve hash ile tarif edildiği edit formatı. Şubat 2026 tarihli tek yazarlı bir çalışmada apply_patch’i çoğu modelde geçti.",
+  "Terminal-Bench": "Agent’ların terminalde gerçekçi görevleri çözme becerisini ölçen benchmark. Aynı modelin farklı harness’larla aldığı skorları karşılaştırmak için sık kullanılır."
+});
+
+/* ---------- 1. Kim üretti? ---------- */
+Edu.widget("l6-who", el => {
+  const { h, $, $$, seg } = Edu;
+  const K = {
+    h:["Harness","var(--harness)","var(--harness-bg)"],
+    m:["Model","var(--model)","var(--model-bg)"],
+    u:["Sen / ekip","var(--tool)","var(--tool-bg)"],
+    e:["Ortam","var(--ctx)","var(--ctx-bg)"],
+    x:["Karışık","var(--ctx)","var(--ctx-bg)"]
+  };
+  const S = [
+    { k:"h", lab:"System prompt", txt:"(kimlik, çalışma kuralları, ortam bilgisi: işletim sistemi, çalışma dizini, git durumu, tarih)",
+      who:"Harness yazdı. Her isteğin en başında durur; sen göremezsin ama her istekte context’e ve faturaya girer.", ctl:"Doğrudan değiştiremezsin; çıktı stili ve ayarlarla dolaylı etkilersin." },
+    { k:"h", lab:"Araç tanımları", txt:"Read, Edit, Write, Bash, Grep, Glob, …\nMCP: example_db (yalnız adlar; tam tanımlar ertelenmiş)",
+      who:"Harness ekledi. Araç açıklamaları da bir prompt’tur; model hangi aracı ne zaman kullanacağına bunlara bakarak karar verir. MCP araçları tool search ile ertelenir (4. seviye).", ctl:"Hangi MCP sunucularını bağladığını ve izinleri sen seçersin." },
+    { k:"u", lab:"CLAUDE.md (reminder olarak)", txt:"<system-reminder>\nTestler: dotnet test. Para alanları decimal.\n</system-reminder>",
+      who:"İçeriği sen ya da ekibin yazdı; nereye ve hangi biçimde konacağına harness karar verdi.", ctl:"İçerik tamamen senin. Ama bu bir rehber: model bir satırın geçerli olmadığına karar verebilir." },
+    { k:"u", lab:"Senin mesajın", txt:"OrderMapper testi kırmızı, düzelt.",
+      who:"Sen yazdın. Bütün isteğin içinde en küçük parçalardan biri.", ctl:"Tamamen senin. 3. seviyedeki iyi görev tanımı burada devreye girer." },
+    { k:"m", lab:"Model: metin + tool_use", txt:"Önce testi çalıştırıp hatayı göreyim.\ntool_use → Bash {\"command\": \"dotnet test --filter OrderMapper\"}",
+      who:"Model üretti. Dikkat: model hiçbir şey çalıştırmadı, sadece bir istek yazdı.", ctl:"Prompt, örnekler ve araç açıklamalarıyla dolaylı etkilersin." },
+    { k:"h", lab:"İzin kontrolü", txt:"kural: allow Bash(dotnet test:*) → sormadan çalıştır",
+      who:"Harness karar verdi. Aynı istek başka bir izin modunda onay penceresine, deny kuralı olsaydı ret mesajına dönüşürdü.", ctl:"Ayar dosyasındaki allow/deny kuralları ve izin modu senin." },
+    { k:"e", lab:"Ortam: komut çıktısı", txt:"Failed: Map_NullStatus_ReturnsUnknown\nInvalidCastException at OrderMapper.cs:88\nexit code 1",
+      who:"Ortam üretti: shell, derleyici, test çalıştırıcı. Agent’ın kalitesi bu geri bildirimin kalitesiyle sınırlı (5. seviye).", ctl:"Testlerin, hata mesajlarının ve araç çıktılarının kalitesi senin repona bağlı." },
+    { k:"h", lab:"tool_result paketleme", txt:"{\"type\": \"tool_result\", \"tool_use_id\": \"toolu_01\", \"content\": \"Failed: …\"}\n(25.000 token’ı aşsaydı kırpılırdı)",
+      who:"Harness paketledi. Çıktıyı biçimlendirdi, gerekirse kırptı ve modelin bir sonraki isteğine ekledi.", ctl:"Kendi harness’ında sınırı ve kırpma mesajını sen belirlersin." },
+    { k:"m", lab:"Model: düzenleme isteği", txt:"tool_use → Edit {\"file_path\": \"src/Orders/OrderMapper.cs\",\n  \"old_string\": \"(string)row[\\\"status_code\\\"]\",\n  \"new_string\": \"row[\\\"status_code\\\"] as string ?? \\\"UNKNOWN\\\"\"}",
+      who:"Model üretti. Bul-değiştir formatında bir değişiklik tarifi (bu seviyenin 4. konusu).", ctl:"Formatı harness seçer; model yalnızca o formatta yazar." },
+    { k:"h", lab:"PostToolUse hook", txt:"hook: dotnet format src/Orders/OrderMapper.cs → tamam",
+      who:"Harness çalıştırdı, senin tanımladığın hook ile. Model bunu istemedi; her düzenlemeden sonra deterministik olarak çalışır.", ctl:"Tamamen senin: hangi olayda hangi komut (8. seviye)." },
+    { k:"h", lab:"System reminder: dosya değişti", txt:"<system-reminder>\nOrderMapper.cs okunduktan sonra değiştirildi (formatter).\n</system-reminder>",
+      who:"Harness ekledi. Formatter dosyayı değiştirdiği için modelin elindeki kopya eskidi; harness bunu bildiriyor ki bir sonraki düzenleme eşleşme hatası vermesin.", ctl:"Doğrudan değil; harness’ın kendi davranışı." },
+    { k:"x", lab:"Compaction özeti (uzun oturumda)", txt:"[Önceki konuşmanın özeti] Kök neden: status_code NULL. Değişen: OrderMapper.cs …",
+      who:"Karışık. Metni bir model çağrısı yazdı; ne zaman özetleneceğine, neyin korunacağına ve özetin nereye konacağına harness karar verdi.", ctl:"/compact ile odak verebilir, CLAUDE.md’de özetleme talimatı tutabilirsin." },
+    { k:"m", lab:"Model: son cevap", txt:"Kök neden: NULL status_code cast’i. Satır 88 düzeltildi, yeni test eklendi, tüm testler geçiyor.",
+      who:"Model üretti. Araç istemediği için stop_reason end_turn; döngü bitti (5. seviye).", ctl:"Bu iddiayı doğrulayan bir Stop hook’u ya da CI ekleyebilirsin." },
+    { k:"h", lab:"Arayüz", txt:"✓ 2 komut çalıştırıldı · 1 dosya düzenlendi",
+      who:"Harness gösterdi. Terminal, IDE ya da web: yüzey değişir, arkadaki döngü aynıdır.", ctl:"Hangi yüzeyi kullanacağını sen seçersin." }
+  ];
+  const tr = $(".l6-tr", el), out = $(".l6-who-out", el), cnt = $(".l6-who-cnt", el);
+  const btns = S.map(s => {
+    const b = h("button", { type:"button", class:"l6-seg l6-k-" + s.k }, h("span", { class:"l6-w" }, K[s.k][0] + " · " + s.lab), s.txt);
+    b.style.setProperty("--c", K[s.k][1]); b.style.setProperty("--cb", K[s.k][2]);
+    b.addEventListener("click", () => {
+      btns.forEach(x => x.classList.remove("sel")); b.classList.add("sel");
+      out.innerHTML = "";
+      const tag = h("span", { class:"tag " + ({h:"h",m:"m",u:"t",e:"c",x:"c"})[s.k] }, K[s.k][0]);
+      out.append(h("p", null, tag, " ", h("b", null, s.lab)), h("p", null, s.who), h("p", { class:"muted" }, h("b", null, "Senin kontrolün: "), s.ctl));
+    });
+    tr.append(b); return b;
+  });
+  const n = k => S.filter(s => s.k === k).length;
+  seg($(".l6-who-f", el), v => {
+    tr.dataset.f = v;
+    cnt.textContent = v === "m" ? n("m") + " / " + S.length + " parçayı model üretti" :
+      v === "h" ? n("h") + " / " + S.length + " parçayı harness üretti ya da ekledi" :
+      S.length + " parça · model " + n("m") + " · harness " + n("h") + " · sen " + n("u") + " · ortam " + n("e") + " · karışık " + n("x");
+  });
+});
+
+/* ---------- 2. Soğan ---------- */
+Edu.widget("l6-onion", el => {
+  const { h, $, $$, seg } = Edu;
+  const KIND = { d:["Deterministik","var(--harness)"], m:["Model kararlı","var(--model)"], x:["Karışık","var(--ctx)"] };
+  const R = [
+    { s:"Talimatlar", n:"System prompt ve reminder’lar", kind:"m",
+      d:"Kimlik, çalışma kuralları, ortam bilgisi ve konuşmanın içine yerleştirilen notlar (CLAUDE.md içeriği, çıktı stili, dosya değişti uyarıları).",
+      cc:"Harness’ın system prompt’u + <system-reminder> blokları.", f:"Model nerede olduğunu, hangi kurallarla ve hangi araçlarla çalıştığını bilmez." },
+    { s:"Araçlar", n:"Araçlar, MCP ve skill’ler", kind:"x",
+      d:"Dosya, arama, komut, web ve kod zekası araçları; bağlanan MCP sunucuları (tanımları ertelenmiş) ve talep üzerine yüklenen skill’ler. Aracın kendisi deterministik, hangisinin seçileceği model kararı.",
+      cc:"Read, Edit, Bash, Grep… + tool search ile ertelenen MCP araçları + skill açıklamaları.", f:"Model ne yapılacağını bilir ama yapamaz; ya da her şeyi bash ile yapmaya çalışır." },
+    { s:"Context", n:"Context yönetimi", kind:"d",
+      d:"Otomatik compaction, araç çıktısı üst sınırı, context dökümü. Pencereye neyin girip neyin çıkacağına harness karar verir.",
+      cc:"Auto-compaction, /context, araç yanıtlarına 25.000 token sınırı.", f:"Context taşar, kalite düşer (context rot), maliyet patlar." },
+    { s:"Bellek", n:"Bellek dosyaları", kind:"m",
+      d:"Oturumlar arası kalıcılık. Model her oturumu sıfırdan başlar; dosyalar başlamaz. İçerik rehber niteliğindedir.",
+      cc:"CLAUDE.md, CLAUDE.local.md, otomatik bellek MEMORY.md (ilk 200 satır ya da 25 KB).", f:"Her oturumda aynı şeyi yeniden anlatırsın; ekip kuralları kişiden kişiye değişir." },
+    { s:"Subagent", n:"Subagent’lar", kind:"x",
+      d:"Ayrı context penceresinde çalışıp yalnız özet döndüren yardımcı agent’lar. Ne zaman çağrılacağı çoğunlukla model kararı; yalıtım harness’ın.",
+      cc:"Temiz pencereyle ya da konuşmanın kopyasıyla (fork) başlatılan alt agent’lar.", f:"Keşif sırasında okunan her şey ana pencereyi doldurur." },
+    { s:"Hook’lar", n:"Hook’lar", kind:"x",
+      d:"Olaylarda çalışan senin kodun. command/http hook’ları deterministik; prompt/agent hook’larında kararı yine bir model verir.",
+      cc:"PreToolUse, PostToolUse, Stop, SessionStart olayları.", f:"Her seferinde yapılması gereken işler modelin hafızasına ve iyi niyetine kalır." },
+    { s:"İzinler", n:"İzinler ve sandbox", kind:"d",
+      d:"Hangi araç sorulmadan, hangisi onayla, hangisi hiç çalışmaz; komutların dosya ve ağ erişiminin OS düzeyinde sınırı. (Auto modundaki sınıflandırıcı bir model kararıdır; kurallar ve sandbox deterministiktir.)",
+      cc:"Auto / Manual / Accept edits / Plan modları, allow ve deny kuralları, sandbox, managed settings.", f:"Agent ya her şeye onay ister ve kullanılamaz olur, ya hiçbir şey sormaz ve tehlikeli olur." },
+    { s:"Checkpoint", n:"Checkpoint’ler ve oturum", kind:"d",
+      d:"Düzenlemelerden önce dosya anlık görüntüsü; oturumun tamamı JSONL olarak kayıtlı. Geri sarma, devam ettirme, dallandırma.",
+      cc:"Esc Esc ile geri sarma; resume ve fork.", f:"Agent’ın yanlış düzenlemesini geri alamazsın; ne yaptığını sonradan denetleyemezsin." },
+    { s:"Arayüzler", n:"Arayüzler", kind:"d",
+      d:"Terminal, IDE, masaüstü, web, Slack, CI. Hepsi aynı döngüyü çalıştırır; yalnız yüzey değişir.",
+      cc:"Aynı oturum farklı yüzeylerde; etkileşimsiz mod CI için.", f:"Agent yalnız bir ortamda kullanılabilir; CI’a ya da ekibe taşınamaz." }
+  ];
+  const svg = $("svg", el), out = $(".l6-on-out", el), pills = $(".l6-pills", el), legend = $(".l6-on-legend", el);
+  const C = 172, CORE = 33, STEP = 15;
+  const NS = "http://www.w3.org/2000/svg";
+  const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  let mode = "layer", cur = null;
+  const rings = [];
+  for (let i = R.length - 1; i >= 0; i--){
+    const r = CORE + (i + 1) * STEP;
+    const c = mk("circle", { cx:C, cy:C, r:r, class:"ring", tabindex:"0", role:"button", "aria-label":R[i].n, stroke:"var(--surface)", "stroke-width":"1.5" });
+    c.dataset.i = i; rings[i] = c; svg.append(c);
+  }
+  const core = mk("circle", { cx:C, cy:C, r:CORE, class:"ring", tabindex:"0", role:"button", "aria-label":"Model", fill:"var(--model)", stroke:"var(--surface)", "stroke-width":"1.5" });
+  core.dataset.i = "core"; svg.append(core);
+  R.forEach((x, i) => {
+    const r = CORE + (i + 1) * STEP;
+    const t = mk("text", { x:C, y:C - r + 10.5, "text-anchor":"middle", "font-size":"9.5", "font-weight":"700", fill:"var(--ink)" });
+    t.textContent = x.s; svg.append(t);
+  });
+  const ct = mk("text", { x:C, y:C + 4, "text-anchor":"middle", "font-size":"11", "font-weight":"800", fill:"var(--surface)" });
+  ct.textContent = "Model"; svg.append(ct);
+  function paint(){
+    R.forEach((x, i) => {
+      const col = mode === "kind" ? KIND[x.kind][1] : "var(--harness)";
+      rings[i].setAttribute("fill", col);
+      rings[i].setAttribute("fill-opacity", mode === "kind" ? "0.42" : (0.1 + i * 0.045).toFixed(3));
+    });
+    legend.innerHTML = "";
+    if (mode === "kind") Object.values(KIND).forEach(k => { const sw = h("i", { class:"sw" }); sw.style.background = k[1]; legend.append(h("span", null, sw, k[0])); });
+  }
+  const pbtn = [];
+  R.forEach((x, i) => { const b = h("button", { type:"button", class:"l6-pill", "aria-pressed":"false", onclick:() => sel(i) }, x.n); pbtn[i] = b; pills.append(b); });
+  const pcore = h("button", { type:"button", class:"l6-pill", "aria-pressed":"false", onclick:() => sel("core") }, "Model");
+  pills.append(pcore);
+  function sel(i){
+    cur = i;
+    [...rings, core].forEach(c => c.classList.toggle("sel", String(c.dataset.i) === String(i)));
+    pbtn.forEach((b, j) => b.setAttribute("aria-pressed", j === i ? "true" : "false"));
+    pcore.setAttribute("aria-pressed", i === "core" ? "true" : "false");
+    out.innerHTML = "";
+    if (i === "core"){
+      out.append(h("p", null, h("span", { class:"tag m" }, "Olasılıksal"), " ", h("b", null, "Model")),
+        h("p", null, "Donmuş ağırlıklar. Ne yapılacağına karar veren tek olasılıksal bileşen. Dışındaki her halka, modelin kararını mümkün, tekrarlanabilir, güvenli ve denetlenebilir kılmak için var."),
+        h("p", { class:"muted" }, "Hata ayıklarken: bu karar mı yanlıştı, yoksa karar için gereken bilgi, araç ya da geri bildirim mi eksikti?"));
+      return;
+    }
+    const x = R[i], k = KIND[x.kind];
+    const tg = h("span", { class:"tag " + ({d:"h",m:"m",x:"c"})[x.kind] }, k[0]);
+    out.append(h("p", null, tg, " ", h("b", null, (i + 1) + ". " + x.n)), h("p", null, x.d),
+      h("p", null, h("b", null, "Claude Code’da: "), x.cc),
+      h("p", null, h("span", { class:"r" }, h("b", null, "Bu katman yoksa: ")), x.f));
+  }
+  svg.addEventListener("click", e => { const c = e.target.closest(".ring"); if (c) sel(c.dataset.i === "core" ? "core" : +c.dataset.i); });
+  svg.addEventListener("keydown", e => {
+    const c = e.target.closest && e.target.closest(".ring");
+    if (c && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); sel(c.dataset.i === "core" ? "core" : +c.dataset.i); }
+  });
+  seg($(".l6-on-mode", el), v => { mode = v; paint(); });
+});
+
+/* ---------- 3a. Kanıtlar ---------- */
+Edu.widget("l6-evidence", el => {
+  const { h, $, seg } = Edu;
+  const D = [
+    { id:"lc", t:"LangChain deepagents-cli · gpt-5.2-codex · Terminal-Bench 2.0", badge:["vendor-reported","c"],
+      note:"Model sabit; yalnız prompt, araçlar ve middleware değişti: planla-kur-doğrula-düzelt döngüsü ve “reasoning sandwich”.",
+      rows:[["Önce", 52.8, true], ["Harness değişince", 66.5]] },
+    { id:"edit", t:"Edit formatı çalışması · Grok Code Fast 1 · 180 görev", badge:["vendor blogu, tek yazar","c"],
+      note:"Yalnız düzenleme aracı değişti. 16 modelin 14’ünde hashline apply_patch’i geçti; ortalama fark yaklaşık 15 puan. Burada en uç örnek gösteriliyor.",
+      rows:[["apply_patch", 6.7, true], ["hashline", 68.3]] },
+    { id:"swe", t:"SWE-agent · GPT-4 Turbo · SWE-bench Lite", badge:["ikincil özet, tabloyu doğrula","c"],
+      note:"Agent-bilgisayar arayüzü (ACI): pencereli görüntüleyici, linter’lı düzenleme, kısa arama. Düzenleme eylemi kaldırılınca skor yalnız-shell düzeyinin de altına indi.",
+      rows:[["Yalnız shell", 11.0, true], ["ACI, edit yok", 10.3, true], ["ACI", 18.0]] },
+    { id:"tb", t:"Terminal-Bench 2.0 · Claude Opus 4.6 · harness başına", badge:["doğrulanmamış ikincil derleme","r"], warn:true,
+      note:"Yaklaşık Nisan 2026 tarihli ikincil bir derleme; birincil tablodan doğrulanamadı. Liderlik tablosu harness’ları benchmark için ayarlıdır (etkileşimsiz, cömert zaman aşımları, geniş izinler); ürün harness’ları güvenlik, izin ve maliyeti optimize eder. Sayıları “ürün sıralaması” olarak okuma; tek modelde ne kadar geniş bir aralık olabileceğinin göstergesi olarak oku.",
+      rows:[["ForgeCode", 81.8], ["Capy", 75.3], ["Terminus-KIRA", 74.7], ["Junie CLI", 71.0], ["Droid", 69.9], ["Claude Code", 58.0]] }
+  ];
+  const out = $(".l6-ev-out", el);
+  function card(d){
+    const bars = h("div", { class:"bars" });
+    d.rows.forEach(r => {
+      const fill = h("div", { class:"fill" }); fill.style.width = "0%";
+      bars.append(h("div", { class:"bar" + (r[2] ? " before" : "") }, h("span", { class:"lab", title:r[0] }, r[0]), h("div", { class:"track" }, fill), h("span", { class:"pct" }, r[1].toFixed(1) + "%")));
+      requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = r[1] + "%"; }));
+    });
+    return h("div", { class:"l6-study" + (d.warn ? " warnbox" : "") }, h("h4", null, d.t, h("span", { class:"tag " + d.badge[1] }, d.badge[0])), h("p", null, d.note), bars);
+  }
+  seg($(".l6-ev-f", el), v => {
+    out.innerHTML = "";
+    const list = v === "all" ? D.filter(d => !d.warn) : D.filter(d => d.id === v);
+    list.forEach(d => out.append(card(d)));
+    if (v === "all") out.append(h("p", { class:"hint" }, "Doğrulanmamış Terminal-Bench derlemesi “Hepsi” görünümüne bilerek dahil edilmedi; ayrı sekmede uyarısıyla duruyor."));
+  });
+});
+
+/* ---------- 3b. Belirti → katman ---------- */
+Edu.widget("l6-debug", el => {
+  const { h, $, $$ } = Edu;
+  const S = [
+    { t:"Aynı başarısız komutu tekrar tekrar çalıştırıyor.", layer:["Harness: araç çıktısı ve durma koşulu","h"],
+      steps:["Araç sonucunu oku: hata mesajı modele neyin yanlış olduğunu ve ne yapması gerektiğini söylüyor mu, yoksa sadece “failed” mı diyor?","Çıktı kırpıldıysa asıl hata satırı kırpılan kısımda kalmış olabilir.","Döngüde bir tur sınırı ya da tekrar algılama var mı?"],
+      cmd:"Oturum kaydında son 3 tool_result’a bak." },
+    { t:"Projede olmayan bir fonksiyonu kendinden emin çağırdı.", layer:["Model, ama çaresi harness’ta","m"],
+      steps:["Bu bir model hatası: eğitimden kalan makul görünen bir ad.","Asıl soru: derleyici, tip denetimi ya da test bunu döngü içinde yakaladı mı?","Yakalamadıysa doğrulayıcı döngüye girmemiş (5. seviye)."],
+      cmd:"Agent’ın bitirmeden önce build ve test çalıştırıp çalıştırmadığına bak." },
+    { t:"CLAUDE.md’deki bir kuralı görmezden geldi.", layer:["Context ya da yanlış katman","c"],
+      steps:["Dosya gerçekten yüklenmiş mi? Doğru konumda ve doğru adla mı?","Kural çok uzun bir dosyanın ortasında mı kaybolmuş?","Kural zorlanması gereken türdense (dosya, komut, bitirme koşulu) CLAUDE.md yanlış yer; hook ya da izin kuralına taşı."],
+      cmd:"/context ile neyin yüklendiğine bak." },
+    { t:"Düzenleme “eşleşme bulunamadı” hatasıyla başarısız oluyor.", layer:["Harness: edit formatı ve dosya durumu","h"],
+      steps:["Dosyada sekme/boşluk ya da CRLF/LF karışıklığı var mı?","Agent okuduktan sonra bir formatter ya da başka bir süreç dosyayı değiştirdi mi?","Eski metin dosyada birden fazla yerde geçiyor mu?"],
+      cmd:"git diff ve dosyanın satır sonu ayarlarını kontrol et." },
+    { t:"Büyük bir log okuduktan sonra saçmalamaya başladı.", layer:["Context yönetimi","c"],
+      steps:["Tek bir araç sonucu context’in büyük kısmını mı kapladı?","Ham log okumak yerine filtreleyen bir arama aracı ya da komut kullanılabilir miydi?","Uzun oturumsa compaction devreye girmiş ve önemli ayrıntı kaybolmuş olabilir."],
+      cmd:"/context ile araç sonuçlarının payına bak." },
+    { t:"Benchmark’ta çok iyi, bizim repoda vasat.", layer:["Harness ve ortam","h"],
+      steps:["Benchmark skoru başka bir harness’la ve başka ayarlarla alınmış olabilir.","Repoda hızlı, net hata veren testler ve çalıştırma talimatları var mı?","Talimat dosyası proje komutlarını ve kurallarını anlatıyor mu?"],
+      cmd:"Agent’ın build ve test komutlarını kendi başına bulup bulamadığını gözle." },
+    { t:"Bir Codex modelini başka bir araçta kullanınca kalite düştü.", layer:["Model-harness uyumu","h"],
+      steps:["Araç, modelin eğitildiği apply_patch formatını ve terminal aracını sağlıyor mu?","Talimatlar AGENTS.md üzerinden mi geliyor?","Farkı kendi görevlerinde iki harness’la ölç (9. seviye)."],
+      cmd:"Aracın düzenleme formatını ve araç adlarını dokümantasyonundan kontrol et." },
+    { t:"Bir onay penceresi çıkmadan beklemediğin bir komut çalıştı.", layer:["İzinler","r"],
+      steps:["Hangi izin modu etkindi?","Hangi allow kuralı bu komutla eşleşti? Desen sandığından geniş olabilir.","Komutun etkisi sandbox içinde mi kaldı?"],
+      cmd:"/permissions ile etkin kuralları listele." }
+  ];
+  const list = $(".l6-dbg-list", el), out = $(".l6-dbg-out", el);
+  const btns = S.map(s => {
+    const b = h("button", { type:"button", class:"l6-card", "aria-pressed":"false" }, s.t);
+    b.addEventListener("click", () => {
+      btns.forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      const ol = h("ol", null); s.steps.forEach(x => ol.append(h("li", null, x)));
+      out.append(h("p", null, h("span", { class:"tag " + s.layer[1] }, s.layer[0])), ol, h("p", { class:"muted" }, h("b", null, "İlk hamle: "), s.cmd));
+    });
+    list.append(b); return b;
+  });
+});
+
+/* ---------- 4. Edit formatları ---------- */
+Edu.widget("l6-edit", el => {
+  const { $, seg, esc } = Edu;
+  const CODE = {
+    sr: `{
+  "command": "str_replace",
+  "path": "src/Orders/OrderMapper.cs",
+  "old_str": "    Status = (string)row[\\"status_code\\"],",
+  "new_str": "    Status = row[\\"status_code\\"] as string ?? \\"UNKNOWN\\","
+}`,
+    ap: `*** Begin Patch
+*** Update File: src/Orders/OrderMapper.cs
+@@ public static OrderDto Map(DataRow row)
+     OrderId = (long)row["order_id"],
+-    Status = (string)row["status_code"],
++    Status = row["status_code"] as string ?? "UNKNOWN",
+     CreatedAt = (DateTime)row["created_at"],
+*** End Patch`,
+    hl: `// okuma sırasında harness her satırı etiketler (şematik)
+87:c41|    OrderId = (long)row["order_id"],
+88:9be|    Status = (string)row["status_code"],
+89:2d7|    CreatedAt = (DateTime)row["created_at"],
+
+// modelin düzenleme isteği
+{ "line": "88:9be",
+  "replace_with": "    Status = row[\\"status_code\\"] as string ?? \\"UNKNOWN\\"," }`
+  };
+  const RES = {
+    sr: {
+      ok:["ok","Eski metin dosyada tam bir kez geçiyor; harness değiştirir. Model eski satırı harfi harfine yeniden yazmak zorunda, yani her düzenleme biraz fazladan çıktı token’ı demek."],
+      ws:["r","Dosyada girinti sekmeyle, modelin old_str’inde boşlukla yazılmış. Birebir eşleşme yok: “old_str bulunamadı” hatası döner. Model dosyayı yeniden okuyup tekrar dener; bir tur ve token gider."],
+      dup:["r","Aynı satır dosyada iki metotta geçiyor. Harness hangisini değiştireceğini bilemez ve “birden fazla eşleşme” hatası döndürür. Model old_str’i çevresindeki satırlarla genişletmek zorunda."],
+      moved:["ok","Dosyanın başına 5 satır eklenmiş, ama aranan metin aynı. Bul-değiştir satır numarasına bakmadığı için sorun yok. (Metnin kendisi değiştiyse eşleşme bulunamaz ve model yeniden okumak zorunda kalır.)"]
+    },
+    ap: {
+      ok:["ok","Bağlam satırları (önceki ve sonraki satırlar) ve @@ başlığı hunk’ın yerini belirler; değişiklik uygulanır. Codex modelleri bu formatta eğitildi."],
+      ws:["r","Bağlam satırlarından birinde girinti dosyadakinden farklı. Harness hunk’ı yerleştiremez; yama reddedilir ve model dosyayı yeniden okuyup yeni bir yama yazmak zorunda kalır."],
+      dup:["ok","Değişen satır iki yerde geçse de bağlam satırları ve @@ başlığındaki metot adı onu tek bir yere bağlar. Bağlam yeterince ayırt ediciyse yama uygulanır."],
+      moved:["ok","Dosyanın başına satır eklenmesi sorun değil; yama satır numarasıyla değil bağlamla yerleşir. Bağlam satırlarının kendisi değiştiyse yama reddedilir."]
+    },
+    hl: {
+      ok:["ok","Model yalnız satır referansını ve yeni içeriği yazar; eski metni yeniden üretmez. Harness 88. satırın hash’inin hâlâ 9be olduğunu doğrular ve değiştirir."],
+      ws:["ok","Model eski satırı yeniden yazmadığı için girinti farkı eşleşmeyi bozmaz. Yeni satırın girintisini doğru yazması hâlâ modelin işi."],
+      dup:["ok","Aynı metin iki yerde geçse de satır numarası ve hash birlikte tek bir satırı gösterir; belirsizlik yok."],
+      moved:["r","Dosyanın başına 5 satır eklenmiş: 88. satır artık başka bir satır ve hash’i tutmuyor. Harness düzenlemeyi reddeder, model güncel etiketlerle yeniden okumak zorunda. Bayat referans sessizce yanlış satırı değiştirmez; asıl kazanç bu."]
+    }
+  };
+  let fmt = "sr", sc = "ok";
+  const code = $(".l6-ed-code code", el), out = $(".l6-ed-out", el);
+  function render(){
+    code.innerHTML = esc(CODE[fmt]);
+    const r = RES[fmt][sc];
+    out.innerHTML = '<p><span class="tag ' + (r[0] === "ok" ? "ok" : "r") + '">' + (r[0] === "ok" ? "Uygulanır" : "Reddedilir") + '</span> ' + esc(r[1]) + '</p>';
+  }
+  seg($(".l6-ed-fmt", el), v => { fmt = v; render(); });
+  seg($(".l6-ed-sc", el), v => { sc = v; render(); });
+});
+
+/* ---------- 5a. Kuralın yeri ---------- */
+Edu.widget("l6-place", el => {
+  const { h, $, $$ } = Edu;
+  const L = [
+    ["CLAUDE.md / AGENTS.md", "rehber; model yorumlar"],
+    ["Skill", "talep üzerine yüklenen prosedür"],
+    ["Araç tasarımı", "kural aracın kendisinde"],
+    ["İzin kuralı", "allow / ask / deny deseni"],
+    ["Hook", "Pre / Post / Stop, senin kodun"],
+    ["Sandbox", "OS düzeyi dosya ve ağ sınırı"],
+    ["Harness dışı", "git hook’u, CI"]
+  ];
+  const RULES = [
+    { t:".env dosyalarını asla okuma.", rec:3,
+      why:"Sıfır istisnalı bir kural ve ihlali bir sır sızıntısı demek. Read aracı için bir deny kuralı bunu her seferinde, yorumsuz keser.",
+      soft:[0,"CLAUDE.md’de dursaydı model çoğu zaman uyardı; ama “yapılandırmayı anlamak için” okumaya karar verdiği bir gün sır context’e girerdi. Bir kez yeter."],
+      hard:[5,"Daha sert katman burada fazlalık değil, derinlemesine savunma: deny deseni Read aracını keser ama bash ile cat .env ayrı bir yol. Sandbox’ın dosya sistemi kuralı ikisini de keser. En iyisi sırrın agent’ın ortamında hiç olmaması."] },
+    { t:"Her düzenlemeden sonra formatter çalıştır.", rec:4,
+      why:"Bu bir yargı değil, her seferinde yapılacak bir eylem. PostToolUse hook’u her düzenlemeden sonra deterministik olarak çalıştırır; model bunu düşünmek zorunda kalmaz.",
+      soft:[0,"CLAUDE.md’de dursaydı model bazen unutur, bazen her seferinde ayrı bir bash çağrısıyla bir tur ve token harcardı."],
+      hard:[6,"CI’da format kontrolü zaten olmalı. Ama CI geri bildirimi döngü bittikten sonra gelir; hook düzeltmeyi döngünün içinde yapar."] },
+    { t:"Named export tercih et.", rec:0,
+      why:"Meşru istisnaları olan bir stil tercihi: bazı framework’ler default export ister. İstisnayı ayırt etmek yargı gerektirir, bu yüzden gerekçesiyle birlikte rehber olarak yazılır.",
+      soft:null,
+      hard:[4,"Her default export’u bir PreToolUse hook’uyla engellemek istisnaları da keser ve agent’ı framework’le kavga ettirir. Kesin kural istiyorsan bir lint kuralı yaz, istisnaları orada yönet."] },
+    { t:"example_app sürüm çıkarma prosedürü (12 adım).", rec:1,
+      why:"Uzun ve nadiren gereken bir prosedür. Skill olarak yalnız adı ve açıklaması sürekli context’te durur; içerik sürüm çıkarılacağı zaman yüklenir.",
+      soft:[0,"CLAUDE.md’ye koymak, sürümle ilgisi olmayan her görevde 12 adımlık metni context’e taşımak ve modelin dikkatini bölmek demek."],
+      hard:[2,"Adımların çoğu deterministikse bir script’e ya da araca dönüştür; skill bu script’i çağırsın. Bu “fazla sert” değil, çoğu zaman daha iyi."] },
+    { t:"migrations/ altındaki uygulanmış dosyaları düzenleme.", rec:4,
+      why:"İhlal ortamlar arasında şema farkı yaratır, geri alması zordur. PreToolUse hook’u Edit/Write çağrısını yol desenine göre engeller ve modele “yeni migration oluştur” diye doğru yolu söyler.",
+      soft:[3,"Bir deny kuralı da düzenlemeyi keser ve basit bir yol deseni için yeterli olabilir. Eksiği: modele nedenini ve bunun yerine ne yapacağını söyleyemez."],
+      hard:[6,"CI’da uygulanmış migration dosyalarının değişmediğini kontrol etmek ayrıca iyi bir son kapı; insan geliştiriciler de aynı kurala tabi olur."] },
+    { t:"Bitirmeden önce typecheck geçmeli.", rec:4,
+      why:"Klasik erken bitirme koruması. Stop hook’u model “bitti” dediğinde typecheck’i çalıştırır; geçmezse modeli hata çıktısıyla işe geri gönderir (5. seviye).",
+      soft:[0,"CLAUDE.md’de dursaydı model typecheck’i atlayıp “tamamlandı” diyebilirdi; “bitti” iddiası doğrulanmamış kalırdı."],
+      hard:[6,"CI da kontrol etmeli, ama oradaki kırmızı ancak döngü bittikten sonra görülür."] },
+    { t:"Paket deposu dışında ağ erişimi olmasın.", rec:5,
+      why:"Ağ erişimi tek bir araçla sınırlı değil: curl, wget, bir script, bir test bile dışarı çıkabilir. Bunu ancak OS düzeyindeki sandbox’ın ağ izin listesi güvenilir şekilde keser.",
+      soft:[3,"Bash(curl:*) gibi deny desenleri sadece yazılan biçimi yakalar; python -c ya da node -e ile aynı istek dolanır."],
+      hard:null },
+    { t:"Commit mesajı biçimi: type(scope): açıklama", rec:0,
+      why:"Agent’ın doğru biçimde yazması için CLAUDE.md’de bir örnek yeterli; model örneği iyi taklit eder.",
+      soft:null,
+      hard:[6,"Biçim kesinse doğru yer harness bile değil: bir commit-msg git hook’u ya da CI kontrolü agent’ı da insanı da aynı kurala bağlar."] },
+    { t:"Canlı veritabanına bağlanma.", rec:3,
+      why:"Geri alınamaz hasar riski. psql gibi istemciler ve canlı host için deny kuralları; organizasyon genelinde ise managed settings ile kullanıcı tarafından kapatılamaz hale getir.",
+      soft:[0,"Rehber olarak yazılmış bir yasak, “sadece okuyacağım” gerekçesine yenik düşebilir."],
+      hard:[5,"Sandbox ağ kuralıyla db.example.test gibi hostlara erişimi kes. Kalıcı çözüm: agent’ın ortamında canlı kimlik bilgisi hiç olmasın."] },
+    { t:"Testleri silme ya da atlama.", rec:0,
+      why:"Bu bir yargı kuralı: test silmek bazen meşrudur (ölü kod), atlama işaretinin pek çok biçimi var. Gerekçesiyle yazılmış bir rehber, model için en iyi başlangıç.",
+      soft:null,
+      hard:[6,"Deterministik koruma istiyorsan harness içinde değil CI’da yap: test sayısının düşmediğini ve yeni atlama işareti eklenmediğini kontrol et. Hook ile her varyasyonu yakalamak zor."] },
+    { t:"Yanıtları Türkçe yaz.", rec:0,
+      why:"Stil ve iletişim tercihi; bir istisnası bile olabilir (İngilizce bir hata mesajını alıntılamak). Rehber olarak mükemmel çalışır.",
+      soft:null,
+      hard:[4,"Bir hook ile dil denetimi yapmak anlamsal bir yargı ister; ya model kararlı bir hook gerekir ya da kırılgan bir sezgisel kural. Değmez."] }
+  ];
+  const cards = $(".l6-pl-cards", el), ladder = $(".l6-ladder", el), out = $(".l6-pl-out", el);
+  const rungs = L.map((l, i) => {
+    const badge = h("span", { class:"badge" });
+    const r = h("div", { class:"l6-rung" }, h("span", { class:"n" }, String(i + 1)), h("span", null, h("b", null, l[0]), h("br"), h("small", null, l[1])), badge);
+    ladder.append(r); return { r, badge };
+  });
+  const btns = RULES.map(x => {
+    const b = h("button", { type:"button", class:"l6-card", "aria-pressed":"false" }, x.t);
+    b.addEventListener("click", () => {
+      btns.forEach(y => y.setAttribute("aria-pressed", y === b ? "true" : "false"));
+      rungs.forEach(({ r, badge }) => { r.classList.remove("rec","soft","hard"); badge.textContent = ""; });
+      rungs[x.rec].r.classList.add("rec"); rungs[x.rec].badge.textContent = "önerilen";
+      if (x.soft){ rungs[x.soft[0]].r.classList.add("soft"); rungs[x.soft[0]].badge.textContent = "daha yumuşak"; }
+      if (x.hard){ rungs[x.hard[0]].r.classList.add("hard"); rungs[x.hard[0]].badge.textContent = "daha sert"; }
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag ok" }, L[x.rec][0]), " ", x.why));
+      if (x.soft) out.append(h("p", null, h("span", { class:"tag c" }, "Daha yumuşak: " + L[x.soft[0]][0]), " ", x.soft[1]));
+      if (x.hard) out.append(h("p", null, h("span", { class:"tag r" }, "Daha sert: " + L[x.hard[0]][0]), " ", x.hard[1]));
+    });
+    cards.append(b); return b;
+  });
+});
+
+/* ---------- 5b. CLAUDE.md mi hook mu: simülasyon ---------- */
+Edu.widget("l6-enforce", el => {
+  const { h, json, stepper } = Edu;
+  const ST = [
+    { note:"Oturum başlıyor. İki ekipte de aynı kural var: uygulanmış migration dosyaları değiştirilmez, şema değişikliği yeni bir migration ile yapılır.",
+      a:{ p:"CLAUDE.md her isteğe system reminder olarak ekleniyor.", j:{ "CLAUDE.md":"migrations/ altındaki uygulanmış dosyaları düzenleme; şema değişikliği için yeni migration oluştur." } },
+      b:{ p:"Aynı cümle CLAUDE.md’de kısa bir not olarak duruyor; ayrıca bir PreToolUse hook’u kayıtlı.", j:{ hook:{ event:"PreToolUse", matcher:"Edit|Write", command:"./hooks/protect-migrations.sh" } } } },
+    { note:"Kullanıcı aynı görevi veriyor.",
+      a:{ p:"Kullanıcı: example.orders tablosuna delivered_at kolonu ekle, mapper’ı ve testleri güncelle.", j:null },
+      b:{ p:"Kullanıcı: example.orders tablosuna delivered_at kolonu ekle, mapper’ı ve testleri güncelle.", j:null } },
+    { note:"İki agent da doğru başlıyor: yeni bir migration dosyası oluşturuyor, entity’yi ve mapper’ı güncelliyor.",
+      a:{ p:"Write → migrations/20261104_add_delivered_at.sql (yeni dosya, kural ihlali yok).", j:null },
+      b:{ p:"Write → migrations/20261104_add_delivered_at.sql. Hook çalışıyor: dosya yeni, izin veriliyor.", j:{ decision:"allow", reason:"yeni migration dosyası" } } },
+    { note:"Testler kırmızı. Sebep: üç hafta önceki bir migration’da status_code kolonunun varsayılan değeri yanlış yazılmış. Agent kısa yolu görüyor.",
+      a:{ p:"Model düşünüyor: “Kural uygulanmış migration’ları korumak için. Bu sadece bir yazım hatası düzeltmesi, o yüzden burada geçerli değil.”", j:{ type:"tool_use", name:"Edit", input:{ file_path:"migrations/20261014_add_status.sql", old_string:"DEFAULT 'NEW '", new_string:"DEFAULT 'NEW'" } } },
+      b:{ p:"Aynı muhakeme, aynı istek. Model CLAUDE.md’deki notu da yorumluyor.", j:{ type:"tool_use", name:"Edit", input:{ file_path:"migrations/20261014_add_status.sql", old_string:"DEFAULT 'NEW '", new_string:"DEFAULT 'NEW'" } } } },
+    { note:"Burada yollar ayrılıyor. Sol ekipte kuralı uygulayan tek şey modelin kendi yorumuydu.",
+      a:{ p:"İzin modu Accept edits; düzenleme sorulmadan uygulanıyor.", j:{ type:"tool_result", tool_use_id:"toolu_07", content:"Dosya güncellendi." }, bad:true },
+      b:{ p:"Hook stdin’den çağrıyı okuyor, yol migrations/ altında ve dosya git’te zaten var. Çıkış kodu 2: çağrı engelleniyor, stderr modele iletiliyor.", j:{ hook_event_name:"PreToolUse", tool_name:"Edit", tool_input:{ file_path:"migrations/20261014_add_status.sql" }, exit_code:2, stderr:"Uygulanmış migration değiştirilemez. Düzeltme için yeni bir migration dosyası oluştur (ör. migrations/20261104_fix_status_default.sql)." }, good:true } },
+    { note:"Sonraki tur. Modelin girdisi iki ekipte artık farklı.",
+      a:{ p:"Testler yeşil. Model: “Varsayılan değerdeki yazım hatasını düzelttim, tüm testler geçiyor.” Dev veritabanı bu migration’ı üç hafta önce uygulamıştı; düzeltme orada hiç çalışmayacak.", j:null, bad:true },
+      b:{ p:"Model engel mesajını okuyor ve yeni bir migration yazıyor: ALTER TABLE ... SET DEFAULT 'NEW'. Testler yeşil.", j:{ type:"tool_use", name:"Write", input:{ file_path:"migrations/20261104_fix_status_default.sql" } }, good:true } },
+    { note:"Sonuç. Model iki ekipte de aynıydı ve aynı muhakemeyi yaptı. Farkı kuralın durduğu katman yarattı.",
+      a:{ p:"Ortamlar arasında sessiz bir şema farkı oluştu. Bir sonraki CLAUDE.md düzeltmesi muhtemelen “ASLA” ve büyük harf olacak; bu da sorunu çözmeyecek, başka yerde aşırı tetiklenmeye yol açacak.", j:null, bad:true },
+      b:{ p:"Kural bir tur ve birkaç yüz token’a mal oldu. Engel mesajı doğru yolu söylediği için agent kendi kendine toparlandı; insan müdahalesi gerekmedi.", j:null, good:true } }
+  ];
+  stepper(el, { steps:ST, auto:3200, render(i, s, { body }){
+    body.innerHTML = "";
+    const lane = (x, title, tagc) => {
+      const d = h("div", { class:"l6-lane" + (x.bad ? " bad" : "") + (x.good ? " good" : "") },
+        h("h4", null, h("span", { class:"tag " + tagc }, title), x.bad ? h("span", { class:"tag r" }, "kural çiğnendi") : null, x.good ? h("span", { class:"tag ok" }, "kural tuttu") : null),
+        h("p", null, x.p));
+      if (x.j){ const j = h("div", { class:"jsonv" }); j.innerHTML = json(x.j, { hl:["exit_code","stderr","decision","file_path"] }); d.append(j); }
+      return d;
+    };
+    body.append(h("p", { class:"l6-stepnote" }, h("b", null, "Adım " + (i + 1) + ". "), s.note),
+      h("div", { class:"l6-lanes", "aria-live":"polite" }, lane(s.a, "Kural CLAUDE.md’de", "c"), lane(s.b, "Kural PreToolUse hook’unda", "h")));
+  }});
+});
+
+/* ---------- 6. Harness kurucu ---------- */
+Edu.widget("l6-builder", el => {
+  const { h, $, esc } = Edu;
+  const O = [
+    { k:"maxturns", n:"Tur sınırı", d:"Sonsuz döngü ve kaçak fatura", det:true },
+    { k:"compact", n:"Context bütçesi + compaction", d:"Context taşması, context rot", det:true },
+    { k:"log", n:"Oturum kaydı (JSONL)", d:"Hata ayıklanamayan, denetlenemeyen oturum", det:true },
+    { k:"verify", n:"Doğrulayıcı (test + typecheck)", d:"Erken bitirme: doğrulanmamış “bitti”", det:true },
+    { k:"perm", n:"İzin kontrolü", d:"Modelin istediği her şeyin çalışması", det:true },
+    { k:"pre", n:"PreToolUse hook’ları", d:"Yol veya komut bazlı ekip kurallarının çiğnenmesi", det:true },
+    { k:"ckpt", n:"Checkpoint", d:"Geri alınamayan yanlış düzenleme", det:true },
+    { k:"sandbox", n:"Sandbox’ta yürütme", d:"Desenleri dolanan komutların dosya/ağ hasarı", det:true },
+    { k:"cap", n:"Çıktı sınırı", d:"Tek bir dev log’un context’i bitirmesi", det:true },
+    { k:"post", n:"PostToolUse hook’ları", d:"Formatter ve lint’in unutulması", det:true }
+  ];
+  const f = {};
+  const opts = $(".l6-opts", el), codeEl = $(".l6-code", el), stats = $(".l6-b-stats", el), out = $(".l6-b-out", el);
+  O.forEach(o => {
+    const cb = h("input", { type:"checkbox", id:"l6b-" + o.k });
+    cb.addEventListener("change", () => { f[o.k] = cb.checked; render(); });
+    opts.append(h("label", { class:"l6-opt", for:"l6b-" + o.k }, cb, h("span", null, h("b", null, o.n), h("small", null, "kapatır: " + o.d))));
+  });
+  function build(){
+    const L = [];
+    const add = (t, on, cls) => L.push([t, on ? "add" : (cls || "")]);
+    add("messages = [user(task)]");
+    add(f.maxturns ? "for turn in range(MAX_TURNS):             # durma koşulu" : "while True:", f.maxturns);
+    if (f.compact){ add("    if tokens(messages) > BUDGET:", true); add("        messages = compact(messages)      # özet + son dosyalar", true); }
+    add("    resp = llm(system, tools, messages)       # tek olasılıksal satır", false, "mdl");
+    add("    messages.append(assistant(resp))");
+    if (f.log) add("    log_jsonl(session, resp)                  # resume ve denetim", true);
+    add("    if resp.stop_reason != \"tool_use\":");
+    if (f.verify){
+      add("        ok, report = run_checks()             # test + typecheck", true);
+      add("        if ok: break", true);
+      add("        messages.append(user(report))         # “bitmedi”, işe geri", true);
+      add("        continue", true);
+    } else add("        break");
+    add("    results = []");
+    add("    for call in resp.tool_uses:");
+    const I = "        ";
+    if (f.perm){ add(I + "if not permitted(call):              # allow / ask / deny", true); add(I + "    results.append(denied(call)); continue", true); }
+    if (f.pre){ add(I + "veto = pre_tool_hooks(call)          # exit 2 = engelle + nedeni", true); add(I + "if veto: results.append(veto); continue", true); }
+    if (f.ckpt) add(I + "snapshot_files(call)                 # geri sarılabilir", true);
+    add(I + "out = " + (f.sandbox ? "run_in_sandbox(call)           # OS düzeyi sınır" : "run(call)"), f.sandbox);
+    if (f.cap) add(I + "out = truncate(out, 25_000)          # + nasıl daraltılır", true);
+    if (f.post) add(I + "post_tool_hooks(call, out)           # formatter, lint", true);
+    add(I + "results.append(tool_result(call.id, out))");
+    add("    messages.append(user(results))");
+    if (f.maxturns){ add("else:                                         # break olmadan bittiyse", true); add("    raise MaxTurnsExceeded()", true); }
+    return L;
+  }
+  function render(){
+    const L = build();
+    codeEl.innerHTML = L.map(([t, c]) => '<span' + (c ? ' class="' + c + '"' : '') + '>' + esc(t) + '</span>').join("");
+    const on = O.filter(o => f[o.k]);
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, "1"), "model satırı"), h("span", null, h("b", null, String(L.length - 1)), "harness satırı"), h("span", null, h("b", null, on.length + " / " + O.length), "parça"));
+    out.innerHTML = "";
+    if (!on.length){ out.append(h("p", { class:"muted" }, "Şu an 5. seviyedeki çıplak döngü: model ne isterse çalışır, “bitti” dediğinde biter, hiçbir sınırı yok. Bir parça işaretle.")); return; }
+    const ul = h("ul", null);
+    on.forEach(o => ul.append(h("li", null, h("b", null, o.n + ": "), o.d + " kapandı.")));
+    const missing = O.filter(o => !f[o.k]).map(o => o.n);
+    out.append(h("p", null, h("b", null, "Kapatılan başarısızlık yolları")), ul);
+    if (missing.length) out.append(h("p", { class:"muted" }, "Hâlâ açık: " + missing.join(", ") + "."));
+    else out.append(h("p", null, h("span", { class:"tag ok" }, "Minimum üretim harness’ı"), " Bütün parçalar yerinde. Hepsi deterministik; model satırı hâlâ tek."));
+  }
+  render();
+});
+</script>

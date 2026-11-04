@@ -1,0 +1,952 @@
+<section class="level" data-no="5" data-short="Agent loop" data-title="Agent loop: bir while döngüsünün gücü"
+  data-accent="harness" data-time="55 dk"
+  data-lede="Tool use’u bir döngüye koy, modele “bitti” deme yetkisini ver: agent dediğimiz şey tam olarak bu. Bu seviyede döngünün kodunu, bir oturumun ham mesajlarını, döngünün nasıl bozulduğunu ve onu neyin ayakta tuttuğunu göreceksin.">
+
+  <!-- ================= 1. DÖNGÜNÜN KODU ================= -->
+  <div class="lesson" data-tab="Döngünün kodu">
+    <h2>Bir cümlelik tanım, on satırlık kod</h2>
+    <p class="lead">Agent kelimesi son iki yılda o kadar çok şeye yapıştırıldı ki anlamı bulanıklaştı. Mühendis için işe yarayan tanım kısa: <span class="g" data-g="Agent loop">agent</span>, bir hedefe ulaşana kadar araçları döngü içinde çalıştıran bir modeldir.</p>
+    <p>Simon Willison Eylül 2025’te bu tanımı tek cümleye indirdi: “An LLM agent runs tools in a loop to achieve a goal.” Anthropic’in context engineering yazısı da aynı şeyi söylüyor: agent, araçları bir döngü içinde özerk biçimde kullanan LLM’dir. İki tanımda da üç parça var: <b>araçlar</b> (4. seviyede gördük), <b>döngü</b> (bu seviyenin konusu) ve <b>hedef</b>, yani döngünün ne zaman biteceğini belirleyen şey. Bu üçünden hangisi eksikse elinde agent yoktur: araçsız döngü sadece kendi kendine konuşan bir sohbet, döngüsüz araç tek seferlik bir fonksiyon çağrısı, hedefsiz döngü ise para yakan bir sonsuz döngüdür.</p>
+
+    <h3>Kanonik döngü</h3>
+    <p>Anthropic’in tool use dokümantasyonundaki döngü şöyle işler. Harness, mesajları ve araç tanımlarını modele gönderir. Cevabın <code>stop_reason</code> alanı <code>"tool_use"</code> olduğu sürece harness istenen araçları çalıştırır, modelin cevabını (assistant mesajı) geçmişe ekler, ardından araç sonuçlarını taşıyan bir user mesajı ekler ve modeli yeniden çağırır. <code>stop_reason</code> başka bir değer olduğunda döngüden çıkılır. Bütün coding agent’ların kalbinde, üstüne ne kadar katman eklenmiş olursa olsun, bu döngü atar.</p>
+<pre data-title="agent_loop.py (öğretim sürümü)"><code>messages = [user(task)]
+for turn in range(MAX_TURNS):                  # sert durma koşulu
+    resp = llm(system, tools, messages)        # MOR: tek olasılıksal satır
+    messages.append(assistant(resp.content))   # cevap geçmişe girer
+    if resp.stop_reason != "tool_use":         # end_turn / max_tokens / refusal
+        break
+    results = [run(t) for t in resp.tool_uses] # TEAL: deterministik yürütme
+    messages.append(user([tool_result(r) for r in results]))
+    if tokens(messages) > BUDGET:              # context yönetimi
+        messages = compact(messages)
+else:
+    raise MaxTurnsExceeded()                   # sınır doldu, kontrollü hata</code></pre>
+    <p>Bu koda iki dakika bak, çünkü setin geri kalanı bu satırların etrafına inşa ediliyor. Aşağıdaki şemada her satıra tıklayıp ne işe yaradığını, hangi katmana ait olduğunu ve o satır olmasa ne bozulacağını görebilirsin.</p>
+
+    <div class="fig" data-widget="l5-code">
+      <p class="fig-title">Döngünün her satırı ne yapıyor?</p>
+      <p class="fig-cap">Bir satıra tıkla. Sol kenardaki renk o satırın katmanını gösteriyor: mor model, teal harness, amber context. Zekânın kaç satırda yaşadığına dikkat et.</p>
+      <div class="l5-code" role="group" aria-label="Döngü kodu satırları"></div>
+      <div class="panel live l5-code-out" aria-live="polite"><span class="muted">Bir satıra tıkla.</span></div>
+    </div>
+
+    <h3>Zekâ tek satırda</h3>
+    <p>Kodda “akıllı” olan tek yer <code>llm(...)</code> çağrısı. Neyin okunacağına, hangi komutun çalışacağına, işin bitip bitmediğine model karar verir. Geri kalan her satır sıradan, deterministik, test edilebilir yazılım: listeye eleman ekleme, bir alanı karşılaştırma, bir fonksiyon çağırma. Bu ayrım agent sistemleri hakkında düşünmenin en sağlam çerçevesi. Bir şey ters gittiğinde ilk soru şu olmalı: <span class="m">model</span> yanlış mı karar verdi, yoksa <span class="h">harness</span> ona doğru kararı verebileceği bilgiyi, aracı ya da geri bildirimi mi vermedi? İkincisi düşündüğünden çok daha sık çıkar ve düzeltmesi de çok daha kolaydır, çünkü o tarafı sen yazıyorsun.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Kubernetes’teki reconcile döngüsünü düşün: controller mevcut durumu gözler, istenen durumla karşılaştırır, bir eylem yapar, tekrar gözler. İstenen duruma ulaşınca durur. Agent loop’un iskeleti aynı. Farkı, “istenen durum ile mevcut durum arasındaki farkı” deterministik bir diff fonksiyonunun değil, bir modelin hesaplaması. Bu yüzden durma koşulu da, eylemin doğruluğu da garanti değil; döngünün etrafına sigortalar koymak zorundasın.</div>
+
+    <h3><code>stop_reason</code>: döngünün direksiyonu</h3>
+    <p>Döngünün nereye gideceğine tek bir alan karar verir. <span class="g" data-g="stop_reason">stop_reason</span> değerlerinin her birinin döngüde farklı bir anlamı var ve bunları ayırt etmeyen harness’lar sessizce bozulur. En yaygın hata, <code>tool_use</code> dışındaki her şeyi “iş bitti” diye yorumlamak. <code>max_tokens</code> ile kesilen bir cevap bitmemiştir; yarım kalmıştır. <code>refusal</code> bitmiş bir iş değil, reddedilmiş bir iştir ve kullanıcıya öyle gösterilmelidir. Sunucu tarafında çalışan araç döngülerinde (web search gibi) gelen <span class="g" data-g="pause_turn">pause_turn</span> ise “yineleme sınırına geldim, devam etmek için isteği yeniden gönder” demektir; bunu bitiş sanan bir harness işi yarıda bırakır.</p>
+
+    <div class="fig" data-widget="l5-stop">
+      <p class="fig-title">stop_reason gezgini</p>
+      <p class="fig-cap">Bir değer seç. Modelden gelen cevabın kısaltılmış JSON’unu, döngünün o anda ne yapması gerektiğini ve tipik hatayı gör.</p>
+      <div class="seg l5-stop-seg" role="group" aria-label="stop_reason değeri">
+        <button type="button" data-v="tool_use" aria-pressed="true">tool_use</button>
+        <button type="button" data-v="end_turn">end_turn</button>
+        <button type="button" data-v="max_tokens">max_tokens</button>
+        <button type="button" data-v="stop_sequence">stop_sequence</button>
+        <button type="button" data-v="refusal">refusal</button>
+        <button type="button" data-v="pause_turn">pause_turn</button>
+        <button type="button" data-v="model_context_window_exceeded">context_exceeded</button>
+      </div>
+      <div class="jsonv l5-stop-json"></div>
+      <div class="panel live l5-stop-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Öteki ekosistemde aynı döngü</h3>
+    <p>OpenAI Agents SDK’nın döngüsü aynı fikrin biraz daha soyutlanmış hali. SDK modeli çağırır; çıktı “nihai” ise, yani istenen tipte bir metin çıktısı var ve araç çağrısı yoksa durur. Çıktı bir handoff ise kontrolü başka bir agent’a devreder. Araç çağrıları varsa çalıştırır, sonuçları ekler ve tekrar çağırır. <span class="g" data-g="max_turns">max_turns</span> sınırı aşıldığında <code>MaxTurnsExceeded</code> hatası fırlatır; bir hata işleyicisi tanımladıysan bunun yerine kontrollü bir nihai çıktı döndürebilirsin. Yani iki büyük sağlayıcı da aynı üç şeyi garanti ediyor: araç sonuçlarını geçmişe ekle, nihai cevabı tanı, sınır koy.</p>
+
+    <h3>Nereden geldi?</h3>
+    <p>Bu döngü bir gecede çıkmadı. 2022’deki <span class="g" data-g="ReAct">ReAct</span> makalesi, modele “Thought / Action / Observation” satırlarını sırayla yazdırıp Action satırını düz metinden ayrıştırarak çalıştırma fikrini yaygınlaştırdı. O dönemde harness, modelin yazdığı <code>Action: search[...]</code> gibi bir satırı düzenli ifadeyle yakalıyordu; model formatı biraz bozsa döngü kırılıyordu. 2023’teki Toolformer, modelin API çağrılarını metnin içine kendi kendine eklemeyi öğrenebileceğini gösterdi. Bugünkü yerel tool calling API’leri bu fikirlerin ürünleşmiş torunları: model artık serbest metin değil, şemaya uyan yapılandırılmış bir <code>tool_use</code> bloğu üretiyor ve bunu post-training’de özel olarak öğreniyor (1. ve 4. seviye).</p>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Sınırsız döngü yazma. <code>while True</code> ile kurulmuş, tur ya da bütçe sınırı olmayan bir agent, aynı başarısız komutu sabaha kadar tekrarlayabilir ve her turda bütün geçmişi yeniden gönderdiği için maliyet her turda büyür. Sınır, döngünün ilk satırına aittir; sonradan eklenecek bir iyileştirme değildir.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Agent = araçları bir hedefe ulaşana kadar döngüde çalıştıran model. Döngüyü harness yazar.</li>
+        <li>Döngünün direksiyonu <code>stop_reason</code>. <code>tool_use</code> dışındaki her değerin anlamı ayrı; hepsine “bitti” deme.</li>
+        <li>Zekâ tek satırda, geri kalanı deterministik kod. Hata ayıklarken önce “model mi, harness mı?” diye sor.</li>
+        <li>Her döngüye ilk günden tur ve bütçe sınırı koy.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://simonwillison.net/2025/Sep/18/agents/">Simon Willison: agent tanımı üzerine (18 Eylül 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents (29 Eylül 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude Docs: How tool use works</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Claude Docs: Context windows (model_context_window_exceeded)</a></li>
+      <li><a href="https://openai.github.io/openai-agents-python/running_agents/">OpenAI Agents SDK: Running agents</a></li>
+      <li><a href="https://arxiv.org/abs/2210.03629">Yao vd. ReAct (2022)</a> · <a href="https://arxiv.org/abs/2302.04761">Schick vd. Toolformer (2023)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 2. BİR OTURUMU İZLE ================= -->
+  <div class="lesson" data-tab="Bir oturumu izle">
+    <h2>Kırmızı testi düzelten bir agent, ham haliyle</h2>
+    <p class="lead">Arayüzde gördüğün şey birkaç satırlık bir özet: “3 komut çalıştırıldı, 2 dosya düzenlendi, testler geçiyor.” Perde arkasında ise her turda büyüyen bir mesaj dizisi, yedi model çağrısı ve bir kez de modelin “bitti” kararını reddeden bir harness var. Bu derste o perdeyi kaldırıyoruz.</p>
+    <p>Senaryo şu: <code>example_app</code>, PostgreSQL kullanan bir ASP.NET Core API’si. Sabahki deploy’dan sonra <code>OrderMapper</code> testlerinden biri kırmızı: <code>Map_NullStatus_ReturnsUnknown</code>. Bir siparişin <code>status_code</code> değeri NULL geldiğinde mapper <code>InvalidCastException</code> fırlatıyor. Kullanıcı agent’a tek cümle yazıyor: “example_app’te OrderMapper testi kırmızı, düzelt.” Harness’ta testleri çalıştıran bir Stop hook tanımlı; agent “bitti” dediği anda harness testleri kendisi çalıştıracak.</p>
+    <p>Aşağıdaki simülasyon bu oturumu olay olay oynatıyor. Her adımda üç şeyi izle: döngünün hangi istasyonunda olduğumuzu, <code>messages</code> dizisine ne eklendiğini ve modelin bir sonraki çağrıda okumak zorunda olduğu toplam token miktarını. Token sayıları temsili, ama oranlar gerçek oturumlara benzer.</p>
+
+    <div class="fig" data-widget="l5-session">
+      <p class="fig-title">Bir agent oturumu, mesaj mesaj</p>
+      <p class="fig-cap">İleri ile adım adım git ya da Oynat’a bas. Soldaki şeritte döngünün istasyonları, ortada büyüyen mesaj dizisi, altta o adımda gidip gelen ham JSON var. Turuncu satır o adımda eklenen mesaj.</p>
+    </div>
+
+    <h3>Simülasyonda ne gördün?</h3>
+    <p><b>Model hiçbir şeyi çalıştırmadı.</b> Her model çağrısının çıktısı ya düz metin ya da bir <code>tool_use</code> bloğuydu. <code>dotnet test</code>’i çalıştıran, dosyayı okuyan, düzenlemeyi uygulayan hep harness’tı. Model bir sonraki adımda yalnızca harness’ın <code>tool_result</code> olarak geri koyduğu metni gördü. Bu yüzden araç çıktısının ne kadar açık ve ne kadar kısa olduğu, modelin bir sonraki kararının kalitesini doğrudan belirliyor (4. seviyedeki iyi araç tasarımı tam olarak bunun için).</p>
+    <p><b>Her çağrı bütün geçmişi yeniden okudu.</b> İlk çağrıda model yaklaşık dokuz bin token’lık system prompt ve araç tanımı artı altmış token’lık kullanıcı mesajını gördü. Son çağrıda ise bunlara ek olarak bütün araç sonuçlarını, kendi önceki cevaplarını ve hook geri bildirimini. API durumsuz olduğu için (2. seviye) bu kaçınılmaz. Sonuç: toplam işlenen girdi, tur sayısıyla doğrusal değil, kabaca karesel büyür. Simülasyonun sağ altındaki “toplam işlenen girdi” sayacı bunu gösteriyor. Prompt caching bu yükün fiyatını ciddi biçimde düşürür ama context penceresindeki yerini azaltmaz.</p>
+    <p><b>Context’i en çok araç sonuçları doldurdu.</b> Modelin kendi yazdıkları birkaç yüz token; test çıktısı ve dosya içeriği ise binlerce. Gerçek oturumlarda bu oran daha da uç olur: tek bir log dökümü ya da büyük bir dosyanın tamamı onbinlerce token tutabilir. Claude Code’un tek bir araç çıktısını 25.000 token’la sınırlaması, bu yüzden bir harness kararıdır.</p>
+
+    <h3>Kritik an: modelin “bitti” dediği yer</h3>
+    <p>Dördüncü model çağrısında model “Düzelttim” deyip <span class="g" data-g="end_turn"><code>end_turn</code></span> ile durdu. Ama düzeltmesi eksikti: NULL durumunda <code>"UNKNOWN"</code> atadı, fakat birkaç satır aşağıdaki normalizasyon bu değeri küçük harfe çeviriyordu. Model testi yeniden çalıştırmadan bitirdiği için bunu görmedi. Bu, agent’ların en yaygın başarısızlık modu: <span class="g" data-g="Erken bitirme">erken bitirme</span>. Modelin içeriden baktığında “mantıklı bir düzeltme yaptım” ile “düzeltme çalışıyor” arasındaki farkı görebileceği hiçbir sinyal yok; o sinyali ancak bir doğrulayıcı üretebilir.</p>
+    <p>Burada harness devreye girdi. Tanımlı <span class="g" data-g="Stop hook">Stop hook</span>, model durmak istediğinde testleri çalıştırdı; test kırmızı olduğu için çıkış kodu 2 ile döndü. Claude Code’da bu, hook’un hata çıktısının modele geri iletilmesi ve döngünün devam etmesi demek. Model yeni bir mesaj olarak “1 test başarısız: beklenen UNKNOWN, gelen unknown” bilgisini gördü ve sorunu iki turda çözdü. Kullanıcı bu ara turu muhtemelen fark etmedi bile.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Stop hook, döngünün içine yerleştirilmiş bir CI kapısı gibi çalışır. Geliştirici “merge et” dediğinde pipeline kırmızıysa merge olmaz; agent “bitti” dediğinde test kırmızıysa tur bitmez. Fark, CI’ın sonucu bir insana, hook’un sonucu doğrudan modele gitmesi. Bu yüzden hook çıktısı da bir prompt’tur: kısa, eyleme dönük, hangi testin neden kırıldığını söyleyen bir mesaj, uzun bir yığın dökümünden çok daha hızlı düzeltme getirir.</div>
+
+    <h3>Arayüzde görmediğin şeyler</h3>
+    <p>Bu oturumu bir terminalde izleseydin büyük ihtimalle şunu görürdün: birkaç araç satırı, bir “Düzelttim” mesajı, kısa bir hook bildirimi ve son özet. Asıl mesaj dizisi ise harness’ın oturum kaydında durur. Claude Code oturumları JSONL dosyalarına yazar ve oturumu devam ettirme ya da çatallama bu kayıt üzerinden çalışır; bunu 6. ve 8. seviyede açacağız. Bir agent davranışını anlamaya çalışırken bu ham kayda bakmak, arayüzdeki özete bakmaktan her zaman daha öğreticidir. Model neyi gördüyse ona göre karar verdi; gördüğü şeyin ne olduğunu bilmeden kararını yargılayamazsın.</p>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Bir agent tuhaf bir karar verdiğinde önce “o anda context’te ne vardı?” diye sor. Claude Code’da <code>/context</code> context’in neyle dolu olduğunu gösterir. Kendi harness’ını yazıyorsan, her model çağrısının tam istek gövdesini loglamak hata ayıklamanın yarısıdır.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Bir oturum, her turda büyüyen tek bir <code>messages</code> dizisidir; her model çağrısı onun tamamını yeniden okur.</li>
+        <li>Context’in büyük kısmını araç sonuçları doldurur. Kısa ve net araç çıktısı hem ucuzdur hem daha iyi karar getirir.</li>
+        <li>Model “bitti” dediğinde iş bitmiş olmayabilir. Döngünün çıkışına bir doğrulayıcı koyan harness bunu yakalar.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude Docs: How tool use works</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (Stop hook, doğrulama)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works</a></li>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents (25K token sınırı)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 3. WORKFLOW MU AGENT MI ================= -->
+  <div class="lesson" data-tab="Workflow mu agent mı">
+    <h2>Her LLM uygulamasının agent olması gerekmez</h2>
+    <p class="lead">Döngüyü öğrenince her şeye döngü kurma isteği doğar. Oysa birçok iş için en iyi çözüm, adımları senin kodunun belirlediği, modelin sadece belirli noktalarda çağrıldığı bir akıştır.</p>
+    <p>Anthropic Aralık 2024’te yayımladığı “Building effective agents” yazısında bu ayrımı netleştirdi. Her ikisine birden “agentic sistem” diyor ama ikiye ayırıyor. <span class="g" data-g="Workflow">Workflow</span>’larda LLM’ler ve araçlar önceden tanımlanmış kod yolları üzerinden yönetilir: sıra, dallanma ve durma koşulu senin kodunda yazılıdır. <b>Agent</b>’larda ise model kendi sürecini ve araç kullanımını kendisi yönlendirir: kaç adım atılacağına, hangi aracın çağrılacağına, ne zaman durulacağına model karar verir. İlki bir pipeline, ikincisi bir hedefi olan bir çalışan.</p>
+    <p>İkisinin de yapı taşı aynı: <span class="g" data-g="Augmented LLM">augmented LLM</span>, yani arama (retrieval), araçlar ve hafızayla güçlendirilmiş tek bir model çağrısı. Workflow’lar bu yapı taşlarını kodla birbirine bağlar; agent bu yapı taşını bir döngüye koyar.</p>
+
+    <h3>Beş workflow kalıbı</h3>
+    <p>Yazı, üretimde sık görülen beş kalıbı sayıyor. Hepsini tanımak işe yarar, çünkü bir problemi görünce “bu bir routing problemi” diyebilmek, gereksiz bir agent kurmaktan kurtarır.</p>
+    <ol class="steps">
+      <li><b><span class="g" data-g="Prompt chaining">Prompt chaining</span>.</b> İş sıralı adımlara bölünür; her adımın çıktısı bir sonrakinin girdisidir. Adımlar arasına programatik kapılar (gate) konabilir: çıktı beklenen formatta değilse zincir durur. Örnek: commit mesajlarından değişiklikleri çıkar, kategorize et, Türkçe sürüm notu yaz.</li>
+      <li><b><span class="g" data-g="Routing">Routing</span>.</b> Bir sınıflandırıcı girdiyi tanır ve onu uzmanlaşmış bir işleyiciye gönderir. Her dal kendi prompt’uyla, gerekirse daha ucuz ya da daha güçlü bir modelle çalışır. Örnek: gelen destek taleplerini fatura, teknik hata, özellik isteği diye ayırmak.</li>
+      <li><b><span class="g" data-g="Parallelization">Parallelization</span>.</b> İki biçimi var. <i>Sectioning</i>: iş bağımsız parçalara bölünür, paralel çalışır, sonuçlar birleştirilir. <i>Voting</i>: aynı iş birkaç kez çalıştırılır, oylama ya da eşikle karar verilir. Örnek: bir PR’ı güvenlik, performans ve okunabilirlik için ayrı ayrı incelemek; ya da bir güvenlik şüphesini üç bağımsız çalıştırmayla kontrol etmek.</li>
+      <li><b><span class="g" data-g="Orchestrator-workers">Orchestrator-workers</span>.</b> Bir orkestratör model işi dinamik olarak alt görevlere böler, işçilere dağıtır, sonuçları birleştirir. Parallelization’dan farkı, alt görevlerin önceden bilinmemesi. Örnek: kaç dosyaya dokunacağı belli olmayan bir değişiklik.</li>
+      <li><b><span class="g" data-g="Evaluator-optimizer">Evaluator-optimizer</span>.</b> Bir model üretir, başka bir çağrı ölçütlere göre değerlendirip geri bildirim verir, üretici yeniden dener. Net değerlendirme ölçütü olan ve yinelemenin gerçekten iyileştirdiği işlerde işe yarar. Örnek: terminoloji sözlüğüne uyması gereken bir çeviri.</li>
+    </ol>
+
+    <div class="fig" data-widget="l5-patterns">
+      <p class="fig-title">Aynı kutular, altı farklı kablolama</p>
+      <p class="fig-cap">Bir kalıp seç, sonra adım adım ilerleyerek örnek bir isteğin kutular arasında nasıl aktığını izle. Mor kutular model çağrısı, teal kutular senin deterministik kodun.</p>
+      <div class="seg l5-pat-seg" role="group" aria-label="Kalıp">
+        <button type="button" data-v="chain" aria-pressed="true">Chaining</button>
+        <button type="button" data-v="route">Routing</button>
+        <button type="button" data-v="par">Parallel</button>
+        <button type="button" data-v="orch">Orchestrator</button>
+        <button type="button" data-v="eval">Evaluator</button>
+        <button type="button" data-v="agent">Agent</button>
+      </div>
+      <div class="l5-pat-host"></div>
+    </div>
+
+    <h3>Ne zaman agent?</h3>
+    <p>Anthropic’in tavsiyesi şaşırtıcı derecede muhafazakâr: en basit çözümle başla, karmaşıklığı ancak ölçülebilir fayda gördüğünde ekle. Çoğu zaman en basit çözüm, arama ve birkaç örnekle zenginleştirilmiş tek bir model çağrısıdır. Workflow’lar adımları iyi tanımlanmış işlerde öngörülebilirlik ve tutarlılık sağlar. Agent’lar ise adım sayısının önceden bilinemediği, yolun sabit kodlanamayacağı açık uçlu problemler içindir. “Bu bug’ı bul ve düzelt” tam olarak böyle bir iştir: kaç dosya okunacağını, kaç kez test çalıştırılacağını kimse bilemez.</p>
+    <p>Agent’ın bedeli de açık: esneklik karşılığında maliyet ve gecikme artar, hatalar birikir. Her adımın doğru olma olasılığı yüzde 95 olsa bile, birbirinden bağımsız 20 adımın hepsinin doğru gitme olasılığı 0,95<sup>20</sup> ≈ yüzde 36’dır. Bu basit hesap adımları bağımsız sayar ve gerçekte agent hatalarını görüp düzeltebildiği için tablo bu kadar karanlık değildir; ama neden doğrulayıcı olmayan uzun bir agent zincirinin kırılgan olduğunu iyi anlatır. Agent kullanacaksan sandbox’ta test etmeyi ve korkulukları baştan kurmayı yazının kendisi de öneriyor.</p>
+    <p>Çok agent’lı sistemlerin maliyeti daha da yüksek. Anthropic’in araştırma sisteminde (Haziran 2025) tek agent’lı çalışmalar sohbetin yaklaşık 4 katı, çok agent’lı çalışmalar yaklaşık 15 katı token harcadı. Aynı yazı, ortak context gerektiren çoğu kodlama işinin çok agent’lı paralelliğe pek uygun olmadığını da not ediyor. Claude Code’daki subagent’lar bu yüzden daha çok “temiz bir pencerede keşif yapıp özet getir” amacıyla kullanılır; 8. seviyede ayrıntısıyla.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Workflow, bir CI pipeline’ı ya da bir DAG gibidir: adımlar YAML’da yazılı, her adımın girdisi ve çıktısı belli, bir adım kırılınca nerede kırıldığını bilirsin. Agent ise bir işi devraldığın ve “bitince haber ver” dediğin bir mühendis gibidir. İkisini de kullanırsın ama aynı işe değil. Kimse release pipeline’ını “her seferinde nasıl yapacağına sen karar ver” diye bir stajyere bırakmaz.</div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Agent’lar geldi, workflow’lar eskidi.” Anthropic’in güncel prompting rehberi bile tersini söylüyor: model tek başına çok adımlı akıl yürütmeyi iyi yapsa da, ara çıktıları denetlemen ya da belirli bir pipeline yapısını zorunlu kılman gerektiğinde açık prompt chaining hâlâ yararlı. Denetim izi, uyum ve tekrarlanabilirlik gereken işlerde workflow çoğu zaman doğru cevaptır.</div>
+
+    <h3>Senaryolara bak</h3>
+    <p>Aşağıdaki kartlar şirket içinde karşılaşabileceğin tipik işler. Bir karta tıkla; önerilen kurguyu, nedenini ve bu kurgunun ne zaman yetersiz kalacağını gör. Burada tek doğru cevap yok, bağlam değişince öneri de değişir; amaç gerekçeyi görmek.</p>
+    <div class="fig" data-widget="l5-scen">
+      <p class="fig-title">Bu iş için hangi kurgu?</p>
+      <p class="fig-cap">Bir karta tıkla. Öneri ve gerekçesi altta açılır.</p>
+      <div class="l5-scen-grid"></div>
+      <div class="panel live l5-scen-out" aria-live="polite"><span class="muted">Bir karta tıkla.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Workflow: yolu senin kodun çizer. Agent: yolu model çizer. İkisi de aynı yapı taşını (augmented LLM) kullanır.</li>
+        <li>Beş kalıp: chaining, routing, parallelization, orchestrator-workers, evaluator-optimizer.</li>
+        <li>En basitinden başla. Agent’ı adım sayısının öngörülemediği açık uçlu işlere sakla; maliyet, gecikme ve hata birikimi onun bedeli.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (19 Aralık 2024)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (prompt chaining notu)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/multi-agent-research-system">Anthropic: How we built our multi-agent research system (13 Haziran 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 4. BAŞARISIZLIK MODLARI ================= -->
+  <div class="lesson" data-tab="Başarısızlık modları">
+    <h2>Döngü nasıl bozulur, neyle tutulur?</h2>
+    <p class="lead">Agent’ların hataları rastgele değildir; birkaç tanıdık kalıba düşer. Kalıbı tanıyınca çaresi de büyük ölçüde belli olur ve çarelerin çoğu prompt’ta değil, harness’ta durur.</p>
+
+    <h3>1. Erken bitirme</h3>
+    <p>Model işi bitirmeden “bitti” der. Bir önceki derste gördüğün gibi, modelin içeriden “mantıklı bir değişiklik yaptım” ile “değişiklik çalışıyor” arasındaki farkı görebileceği bir sinyal yoktur. Uzun görevlerde bir varyantı daha var: yeni başlayan bir oturum etrafa bakar, çok kod yazılmış olduğunu görür ve projenin bittiğine karar verir. Çareler katmanlı. Prompt’ta doğrulanabilir bir “bitti” tanımı ver (3. seviye). Uzun işlerde her maddesi <code>"passes": false</code> ile başlayan yapılandırılmış bir özellik listesi tut; agent sadece o alanı değiştirebilsin ve testleri silmenin ya da düzenlemenin kabul edilemez olduğu açıkça yazsın. Harness tarafında ise döngünün çıkışına bir doğrulayıcı koy: Claude Code’da Stop hook çıkış kodu 2 döndürürse Claude çalışmaya geri gönderilir. Bu da sonsuz değildir: hook art arda 8 kez engellerse Claude Code hook’u geçersiz sayar ve turu bitirir. Bir alternatif olarak <code>/goal</code> komutu, her turda koşulun sağlanıp sağlanmadığını ayrı bir modele kontrol ettirir.</p>
+
+    <h3>2. Her şeyi bir kerede yapmak</h3>
+    <p>Büyük bir görevi tek hamlede bitirmeye çalışan agent, context’in ortasında yarım kalmış üç özellik ve kırık bir build bırakır. Anthropic’in uzun süreli agent deneylerindeki çare basit: oturum başına tek bir özellik üzerinde çalış ve oturumu temiz, commit edilebilir bir durumda bitir. Bir sonraki derste bunu ayrıntılı göreceğiz.</p>
+
+    <h3>3. Döngüye girmek ve thrashing</h3>
+    <p>Model aynı başarısız komutu küçük farklarla tekrar tekrar dener. Her deneme context’e yeni bir hata çıktısı ekler, context büyüdükçe model daha da odağını kaybeder. Bunun bir harness versiyonu da var: <span class="g" data-g="Thrashing">thrashing</span>. Büyük bir araç çıktısı context’i compaction’dan hemen sonra yeniden doldurursa harness sürekli sıkıştırmaya çalışır; Claude Code birkaç denemeden sonra otomatik compaction’ı bırakır. Çare her zaman bir sert sınırdır: maksimum tur, maksimum token ya da maksimum süre. Claude Code’un auto modunda bir benzeri var: sınıflandırıcı art arda 3 (ya da toplam 20) eylemi engellerse Claude Code otomatik moddan çıkıp sana sormaya döner.</p>
+
+    <h3>4. Sürüklenme</h3>
+    <p><span class="g" data-g="Drift">Drift</span>, agent’ın görevden yavaş yavaş uzaklaşmasıdır: bir null hatasını düzeltirken “madem buradayım” diyerek altı dosyada isimlendirme düzeltmeye başlar. Ortaya çıkan diff hem review’ı zorlaştırır hem de istenmeyen değişiklikler taşır. Claude Code’un önerisi pratik: ilk dakikayı izle, sapma görür görmez Esc’ye bas; iki düzeltme denemesi başarısız olursa <code>/clear</code> ile temizle ve daha iyi bir prompt yaz. Kirlenmiş bir context’i düzeltmeye çalışmak, temiz bir context’le yeniden başlamaktan genellikle daha pahalıdır.</p>
+
+    <h3>5. Aşırı hevesli ya da fazla çekingen</h3>
+    <p>Bazı modeller ve prompt’lar agent’ı her küçük şeyde araç çağırmaya iter, bazıları ise ilk belirsizlikte durup kullanıcıya soru sormaya. OpenAI’ın GPT-5 rehberi iki yönü de ayarlanabilir gösteriyor: hevesi kısmak için bir araç çağrısı bütçesi ve “emin değilsen yine de devam et” türünden bir kaçış kapısı; ısrarı artırmak için belirsizlikte geri dönmemesini söyleyen bir talimat. Anthropic de iki zıt örnek blok veriyor: biri varsayılan olarak eyleme geçmeyi, diğeri talimat gelmeden harekete geçmemeyi söylüyor. Hangisini seçeceğin işin riskine bağlı.</p>
+
+    <h3>6. Yıkıcı kestirmeler</h3>
+    <p>Hedefe kilitlenmiş bir agent, engeli kaldırmanın en kısa yolunu seçebilir: pre-commit hook’u <code>--no-verify</code> ile atlamak, force push yapmak, kırmızı testi silmek, bir tabloyu düşürüp yeniden oluşturmak. Anthropic, geri alınması zor eylemlerden önce onay istemeyi ve yıkıcı eylemleri kestirme olarak kullanmamayı söyleyen örnek bir prompt bloğu öneriyor. Ama prompt bir rica; garanti değil. Gerçek koruma izin kurallarında, hook’larda ve sandbox’tadır (6., 8. ve 10. seviye).</p>
+
+    <h3>7. Context sınırına yakın erken durma</h3>
+    <p>Kalan token bütçesini takip edebilen modeller, pencerenin dolmak üzere olduğunu fark edince işi aceleyle toparlamaya başlayabilir. Harness compaction yapacaksa bunu prompt’ta söylemek gerekir; yoksa model, aslında devam edebilecekken erken bitirir.</p>
+
+    <div class="fig" data-widget="l5-fail">
+      <p class="fig-title">Başarısızlık enjeksiyonlu döngü simülatörü</p>
+      <p class="fig-cap">Görev aynı: OrderMapper’daki kırmızı testi düzelt. Üst sırada hataları enjekte et, alt sırada korumaları aç ya da kapat, sonra Çalıştır’a bas. Oturumun nasıl bittiğine ve kaç tur sürdüğüne bak. Farklı kombinasyonları dene; özellikle “erken bitirme + döngü + Stop hook” birlikteliğine.</p>
+    </div>
+
+    <div class="callout deep"><span class="ct">Derine in</span>Simülatörde “kararsız test + Stop hook” kombinasyonuna dikkat et. Doğrulayıcı güvenilmez olduğunda agent, kırmızıyı yeşile çevirmenin en kısa yolunu bulur ve bu bazen testi atlamaktır. Doğrulayıcı ne kadar güçlüyse, onun kendisini korumak da o kadar önemli olur: test klasörünü düzenlemeyi bir hook ile engellemek ya da test diff’ini review’da ayrıca okumak bu yüzden var.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Yedi tanıdık kalıp: erken bitirme, tek hamlede her şey, döngü/thrashing, sürüklenme, aşırı ya da eksik heves, yıkıcı kestirme, sınıra yakın erken durma.</li>
+        <li>Çarelerin çoğu harness’ta: tur sınırı, Stop hook ya da <code>/goal</code>, izin kuralları, temiz context’le yeniden başlamak.</li>
+        <li>Sapma görünce erken müdahale et; iki başarısız düzeltmeden sonra <code>/clear</code>.</li>
+        <li>Doğrulayıcı güvenilmezse agent onu atlatmanın yolunu bulur. Doğrulayıcıyı da koru.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (Stop hook, /goal, Esc, /clear, auto mode)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works (compaction)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents (26 Kasım 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (eylem ve yıkıcı eylem blokları)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI Cookbook: GPT-5 prompting guide (agentic eagerness)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (hata birikimi)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 5. UZUN GÖREVLER ================= -->
+  <div class="lesson" data-tab="Uzun görevler">
+    <h2>Bir context penceresine sığmayan işler</h2>
+    <p class="lead">Kasım 2026 itibarıyla güncel Claude modellerinin hepsinin context penceresi 1M token. Bu büyük bir alan ama sınırsız değil; ayrıca 2. seviyede gördüğün gibi pencere doldukça modelin hatırlama kalitesi düşüyor. Saatler süren işler bu yüzden birden fazla oturuma, yani birden fazla temiz pencereye yayılır.</p>
+    <p>Sorun şu: her yeni oturum hafızasız başlar. Önceki oturumun ne yaptığını, neyi yarım bıraktığını, hangi yaklaşımın işe yaramadığını bilmez. İki yol var. Birincisi <b>compaction</b>: dolmak üzere olan konuşmayı özetleyip özetle devam etmek. İkincisi <b>dosya sisteminden yeniden başlamak</b>: durumu modelin hafızasında değil, diskte tutmak ve her oturumu sıfırdan, o dosyaları okuyarak açmak. Anthropic’in güncel rehberi, mümkün olan yerde ikincisini öneriyor.</p>
+
+    <h3>Anthropic’in uzun süreli agent tarifi</h3>
+    <p>Anthropic Kasım 2025’te, birçok oturuma yayılan bir uygulama geliştirme işini agent’a yaptırırken kullandığı harness’ı anlattı. Tarif iki tür oturuma dayanıyor.</p>
+    <ol class="steps">
+      <li><b>Başlatıcı oturum.</b> Projeyi kurar: geliştirme ortamını ayağa kaldıran bir <code>init.sh</code>, yapılacak her özelliği listeleyen ve hepsini başarısız olarak işaretleyen bir JSON özellik listesi, ilerlemenin kaydedileceği bir <span class="g" data-g="Progress dosyası">ilerleme dosyası</span> (<code>claude-progress.txt</code>) ve ilk git commit’i.</li>
+      <li><b>Kodlama oturumları.</b> Her biri aynı şekilde açılır: ilerleme dosyasını ve son git log’unu oku, <code>init.sh</code> ile ortamı kaldır, temel işlevlerin hâlâ çalıştığını kontrol et, listeden geçmeyen tek bir özellik seç, onu uygula ve test et, sadece test geçtiyse <code>passes</code> alanını <code>true</code> yap, commit at, ilerleme dosyasını güncelle.</li>
+    </ol>
+<pre data-title="features.json (örnek)"><code>[
+  { "id": "F2",
+    "description": "Sipariş listesi status_code alanına göre filtrelenebilir",
+    "steps": ["GET /api/orders?status=DELIVERED çağır",
+              "yalnızca teslim edilmiş siparişler dönmeli"],
+    "passes": false }
+]</code></pre>
+<pre data-title="claude-progress.txt (örnek)"><code>Oturum 3 — F2 tamamlandı (commit 4c1e9a2). OrderQuery’ye status filtresi eklendi.
+Not: example.orders.status_code büyük harf tutuluyor; filtrede ToUpperInvariant kullan.
+Sıradaki: F3 CSV dışa aktarma. init.sh içinde seed verisi 120 sipariş yüklüyor.</code></pre>
+    <p>Küçük ama önemli bir gözlem: yazıya göre JSON, Markdown’a kıyasla modelin uygunsuz biçimde üzerine yazmasına daha az eğilimliydi. Serbest metin bir yapılacaklar listesini model kolayca “yeniden düzenler”; katı bir JSON yapısında tek bir boolean alanı değiştirmek daha doğal gelir. Benzer şekilde özellik listesindeki testlerin silinmesi ya da düzenlenmesinin kabul edilemez olduğu açıkça yazılmıştı. Bu, bir önceki dersteki erken bitirmeye karşı doğrudan bir sigorta.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Context RAM’dir, dosya sistemi disktir. Bir veritabanı çöktüğünde RAM’deki durumu kurtarmaya çalışmaz; diskteki WAL’ı ve son checkpoint’i okuyup yeniden kurar. Burada git log WAL’ın, progress dosyası checkpoint’in, <code>init.sh</code> ise kurtarma prosedürünün yerini tutuyor. Bir de nöbet devri gibi düşün: iyi bir devir notu olmadan gece nöbetçisi her şeyi baştan keşfetmek zorunda kalır.</div>
+
+    <div class="fig" data-widget="l5-long">
+      <p class="fig-title">Oturumlar arası devir simülatörü</p>
+      <p class="fig-cap"><code>example_app</code> için beş özelliklik bir iş. Her oturum boş bir context’le başlar. Anahtarlarla tarifin parçalarını aç ya da kapat, sonra “Sonraki oturum”a basarak oturum oturum ilerle. Özellik çiplerinin rengi: yeşil geçti, amber yarım, gri başlanmadı.</p>
+    </div>
+
+    <h3>Compaction ne zaman, temiz başlangıç ne zaman?</h3>
+    <p>Compaction kötü değil; kısa ara verilmesi gereken, tek bir problem üzerinde süren işlerde pratik. Ama bir özet kayıplıdır. Claude Code dokümantasyonu bunu açıkça yazıyor: otomatik compaction istekleri ve önemli kodu korur, ama konuşmanın başındaki ayrıntılı talimatlar kaybolabilir. Kalıcı kurallar bu yüzden CLAUDE.md’ye yazılır, çünkü o dosya her istekte yeniden yüklenir (9. seviyede context bütçesiyle birlikte). Dosya sisteminden yeniden başlama ise kayıpsızdır, çünkü neyin korunacağına sen karar verirsin: ilerleme notu, özellik listesi, commit geçmişi.</p>
+    <p>Bir ayrıntı daha: bazı modeller kalan token bütçesini takip eder. Harness compaction yapacaksa ya da iş birden fazla pencereye yayılacaksa, bunu prompt’ta söylemek gerekir. Aksi halde model pencerenin dolduğunu fark edip işi aceleyle kapatmaya çalışabilir. Claude Code’da uzun bir hedef için <code>/goal</code> da kullanılabilir: ayrı bir model her turda koşulun gerçekleşip gerçekleşmediğini kontrol eder.</p>
+
+    <h3>Görevler uzuyor</h3>
+    <p>Bu tarifin önemi giderek artıyor. METR’in ölçümüne göre, modellerin yüzde 50 başarıyla tamamlayabildiği görevlerin insan süresi cinsinden uzunluğu 2019–2025 arasında yaklaşık her 7 ayda bir ikiye katlandı. Daha yeni tahminler bu sürenin kısaldığını öne sürüyor; ancak o rakamları birincil kaynaktan doğrulayamadık, bu yüzden burada vermiyoruz. Eğilim yeterince açık: agent’lara verilen işler uzadıkça, oturumlar arası devri tasarlamak bir harness sorumluluğu haline geliyor.</p>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Birkaç oturum sürecek bir iş başlatırken ilk oturumu sadece hazırlığa ayır: çalıştırma ve test komutlarını içeren bir betik, JSON bir yapılacaklar listesi ve kısa bir ilerleme dosyası oluştur, commit at. Sonraki her oturumun ilk mesajı aynı olsun: “progress dosyasını ve son 10 commit’i oku, listeden tek bir geçmeyen maddeyi seç.”</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Uzun işlerde durumu context’te değil diskte tut: ilerleme dosyası, JSON özellik listesi, git geçmişi, kurulum betiği.</li>
+        <li>Oturum başına tek özellik; her oturum temiz, commit edilebilir bir durumda biter.</li>
+        <li>Compaction kayıplıdır; mümkünse dosya sisteminden temiz başlangıcı tercih et.</li>
+        <li>Harness compaction yapacaksa modele söyle; yoksa sınıra yaklaşınca erken toparlayabilir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents (26 Kasım 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (çok pencereli işler, context awareness)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works (compaction)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (/goal)</a></li>
+      <li><a href="https://arxiv.org/abs/2503.14499">METR: Measuring AI Ability to Complete Long Tasks (arXiv 2503.14499, 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 6. DOĞRULAYICI ================= -->
+  <div class="lesson" data-tab="Doğrulayıcı">
+    <h2>Döngüyü kapatan şey: doğrulayıcı</h2>
+    <p class="lead">Agent loop’un neden bu kadar iyi çalıştığının cevabı tek kelime: geri bildirim. Tek seferde doğru kod yazmak zordur, insanlar için de. Ama yazıp, çalıştırıp, hatayı görüp düzeltmek çok daha kolaydır. Döngü modele bu imkânı verir; <span class="g" data-g="Doğrulayıcı">doğrulayıcı</span> ise bu imkânın kalitesini belirler.</p>
+    <p>Anthropic, Claude Agent SDK’yı anlattığı yazıda agent’ın çalışma ritmini dört fiille tarif ediyor: bağlam topla, eyleme geç, işini doğrula, tekrarla. Claude Code dokümantasyonu aynı fikri daha keskin söylüyor: modele sonucu geçti ya da kaldı diye dönen bir şey verirsen, döngüyü kendisi kapatabilir. Bu, setin belki de en pratik cümlesi. <b>Bir agent’ın kalitesi, içinde çalıştığı ortamın doğrulanabilirliğiyle sınırlıdır.</b></p>
+
+    <h3>Doğrulayıcı türleri</h3>
+    <div class="cols">
+      <div class="card h"><h4 class="h">Kurallar</h4>Derleyici, tip denetimi, linter, birim ve entegrasyon testleri. Deterministik, hızlı, ucuz. Agent’ın en iyi dostu. Agent SDK yazısı ilk sıraya bunu koyuyor.</div>
+      <div class="card t"><h4 class="t">Görsel geri bildirim</h4>Ekran görüntüsü alıp modelin kendisine baktırmak. Arayüz işlerinde testlerin kaçırdığı hizalama ve taşma hatalarını yakalar; ama yorumu yine modele kalır.</div>
+      <div class="card m"><h4 class="m"><span class="g" data-g="LLM-as-judge">LLM-as-judge</span></h4>Başka bir model çağrısı çıktıyı ölçütlere göre değerlendirir. Kurala dökülemeyen işlerde tek seçenek olabilir; Anthropic bunu “genellikle çok sağlam olmayan” bir yöntem olarak niteliyor.</div>
+      <div class="card r"><h4 class="r">İnsan</h4>İş kuralı, ürün kararı, mimari uygunluk. En pahalı ve en yavaş doğrulayıcı; o yüzden makinelerin yakalayabildiği her şeyi ondan önce yakalamak gerekir.</div>
+    </div>
+    <p>Bu türler bir sıralama oluşturur: aşağı indikçe yakalanabilen hata türü genişler, ama hız, ucuzluk ve güvenilirlik düşer. İyi bir kurgu, ucuz ve deterministik olanları döngünün içine, pahalı olanları döngünün çıkışına koyar. Derleyici ve odaklı birim testleri her düzenlemeden sonra çalışabilir; tam test paketi agent “bitti” dediğinde; insan review’ı ise PR açıldığında.</p>
+
+    <div class="fig" data-widget="l5-verify">
+      <p class="fig-title">Hangi doğrulayıcı hangi hatayı yakalar?</p>
+      <p class="fig-cap">Agent’ın OrderMapper ve sipariş ekranında yapabileceği sekiz gerçekçi hata var. Döngüye koyduğun doğrulayıcıları seç; hangi hatanın yakalandığını, hangisinin kısmen fark edildiğini ve hangisinin sessizce PR’a kadar gittiğini gör. Bir hataya tıklayınca nedenini açıklar.</p>
+    </div>
+
+    <h3>Neden modeller döngüde bu kadar iyi?</h3>
+    <p>1. seviyede doğrulanabilir ödülle pekiştirmeli öğrenmeyi (RLVR) görmüştün: model kod yazar, testler çalışır, geçen çözümler ödüllendirilir. Bugünkü coding modelleri tam olarak bu ortamlarda, yani bir test çıktısını okuyup bir sonraki hamleye karar vermek üzerine yoğun biçimde eğitildi. Ona bir test komutu verdiğinde onu eğitildiği ortama geri koymuş olursun. Test vermediğinde ise model körlemesine uçar ve “bitti” dediğinde gerçekten bitip bitmediğini kimse bilmez.</p>
+
+    <h3>Doğrulayıcıyı döngüye sokmanın üç yeri</h3>
+    <ol class="steps">
+      <li><b>Prompt’ta.</b> “Bitti” tanımını bir komuta bağla: “önce hatayı yeniden üreten başarısız bir test yaz, sonra düzelt; <code>dotnet test</code> geçince bitir.” Claude Code’un kendi örneği de bu: “login bozuk, düzelt” yerine semptomu, ilgili klasörü ve “önce başarısız bir test yaz” talimatını içeren bir görev (3. seviye).</li>
+      <li><b>Harness’ta.</b> Stop hook, <code>/goal</code>, düzenleme sonrası otomatik format ve lint. Bunlar modelin hatırlamasına bağlı değildir; her seferinde çalışır. Ayrıntılı kurulum 8. seviyede.</li>
+      <li><b>Ortamda.</b> Hızlı, odaklı test komutları ve okunabilir hata mesajları. Yirmi dakika süren bir test paketi, bir oturumda ancak birkaç yineleme demektir. Filtreyle tek bir sınıfı çalıştırabilmek, agent’ın hız ve isabetini birlikte artırır.</li>
+    </ol>
+
+    <h3>Doğrulayıcının çıktısı da bir prompt</h3>
+    <p>Doğrulayıcı sadece geçti ya da kaldı demez; kaldığında ne söylediği, modelin bir sonraki hamlesini belirler. “1 test failed” diyen bir çıktı ile “Map_NullStatus_ReturnsUnknown: beklenen UNKNOWN, gelen unknown (OrderMapperTests.cs:42)” diyen bir çıktı arasında, agent için bir ya da iki tur fark vardır. Aynı şey tersine de geçerli: yüzlerce satırlık bir yığın dökümü context’i doldurur ve asıl satırı gömer. Kendi Stop hook’unu ya da test betiğini yazarken çıktıyı modelin okuyacağını düşün: hangi test, hangi beklenti, hangi dosya ve satır. Kısa, eyleme dönük ve tekrarlanabilir bir hata mesajı, iyi bir araç tasarımının (4. seviye) doğrulayıcı tarafındaki karşılığıdır.</p>
+    <p>Bir de hız meselesi var. Agent, her doğrulama turunda bekler ve her bekleyiş gerçek zamandır. Bütün paketi her düzenlemeden sonra çalıştırmak yerine, döngü içinde ilgili sınıfı filtreyle çalıştırmak, tam paketi ise sadece “bitti” noktasına saklamak, aynı oturumda çok daha fazla yinelemeye yer açar.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Bu TDD’nin kırmızı-yeşil döngüsü. Fark şu: TDD’yi insanlar disiplinle uygular, agent’a ise onu zorunlu kılabilirsin. “Önce kırmızı testi göster” adımı ayrıca bir teşhis kontrolüdür: test gerçekten senin gördüğün hatayı yeniden üretiyorsa, düzeltmenin doğru şeyi düzelttiğinden emin olursun.</div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Goodhart yasası agent’lar için de geçerli: ölçüt hedef haline gelince iyi bir ölçüt olmaktan çıkar. Testleri geçmeye kilitlenmiş bir agent bir assertion’ı gevşetebilir, testi atlayabilir ya da beklenen değeri gerçek çıktıya eşitleyebilir. Test dosyalarının diff’ini ayrıca oku; mümkünse test klasörünü düzenlemeyi bir hook ile engelle ya da onaya bağla.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Agent’ın kalitesi ortamın doğrulanabilirliğiyle sınırlı. Hızlı ve deterministik doğrulayıcılar en iyi yatırım.</li>
+        <li>Ucuz doğrulayıcılar döngünün içine, pahalılar çıkışına: derleyici her düzenlemede, test paketi “bitti”de, insan PR’da.</li>
+        <li>LLM-as-judge kurala dökülemeyen işler için; tek başına güvenilir bir kapı değil.</li>
+        <li>Doğrulayıcıyı da koru: test diff’ini oku, test klasörünü kilitle.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (doğrulama, Stop hook)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){ const s=document.createElement("style"); s.textContent=`
+.l5-code{font-family:var(--mono);font-size:.78rem;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.45rem 0;overflow-x:auto}
+.l5-code button{display:block;width:100%;min-width:max-content;text-align:left;background:none;border:0;border-left:4px solid transparent;font:inherit;color:var(--ink);padding:.15rem .8rem;white-space:pre;cursor:pointer;line-height:1.5}
+.l5-code button.m{border-left-color:var(--model)}
+.l5-code button.h{border-left-color:var(--harness)}
+.l5-code button.c{border-left-color:var(--ctx)}
+.l5-code button:hover{background:var(--soft)}
+.l5-code button[aria-pressed="true"]{background:var(--acc-bg)}
+.l5-code .cm{color:var(--faint)}
+.l5-row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.6rem}
+.l5-row > .lbl{font-family:var(--sans);font-size:.78rem;font-weight:700;color:var(--muted);min-width:7rem}
+.l5-sess{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:.9rem;margin-top:.8rem}
+@media (max-width:760px){.l5-sess{grid-template-columns:1fr}}
+.l5-sub{font-family:var(--sans);font-size:.75rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:.2rem 0 .35rem}
+.l5-msgs{display:flex;flex-direction:column;gap:3px;max-height:340px;overflow:auto}
+.l5-m{display:grid;grid-template-columns:auto 1fr auto;gap:.45rem;align-items:center;font-size:.78rem;padding:.28rem .5rem;border-radius:6px;border-left:4px solid var(--line);background:var(--paper)}
+.l5-m.user{border-left-color:var(--tool)}
+.l5-m.asst{border-left-color:var(--model)}
+.l5-m.res{border-left-color:var(--harness)}
+.l5-m.hook{border-left-color:var(--risk)}
+.l5-m.base{border-left-color:var(--faint)}
+.l5-m.new{background:var(--ctx-bg)}
+.l5-m .tk{font-family:var(--mono);color:var(--muted);font-size:.72rem}
+.l5-m .rl{font-family:var(--sans);font-weight:800;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.l5-narr{font-size:.9rem;margin:.1rem 0 .6rem}
+.l5-pat{display:flex;align-items:center;gap:.45rem;margin-top:.9rem}
+.l5-stage{display:flex;flex-direction:column;gap:.35rem;flex:1 1 0;min-width:0}
+.l5-node{border:2px solid var(--line);border-radius:9px;padding:.45rem .5rem;font-size:.76rem;line-height:1.3;text-align:center;background:var(--paper);transition:transform .25s,background .25s,border-color .25s}
+.l5-node.llm{border-color:color-mix(in srgb,var(--model) 45%,var(--line))}
+.l5-node.code{border-color:color-mix(in srgb,var(--harness) 45%,var(--line))}
+.l5-node.io{border-style:dashed}
+.l5-node.on{transform:translateY(-2px)}
+.l5-node.llm.on{background:var(--model-bg);border-color:var(--model)}
+.l5-node.code.on{background:var(--harness-bg);border-color:var(--harness)}
+.l5-node.io.on{background:var(--ctx-bg);border-color:var(--ctx)}
+.l5-arr{color:var(--faint);font-weight:800;flex:none}
+@media (max-width:600px){.l5-pat{flex-direction:column;align-items:stretch}.l5-stage{flex-direction:row;flex-wrap:wrap}.l5-stage .l5-node{flex:1 1 30%}.l5-arr{align-self:center;transform:rotate(90deg)}}
+.l5-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.5rem}
+.l5-card{text-align:left;font-family:var(--body);font-size:.86rem;line-height:1.4;padding:.65rem .75rem;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);cursor:pointer}
+.l5-card:hover{border-color:var(--muted)}
+.l5-card[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l5-tg{font-family:var(--sans);font-size:.78rem;font-weight:600;border:1px solid var(--line);background:var(--paper);color:var(--muted);border-radius:999px;padding:.28rem .7rem;cursor:pointer}
+.l5-tg[aria-pressed="true"]{background:var(--harness);border-color:var(--harness);color:#fff}
+.l5-tg.bad[aria-pressed="true"]{background:var(--risk);border-color:var(--risk)}
+.l5-outc{display:flex;flex-direction:column;gap:.45rem}
+.l5-outc p{margin:0}
+.l5-feats{display:flex;flex-wrap:wrap;gap:.35rem;margin:.7rem 0 .3rem}
+.l5-feat{font-family:var(--mono);font-size:.74rem;padding:.25rem .5rem;border-radius:6px;border:1px solid var(--line);background:var(--soft);color:var(--muted)}
+.l5-feat.done{background:var(--ok-bg);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.l5-feat.half{background:var(--ctx-bg);color:var(--ctx);border-color:color-mix(in srgb,var(--ctx) 45%,var(--line))}
+.l5-slog{display:flex;flex-direction:column;gap:.5rem;max-height:400px;overflow:auto;margin-top:.6rem}
+.l5-slog .s{border:1px solid var(--line);border-radius:9px;padding:.55rem .75rem;background:var(--paper);font-size:.84rem}
+.l5-slog .s h5{margin:0 0 .3rem;font-family:var(--sans);font-size:.86rem}
+.l5-slog .s ul{margin:0;padding-left:1.1rem}
+.l5-slog .s li{margin:.1rem 0}
+.l5-slog .s.bad{border-color:color-mix(in srgb,var(--risk) 50%,var(--line))}
+.l5-vlist{display:flex;flex-direction:column;gap:4px;margin-top:.8rem}
+.l5-bug{display:grid;grid-template-columns:1fr auto;gap:.5rem;align-items:center;text-align:left;font-family:var(--body);font-size:.84rem;line-height:1.35;padding:.45rem .6rem;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);cursor:pointer}
+.l5-bug:hover{border-color:var(--muted)}
+.l5-bug[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+`; document.head.append(s); })();
+
+Edu.glossary({
+  "Agent loop": "Modeli çağıran, araç isteklerini çalıştırıp sonuçlarını geçmişe ekleyen ve model araç istemeyi bırakana ya da bir sınıra ulaşılana kadar tekrar eden döngü. Agent’ın iskeleti.",
+  "stop_reason": "Claude API cevabında modelin neden durduğunu söyleyen alan: tool_use, end_turn, max_tokens, stop_sequence, refusal, pause_turn gibi. Döngü bu alana göre devam eder ya da çıkar.",
+  "end_turn": "stop_reason değeri: model sırasını doğal olarak bitirdi ve araç istemiyor. Döngü burada çıkar; ama işin gerçekten bittiği anlamına gelmez.",
+  "pause_turn": "stop_reason değeri: sunucu tarafı araç döngüsü yineleme sınırına geldi. İsteği olduğu gibi yeniden gönderirsen model kaldığı yerden devam eder.",
+  "max_turns": "Bir agent çalıştırmasında izin verilen en fazla model turu. OpenAI Agents SDK aşıldığında MaxTurnsExceeded fırlatır; her döngünün temel sigortası.",
+  "Workflow": "LLM çağrılarının ve araçların, sırası ve dallanması önceden kodla belirlenmiş yollarla yönetildiği sistem. Agent’ta ise yolu model seçer.",
+  "Augmented LLM": "Arama (retrieval), araçlar ve hafızayla güçlendirilmiş tek bir model çağrısı. Workflow’ların ve agent’ların ortak yapı taşı.",
+  "Prompt chaining": "İşi sıralı model çağrılarına bölen workflow kalıbı; her adımın çıktısı bir sonrakinin girdisi, aralarına programatik kontrol kapıları konabilir.",
+  "Routing": "Girdiyi önce sınıflandırıp uzmanlaşmış bir prompt’a, işleyiciye ya da modele yönlendiren workflow kalıbı.",
+  "Parallelization": "Bağımsız alt işleri aynı anda çalıştıran (sectioning) ya da aynı işi birkaç kez çalıştırıp oylayan (voting) workflow kalıbı.",
+  "Orchestrator-workers": "Bir orkestratör modelin işi çalışma anında alt görevlere böldüğü, işçilere dağıttığı ve sonuçları birleştirdiği kalıp. Alt görevler önceden bilinmez.",
+  "Evaluator-optimizer": "Bir çağrının ürettiği, diğerinin ölçütlere göre değerlendirip geri bildirim verdiği, üreticinin yeniden denediği döngüsel kalıp.",
+  "ReAct": "2022 tarihli yaklaşım: model Thought / Action / Observation satırlarını sırayla yazar, harness Action satırını metinden ayrıştırıp çalıştırır. Bugünkü tool calling’in atası.",
+  "Erken bitirme": "Agent’ın iş bitmeden “bitti” deyip durması (premature completion). En yaygın başarısızlık modu; çaresi döngünün çıkışında bir doğrulayıcı.",
+  "Drift": "Sürüklenme: agent’ın görevden yavaş yavaş uzaklaşıp istenmeyen işlere (alakasız refactor, isim düzeltmeleri) girişmesi.",
+  "Thrashing": "Sistemin ilerleme kaydetmeden aynı işi tekrar tekrar yapması; örneğin büyük bir araç çıktısının compaction’dan hemen sonra context’i yeniden doldurması.",
+  "Progress dosyası": "Uzun görevlerde agent’ın her oturum sonunda ne yaptığını, ne kaldığını yazdığı dosya (örneğin claude-progress.txt). Yeni oturum hafızasız başladığı için devir notu görevi görür.",
+  "Stop hook": "Claude Code’da agent durmak istediğinde çalışan hook. Çıkış kodu 2 dönerse hata çıktısı modele iletilir ve döngü devam eder; art arda 8 engelden sonra geçersiz sayılır.",
+  "Doğrulayıcı": "Agent’ın işinin doğru olup olmadığını geçti/kaldı biçiminde söyleyen her şey: derleyici, test, linter, ekran görüntüsü, ikinci bir model ya da insan.",
+  "LLM-as-judge": "Bir çıktıyı başka bir model çağrısına ölçütlere göre değerlendirtmek. Kurala dökülemeyen işlerde kullanışlı ama tek başına güvenilir bir kapı değil."
+});
+
+/* ---------------- 1a. Döngü kodu ---------------- */
+Edu.widget("l5-code", el => {
+  const { h, $ } = Edu;
+  const L = [
+    { c:"messages = [user(task)]", k:"c", t:"Başlangıç durumu", d:"Konuşma tek bir kullanıcı mesajıyla başlar. System prompt ve araç tanımları messages’ın içinde değil, her istekte ayrı parametre olarak gider. messages yalnızca user ve assistant sıralarını tutar.", w:"Yok sayılamaz: bu liste oturumun tek hafızası. Harness bunu diske yazmazsa oturumu devam ettiremezsin." },
+    { c:"for turn in range(MAX_TURNS):", k:"h", t:"Sert durma koşulu", d:"Döngünün en önemli satırı belki de bu. Modelin “bitti” demesine güvenmeyen tek sigorta. Tur, token ya da süre cinsinden olabilir.", w:"Sınır yoksa model aynı başarısız yaklaşımı sabaha kadar deneyebilir; her tur bütün geçmişi yeniden gönderdiği için maliyet her turda büyür." },
+    { c:"    resp = llm(system, tools, messages)", k:"m", t:"Tek olasılıksal satır", d:"Bütün karar burada: hangi araç, hangi argüman, iş bitti mi? Model system + tools + bütün messages’ı okur ve ya metin ya da tool_use blokları üretir. API durumsuzdur; her çağrıda her şey yeniden gönderilir (2. seviye).", w:"Bu satır olmadan elinde sadece bir betik var. Bu satır yüzünden de geri kalan her şeyi savunmacı yazman gerekiyor." },
+    { c:"    messages.append(assistant(resp.content))", k:"c", t:"Cevabı geçmişe ekle", d:"Modelin cevabı, içindeki tool_use blokları dahil, olduğu gibi geçmişe eklenir. tool_result blokları bir sonraki user mesajında bu tool_use id’lerine işaret edecek.", w:"Unutursan bir sonraki istekte tool_result’ın eşleşeceği bir tool_use olmaz ve API isteği reddeder (4. seviye)." },
+    { c:"    if resp.stop_reason != \"tool_use\":", k:"h", t:"Direksiyon", d:"Model araç istemiyorsa döngüden çık. Ama çıkış sebebi önemli: end_turn, max_tokens, refusal ve diğerleri farklı ele alınmalı. Aşağıdaki gezgin bunları tek tek gösteriyor.", w:"stop_reason’a bakmayan bir döngü, kesilmiş bir cevabı (max_tokens) tamamlanmış iş sanar." },
+    { c:"        break", k:"h", t:"Çıkış", d:"Döngü biter, son metin kullanıcıya gösterilir. Gerçek harness’larda bu noktada bir kontrol daha çalışabilir: Claude Code’da Stop hook burada devreye girer ve gerekirse döngüyü yeniden başlatır.", w:"Çıkışta doğrulama yoksa “bitti” sözü kanıtsız kabul edilir; erken bitirme buradan sızar." },
+    { c:"    results = [run(t) for t in resp.tool_uses]", k:"h", t:"Araçları çalıştır", d:"Harness’ın asıl işi. Her tool_use için izin kuralları kontrol edilir, gerekiyorsa kullanıcıya sorulur, PreToolUse hook’ları çalışır, komut sandbox’ta yürütülür, çıktı kırpılır. Birbirinden bağımsız çağrılar paralel çalışabilir.", w:"Model istediği her şeyi kontrolsüz çalıştırabilirdi. Güvenlik modelde değil, bu satırda kurulur (6., 8. ve 10. seviye)." },
+    { c:"    messages.append(user([tool_result(r) for r in results]))", k:"c", t:"Sonuçları geri koy", d:"Bütün sonuçlar tek bir user mesajında, tool_use_id ile eşleşmiş tool_result blokları olarak eklenir. Hata varsa is_error ile ve eyleme dönük bir mesajla döner.", w:"Model aracın gerçekten çalışıp çalışmadığını bilemez; sadece buraya konan metni görür. Ne gösterirsen dünyası o olur." },
+    { c:"    if tokens(messages) > BUDGET:", k:"c", t:"Context bütçesi", d:"Geçmiş her turda büyür. Belli bir eşikte bir şey yapılmalı: eski araç sonuçlarını temizlemek, özetlemek ya da işi bölmek.", w:"Pencere taşar; ya da taşmadan önce bile kalite düşer (context rot, 2. seviye)." },
+    { c:"        messages = compact(messages)", k:"c", t:"Compaction", d:"Geçmiş bir özetle değiştirilir. Özet kayıplıdır: konuşmanın başındaki ayrıntılı talimatlar düşebilir. Kalıcı kuralların CLAUDE.md gibi her istekte yüklenen dosyalarda durması bu yüzden.", w:"Uzun oturumlar ya taşar ya da bütün geçmişi taşıyan pahalı isteklere dönüşür." },
+    { c:"else:", k:"h", t:"for-else", d:"Python’da for döngüsü break olmadan biterse else bloğu çalışır. Yani buraya ancak MAX_TURNS dolduysa gelinir.", w:"" },
+    { c:"    raise MaxTurnsExceeded()", k:"h", t:"Kontrollü hata", d:"Sınır doldu. İyi bir harness burada sessizce yarım işi “bitti” diye göstermez; kullanıcıya nerede takıldığını söyler. OpenAI Agents SDK aynı adı taşıyan bir hata fırlatır, istersen bir işleyiciyle kontrollü bir son çıktıya çevirebilirsin.", w:"Sınıra takılan bir çalıştırma başarılı gibi görünür ve yarım iş fark edilmez." }
+  ];
+  const box = $(".l5-code", el), out = $(".l5-code-out", el);
+  const tag = { m:["Model","m"], h:["Harness","h"], c:["Context","c"] };
+  L.forEach((ln, i) => {
+    const b = h("button", { type:"button", class: ln.k, "aria-pressed":"false" });
+    b.textContent = ln.c;
+    b.addEventListener("click", () => {
+      Edu.$$("button", box).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag " + tag[ln.k][1] }, tag[ln.k][0]), " ", h("b", null, ln.t + ". "), ln.d));
+      if (ln.w) out.append(h("p", { class:"muted" }, h("span", { class:"r" }, "Bu satır olmasa: "), ln.w));
+    });
+    box.append(b);
+  });
+});
+
+/* ---------------- 1b. stop_reason gezgini ---------------- */
+Edu.widget("l5-stop", el => {
+  const { h, $, json, seg } = Edu;
+  const D = {
+    tool_use: { r:{ stop_reason:"tool_use", content:[ { type:"text", text:"Önce testi çalıştırayım." }, { type:"tool_use", id:"toolu_01", name:"Bash", input:{ command:"dotnet test --filter OrderMapper" } } ] },
+      act:"Devam et. Bu cevabı geçmişe ekle, her tool_use bloğunu çalıştır, sonuçları tek bir user mesajında tool_result olarak ekle ve modeli yeniden çağır.",
+      pit:"Aynı cevapta birden fazla tool_use olabilir. Birini atlamak, sonuçların eşleşmemesi demek." },
+    end_turn: { r:{ stop_reason:"end_turn", content:[ { type:"text", text:"Düzelttim. Mapper artık NULL status_code için UNKNOWN döndürüyor." } ] },
+      act:"Döngüden çık, metni kullanıcıya göster. Doğrulayıcın varsa (Stop hook gibi) şimdi çalıştır; kırmızıysa geri bildirimi ekleyip döngüyü sürdür.",
+      pit:"end_turn “işi bitirdim” değil, “sıramı bitirdim” demek. Model düzeltmeyi test etmeden de end_turn verebilir." },
+    max_tokens: { r:{ stop_reason:"max_tokens", content:[ { type:"text", text:"OrderMapper’daki sorun şu: satır 88’de status_code doğrudan string’e cast edili" } ] },
+      act:"Cevap yarıda kesildi. Ya devam isteği gönder ya da max_tokens’ı büyüt. Kesilen bir tool_use bloğu varsa onu çalıştırma; girdisi eksik olabilir.",
+      pit:"En sinsi hata: kesilmiş cevabı tamamlanmış sanmak. Kullanıcı yarım bir cümle ve yarım bir düzeltme görür." },
+    stop_sequence: { r:{ stop_reason:"stop_sequence", stop_sequence:"</patch>", content:[ { type:"text", text:"<patch>--- a/OrderMapper.cs ..." } ] },
+      act:"İstekte verdiğin özel durma dizilerinden biri üretildi. Genellikle bilinçli bir kesme noktasıdır: çıktıyı ayrıştır ve kendi akışına göre devam et.",
+      pit:"Agent döngülerinde nadir. Kullanıyorsan hangi diziyle durduğunu stop_sequence alanından kontrol et." },
+    refusal: { r:{ stop_reason:"refusal", content:[ { type:"text", text:"Bu isteğe yardımcı olamam." } ] },
+      act:"Model güvenlik gerekçesiyle devam etmedi. Döngüden çık ve bunu kullanıcıya açıkça ret olarak göster.",
+      pit:"Reddi başarı gibi göstermek ya da aynı isteği körlemesine tekrar göndermek. İkisi de yanlış." },
+    pause_turn: { r:{ stop_reason:"pause_turn", content:[ { type:"server_tool_use", id:"srvtoolu_01", name:"web_search", input:{ query:"..." } } ] },
+      act:"Sunucu tarafında çalışan araç döngüsü (web search gibi) yineleme sınırına geldi. Cevabı olduğu gibi ekleyip isteği yeniden gönder; model kaldığı yerden devam eder.",
+      pit:"pause_turn’ü bitiş sanan bir harness işi yarıda bırakır ve kullanıcı yarım bir sonuç görür." },
+    model_context_window_exceeded: { r:{ stop_reason:"model_context_window_exceeded", content:[ { type:"text", text:"Değişikliklerin özeti: 1) OrderMapper..." } ] },
+      act:"Girdi ile max_tokens toplamı pencereyi aştığında, 4.5 ve sonrası modellerde istek reddedilmez; üretim pencere dolunca bu sebeple durur. Context’i küçült (compaction, eski araç sonuçlarını temizleme) ve devam et.",
+      pit:"Bunu end_turn gibi ele almak. Pencere dolduğu için kesilen bir cevap, bitmiş bir cevap değildir." }
+  };
+  const js = $(".l5-stop-json", el), out = $(".l5-stop-out", el);
+  seg($(".l5-stop-seg", el), v => {
+    const d = D[v];
+    js.innerHTML = json(d.r, { hl:["stop_reason"] });
+    out.innerHTML = "";
+    out.append(h("p", null, h("span", { class:"tag h" }, "Döngü ne yapmalı"), " ", d.act), h("p", { class:"muted" }, h("span", { class:"r" }, "Tipik hata: "), d.pit));
+  });
+});
+
+/* ---------------- 2. Oturum simülasyonu ---------------- */
+Edu.widget("l5-session", el => {
+  const { h, $, $$, json, stepper } = Edu;
+  const BASE = 9000;
+  const ST = [["Model çağrısı","m","llm(system, tools, messages)"],["stop_reason?","h","tool_use mı, değil mi"],["Aracı çalıştır","h","izin, sandbox, yürütme"],["Sonucu ekle","c","messages’a tool_result"],["Stop hook","h","durmadan önce test"]];
+  const tu = (id, name, input) => ({ type:"tool_use", id, name, input });
+  const tr = (id, content) => ({ role:"user", content:[{ type:"tool_result", tool_use_id:id, content }] });
+  const S = [
+    { on:[], t:"Görev gelir", d:"Kullanıcı tek cümle yazar. Harness bunu messages dizisinin ilk elemanı yapar. System prompt ve araç tanımları (≈9.000 token, temsili) her istekte ayrıca gider.",
+      m:{ r:"user", s:"Görev", k:60, cls:"user" }, j:{ role:"user", content:"example_app’te OrderMapper testi kırmızı, düzelt." } },
+    { on:[0,1], call:true, t:"1. model çağrısı", d:"Model hiçbir şey bilmiyor; önce kanıt toplamak istiyor. Cevap bir metin ve bir tool_use bloğu. stop_reason: tool_use, döngü devam edecek.",
+      m:{ r:"assistant", s:"text + tool_use Bash", k:90, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ { type:"text", text:"Önce testi çalıştırıp hatayı göreyim." }, tu("toolu_01","Bash",{ command:"dotnet test --filter OrderMapper" }) ] } },
+    { on:[2,3], t:"Harness çalıştırır", d:"İzin kuralı dotnet test’e izin veriyor. Harness komutu çalıştırır ve çıktıyı tool_result olarak ekler. Test çıktısı yığın izleriyle birlikte context’in en büyük parçası olmaya başladı.",
+      m:{ r:"user", s:"tool_result: 1 failed (InvalidCastException)", k:1800, cls:"res" }, j:tr("toolu_01","Failed! 1 failed, 23 passed\n  Map_NullStatus_ReturnsUnknown\n  System.InvalidCastException at OrderMapper.cs:88 ...") },
+    { on:[0,1], call:true, t:"2. model çağrısı", d:"Hata satır 88’i gösteriyor. Model dosyayı okumak istiyor. Bu çağrıda model, ilk çağrıdaki her şeyi artı test çıktısını yeniden okudu.",
+      m:{ r:"assistant", s:"tool_use Read", k:80, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_02","Read",{ file_path:"src/Orders/OrderMapper.cs" }) ] } },
+    { on:[2,3], t:"Dosya context’e girer", d:"Dosyanın içeriği context’e girdi. Artık geçmişin büyük kısmı araç sonuçlarından oluşuyor; modelin kendi yazdıkları birkaç yüz token.",
+      m:{ r:"user", s:"tool_result: OrderMapper.cs (210 satır)", k:2400, cls:"res" }, j:tr("toolu_02","86  var row = reader.Current;\n87  var dto = new OrderDto();\n88  dto.Status = (string)row[\"status_code\"];\n...\n91  dto.Status = Normalize(dto.Status);") },
+    { on:[0,1], call:true, t:"3. model çağrısı", d:"Model NULL değerin cast edilemediğini gördü. Düzenleme istiyor: NULL ise \"UNKNOWN\" ata. Satır 91’deki Normalize çağrısını gözden kaçırdı.",
+      m:{ r:"assistant", s:"tool_use Edit", k:160, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_03","Edit",{ file_path:"src/Orders/OrderMapper.cs", old_string:"(string)row[\"status_code\"]", new_string:"row[\"status_code\"] as string ?? \"UNKNOWN\"" }) ] } },
+    { on:[2,3], t:"Düzenleme uygulanır", d:"Harness düzenlemeyi uygular ve kısa bir onay döndürür. Model bu düzenlemenin doğru olup olmadığını bilmiyor; sadece uygulandığını biliyor.",
+      m:{ r:"user", s:"tool_result: ok", k:40, cls:"res" }, j:tr("toolu_03","The file src/Orders/OrderMapper.cs has been updated.") },
+    { on:[0,1], call:true, t:"4. model çağrısı: “bitti”", d:"Model testi yeniden çalıştırmadan bitirmeye karar verdi. stop_reason: end_turn. Basit bir döngü burada çıkar ve kullanıcı “Düzelttim” mesajını görür. Bu bir erken bitirme.",
+      m:{ r:"assistant", s:"text, end_turn", k:60, cls:"asst" }, j:{ stop_reason:"end_turn", content:[ { type:"text", text:"Düzelttim! Mapper artık NULL status_code için UNKNOWN döndürüyor." } ] } },
+    { on:[4,3], hook:true, t:"Stop hook devreye girer", d:"Harness durmadan önce testleri kendisi çalıştırır. Test kırmızı; hook çıkış kodu 2 ile döner. Claude Code bu çıktıyı modele iletir ve döngü sürer. Mesajın modele hangi biçimde gösterildiği harness’a göre değişir; burada sadeleştirilmiş hali var.",
+      m:{ r:"user", s:"Stop hook geri bildirimi (exit 2)", k:120, cls:"hook" }, j:{ role:"user", content:"Stop hook geri bildirimi (exit 2): dotnet test → 1 failed: Map_NullStatus_ReturnsUnknown. Expected \"UNKNOWN\", got \"unknown\"." } },
+    { on:[0,1], call:true, t:"5. model çağrısı", d:"Yeni kanıt: değer küçük harfe dönmüş. Model satır 91’deki Normalize’ı hatırlıyor (dosya hâlâ context’te) ve düzeltmeyi oraya taşıyor.",
+      m:{ r:"assistant", s:"tool_use Edit", k:170, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ { type:"text", text:"Normalize() fallback değerini de küçültüyor. UNKNOWN’ı normalizasyon dışında tutayım." }, tu("toolu_04","Edit",{ file_path:"src/Orders/OrderMapper.cs", old_string:"dto.Status = Normalize(dto.Status);", new_string:"dto.Status = dto.Status == \"UNKNOWN\" ? dto.Status : Normalize(dto.Status);" }) ] } },
+    { on:[2,3], t:"Düzenleme uygulanır", d:"İkinci düzenleme de uygulandı.",
+      m:{ r:"user", s:"tool_result: ok", k:40, cls:"res" }, j:tr("toolu_04","The file src/Orders/OrderMapper.cs has been updated.") },
+    { on:[0,1], call:true, t:"6. model çağrısı", d:"Bu kez model doğrulamadan bitirmiyor: tam test paketini çalıştırmak istiyor. Hook’un geri bildirimi davranışını değiştirdi.",
+      m:{ r:"assistant", s:"tool_use Bash", k:70, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_05","Bash",{ command:"dotnet test" }) ] } },
+    { on:[2,3], t:"Testler yeşil", d:"Bütün paket geçti. Sonuç kısa; iyi bir araç çıktısı gereksiz satırları zaten süzer.",
+      m:{ r:"user", s:"tool_result: 214 passed", k:220, cls:"res" }, j:tr("toolu_05","Passed! - Failed: 0, Passed: 214, Skipped: 0, Total: 214") },
+    { on:[0,1], call:true, t:"7. model çağrısı: gerçekten bitti", d:"Model özetini yazıp end_turn ile durur. Bu sefer elinde kanıt var.",
+      m:{ r:"assistant", s:"text, end_turn", k:150, cls:"asst" }, j:{ stop_reason:"end_turn", content:[ { type:"text", text:"Kök neden: NULL status_code cast edilemiyordu; ayrıca fallback değeri Normalize() ile küçülüyordu. OrderMapper.cs’de iki satır değişti, 214 test geçiyor." } ] } },
+    { on:[4], end:true, t:"Hook geçer, döngü biter", d:"Stop hook testleri yeniden çalıştırır, yeşil, çıkış kodu 0. Döngü biter; kullanıcı son özeti görür. Arayüzde bu oturum birkaç satır; perde arkasında 7 model çağrısı ve 14 mesaj vardı.",
+      m:null, j:{ hook:"Stop", command:"dotnet test", exit_code:0, sonuc:"döngü biter, son metin kullanıcıya gösterilir" } }
+  ];
+  const flow = h("div", { class:"flow", "aria-label":"Döngü istasyonları" });
+  const nodes = ST.map((s, i) => { const n = h("div", { class:"node " + s[1] }, h("b", null, s[0]), s[2]); flow.append(n); if (i < ST.length - 1) flow.append(h("span", { class:"arrow", "aria-hidden":"true" }, "→")); return n; });
+  const narr = h("div", { class:"l5-narr", "aria-live":"polite" });
+  const list = h("div", { class:"l5-msgs" });
+  const js = h("div", { class:"jsonv" });
+  const stats = h("div", { class:"stats" });
+  const wrap = h("div", null, flow, h("div", { class:"l5-sess" },
+    h("div", null, narr, h("p", { class:"l5-sub" }, "messages dizisi"), list),
+    h("div", null, h("p", { class:"l5-sub" }, "Bu adımda gidip gelen JSON"), js)), stats);
+  const fmt = n => n.toLocaleString("tr-TR");
+  stepper(el, { steps:S, auto:2600, render(i, s, { body }){
+    if (!body.contains(wrap)) body.append(wrap);
+    nodes.forEach((n, k) => n.classList.toggle("on", s.on.includes(k)));
+    narr.innerHTML = "";
+    narr.append(h("b", null, s.t + ". "), s.d);
+    list.innerHTML = "";
+    list.append(h("div", { class:"l5-m base" }, h("span", { class:"rl" }, "sabit"), h("span", null, "system prompt + araç tanımları"), h("span", { class:"tk" }, fmt(BASE))));
+    let ctx = BASE, calls = 0, cum = 0, lastRow = null;
+    for (let k = 0; k <= i; k++){
+      if (S[k].call){ calls++; cum += ctx; }
+      if (S[k].m){
+        ctx += S[k].m.k;
+        lastRow = h("div", { class:"l5-m " + S[k].m.cls }, h("span", { class:"rl" }, S[k].m.r), h("span", null, S[k].m.s), h("span", { class:"tk" }, "+" + fmt(S[k].m.k)));
+        list.append(lastRow);
+      }
+    }
+    if (lastRow && S[i].m) lastRow.classList.add("new");
+    list.scrollTop = list.scrollHeight;
+    js.innerHTML = json(S[i].j, { hl:["stop_reason","tool_use_id","id","exit_code"] });
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, String(calls)), "model çağrısı"),
+      h("span", null, h("b", null, fmt(ctx)), "context (token, temsili)"),
+      h("span", null, h("b", null, fmt(cum)), "toplam işlenen girdi"));
+  }});
+});
+
+/* ---------------- 3a. Kalıp görselleştirici ---------------- */
+Edu.widget("l5-patterns", el => {
+  const { h, $, $$, seg, stepper } = Edu;
+  const P = {
+    chain: { arrows:["→","→","→","→","→"],
+      st:[[["Commit listesi","io"]],[["1. Değişiklikleri çıkar","llm"]],[["Kapı: JSON geçerli mi?","code"]],[["2. Kategorize et","llm"]],[["3. Sürüm notunu yaz","llm"]],[["Sürüm notu","io"]]],
+      steps:[["0","Girdi: son sürümden bu yana 37 commit mesajı."],["1","Model çağrısı 1 her commit’ten değişikliği yapılandırılmış JSON olarak çıkarır."],["2","Senin kodun JSON’u şemaya karşı doğrular. Geçersizse zincir durur ya da adım yeniden denenir. Ara çıktı loglanır: denetlenebilirlik bu kalıbın asıl kazancı."],["3","Model çağrısı 2 değişiklikleri özellik, düzeltme ve iç değişiklik diye ayırır."],["4","Model çağrısı 3 Türkçe sürüm notunu yazar."],["5","Çıktı. Adım sayısı her seferinde 3; maliyet ve süre önceden bellidir."]] },
+    route: { arrows:["→","→","→"],
+      st:[[["Destek talebi","io"]],[["Sınıflandırıcı","llm"]],[["Fatura işleyici","llm"],["Teknik hata işleyici","llm"],["Özellik isteği işleyici","llm"]],[["Cevap + kuyruk","io"]]],
+      steps:[["0","Girdi: “Sipariş ekranı 500 veriyor, order_id 1042.”"],["1","Sınıflandırıcı tek bir etiket üretir: teknik_hata. Bu adım küçük ve ucuz bir modelle yapılabilir."],["2.1","Senin kodun etikete göre ilgili işleyiciyi çağırır. Her dalın kendi prompt’u, araçları ve gerekirse kendi modeli var."],["3","Cevap ve doğru kuyruk. Yanlış sınıflandırma yanlış dala gider; sınıflandırıcının doğruluğunu ayrıca ölç."]] },
+    par: { arrows:["→","→","→"],
+      st:[[["PR diff’i","io"]],[["Güvenlik incelemesi","llm"],["Performans incelemesi","llm"],["Okunabilirlik incelemesi","llm"]],[["Birleştir","code"]],[["Tek review yorumu","io"]]],
+      steps:[["0","Girdi: 14 dosyalık bir PR diff’i."],["1.0 1.1 1.2","Üç çağrı aynı anda çalışır; her biri tek bir konuya odaklanır (sectioning). Odak dar olduğu için her biri daha derin bakar."],["2","Senin kodun sonuçları birleştirir, tekrarları ayıklar. Voting biçiminde ise aynı soru üç kez sorulur ve oylamayla karar verilir."],["3","Tek bir review yorumu. Süre en yavaş dal kadar; maliyet dal sayısıyla çarpılır."]] },
+    orch: { arrows:["→","→","→","→"],
+      st:[[["Görev: tarih alanlarını UTC’ye taşı","io"]],[["Orkestratör","llm"]],[["İşçi: OrderMapper.cs","llm"],["İşçi: ShipmentService.cs","llm"],["İşçi: report_orders.sql","llm"]],[["Sentezleyici","llm"]],[["Tek diff","io"]]],
+      steps:[["0","Girdi: “created_at ve delivered_at alanlarını UTC’ye taşı.” Kaç dosyanın etkileneceği belli değil."],["1","Orkestratör kodu inceler ve alt görevleri çalışma anında belirler: bu sefer üç dosya. Başka bir görevde on iki olabilirdi; parallelization’dan farkı bu."],["2.0 2.1 2.2","İşçiler kendi dosyalarında çalışır. Ortak context gerektiren işlerde burası zayıf nokta: bir işçinin kararını diğeri bilmez."],["3","Sentezleyici sonuçları birleştirir ve tutarsızlıkları giderir."],["4","Tek diff. Çok agent’lı kurgu tek agent’a göre belirgin biçimde daha fazla token harcar."]] },
+    eval: { arrows:["→","⇄","→"],
+      st:[[["İngilizce yardım metni","io"]],[["Üretici: çeviri","llm"]],[["Değerlendirici: sözlük + ölçütler","llm"]],[["Onaylanan çeviri","io"]]],
+      steps:[["0","Girdi: sipariş ekranının İngilizce yardım metni ve şirketin terim sözlüğü."],["1","Üretici ilk çeviriyi yazar."],["2","Değerlendirici ölçütlere bakar: “order için sözlükte ‘sipariş’ var, ‘emir’ kullanılmış.” Geri bildirim üreticiye döner."],["1","Üretici geri bildirimle yeniden yazar. Döngü burada: ölçütler netse her tur gerçekten iyileştirir."],["2","Değerlendirici onaylar. Bir tur sınırı koymayı unutma; ölçütler belirsizse döngü dönüp durur."],["3","Onaylanan çeviri."]] },
+    agent: { arrows:["→","⇄","→"],
+      st:[[["Kullanıcı: kırmızı testi düzelt","io"]],[["Model","llm"]],[["Ortam: araçlar, dosyalar, testler","code"]],[["Durma: end_turn + doğrulama","io"]]],
+      steps:[["0","Girdi: açık uçlu bir hedef. Kaç adım süreceğini kimse bilmiyor."],["1","Model bir sonraki eylemi seçer: testi çalıştır."],["2","Ortam gerçek sonucu döndürür. Agent’ı workflow’dan ayıran şey bu geri bildirim: yol, ortamdan gelen kanıta göre değişir."],["1","Model yeni kanıta göre karar verir: dosyayı oku, düzenle, yeniden test et. Bu ikili istediği kadar döner."],["2","Her tur bir model çağrısı: esneklik karşılığında maliyet, gecikme ve hata birikimi."],["3","Model end_turn verir; iyi bir harness bunu bir doğrulayıcıyla teyit eder."]] }
+  };
+  const host = $(".l5-pat-host", el);
+  seg($(".l5-pat-seg", el), v => {
+    const p = P[v];
+    host.innerHTML = "";
+    const diag = h("div", { class:"l5-pat" });
+    const stageEls = [];
+    p.st.forEach((stage, si) => {
+      const sEl = h("div", { class:"l5-stage" });
+      stage.forEach(n => sEl.append(h("div", { class:"l5-node " + n[1] }, n[0])));
+      stageEls.push(sEl); diag.append(sEl);
+      if (si < p.st.length - 1) diag.append(h("span", { class:"l5-arr", "aria-hidden":"true" }, p.arrows[si]));
+    });
+    const sp = h("div");
+    if (el._l5st) el._l5st.stop();
+    host.append(diag, sp);
+    const narr = h("div", { class:"panel live", "aria-live":"polite" });
+    el._l5st = stepper(sp, { steps:p.steps, auto:2200, render(i, s, { body }){
+      if (!body.contains(narr)) body.append(narr);
+      $$(".l5-node", diag).forEach(n => n.classList.remove("on"));
+      s[0].split(" ").forEach(key => {
+        const [a, b] = key.split(".");
+        const nodesIn = $$(".l5-node", stageEls[+a]);
+        (b === undefined ? nodesIn : [nodesIn[+b]]).forEach(n => n && n.classList.add("on"));
+      });
+      narr.textContent = s[1];
+    }});
+  });
+});
+
+/* ---------------- 3b. Senaryo kartları ---------------- */
+Edu.widget("l5-scen", el => {
+  const { h, $, $$ } = Edu;
+  const C = [
+    { t:"Her PR açıldığında diff’i özetle ve uygun etiketleri koy.", p:"Prompt chaining", w:"Adımlar her seferinde aynı: özetle, sonra etiketle. Ara çıktıyı (özet) loglayıp denetleyebilmek değerli. Döngüye gerek yok.", b:"PR’lar çok farklı türlerde gelmeye başlarsa başa bir routing adımı eklenir." },
+    { t:"Destek kanalına düşen talepleri fatura, teknik hata ve özellik isteği diye ayırıp her birine uygun ilk cevabı hazırla.", p:"Routing", w:"Girdi türleri belli ve her tür farklı bir prompt istiyor. Sınıflandırma ucuz bir modelle, cevap türe uygun modelle yapılabilir.", b:"Sınıflandırıcının yanılma oranı yüksekse; o zaman belirsiz talepler için bir “insana yönlendir” dalı gerekir." },
+    { t:"Bir PR’ı güvenlik, performans ve okunabilirlik açısından ayrı ayrı incele.", p:"Parallelization (sectioning)", w:"Üç bakış birbirinden bağımsız; ayrı ayrı odaklanmak her birini derinleştirir ve paralel çalıştığı için süre uzamaz.", b:"İncelemeler birbirinin bulgusuna ihtiyaç duyuyorsa (örneğin performans düzeltmesinin güvenlik etkisi) tek bir derin inceleme daha iyi olabilir." },
+    { t:"Bir kod parçasında güvenlik açığı şüphesi var; yanlış alarm pahalı.", p:"Parallelization (voting)", w:"Aynı soruyu birkaç bağımsız çalıştırmaya sorup eşik koymak (örneğin üçte iki) tek bir çalıştırmanın gürültüsünü azaltır.", b:"Maliyet çalıştırma sayısıyla çarpılır; düşük riskli işlerde değmez." },
+    { t:"“created_at alanlarını UTC’ye taşı.” Kaç dosyanın etkileneceğini bilmiyorsun.", p:"Orchestrator-workers ya da tek agent", w:"Alt görevler önceden bilinmiyor; biri onları çalışma anında çıkarmalı. Ama değişiklikler birbirine bağlıysa (ortak bir yardımcı fonksiyon gibi) tek agent’ın ortak context’i daha güvenli.", b:"Çok agent’lı kurgu belirgin biçimde daha fazla token harcar; ortak context gerektiren kodlama işlerinde çoğu zaman tek agent yeter." },
+    { t:"Uygulamanın İngilizce yardım metinlerini şirket terim sözlüğüne uygun Türkçeye çevir.", p:"Evaluator-optimizer", w:"Net bir ölçüt var (sözlük) ve bir değerlendirmenin geri bildirimi çeviriyi gerçekten iyileştiriyor.", b:"Ölçütler belirsizse değerlendirici keyfî itirazlar üretir; tur sınırı şart." },
+    { t:"example_app’te kırmızı bir testi bul ve düzelt.", p:"Agent", w:"Kaç dosya okunacağı, kaç kez test çalışacağı bilinemez; yol ortamdan gelen kanıta göre değişir. Testler hazır bir doğrulayıcı sunuyor.", b:"Test yoksa agent’ın “bitti” demesi kanıtsız kalır; önce hatayı yeniden üreten bir test yazdır." },
+    { t:"Ayda bir, example.orders’tan aylık ciro raporu için SQL taslağı yaz.", p:"Tek model çağrısı", w:"Şema ve birkaç örnek sorguyla zenginleştirilmiş tek bir çağrı yeter. Döngü, araç ve orkestrasyon gereksiz karmaşıklık.", b:"Sorgunun gerçek veriye karşı denenmesi gerekiyorsa salt okunur bir araçla küçük bir agent’a dönüşebilir; ama yazma yetkisi asla." }
+  ];
+  const grid = $(".l5-scen-grid", el), out = $(".l5-scen-out", el);
+  grid.classList.add("l5-grid");
+  C.forEach(c => {
+    const b = h("button", { type:"button", class:"l5-card", "aria-pressed":"false" }, c.t);
+    b.addEventListener("click", () => {
+      $$("button", grid).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag h" }, "Önerilen"), " ", h("b", null, c.p), ". ", c.w),
+        h("p", { class:"muted" }, h("span", { class:"c" }, "Ne zaman yetmez: "), c.b));
+    });
+    grid.append(b);
+  });
+});
+
+/* ---------------- 4. Başarısızlık simülatörü ---------------- */
+Edu.widget("l5-fail", el => {
+  const { h, $, $$, sleep, runner } = Edu;
+  const o = { premature:false, loop:false, flaky:false, drift:false, hook:true, watch:false, maxOn:true, max:25 };
+  const tg = (key, label, bad) => {
+    const b = h("button", { type:"button", class:"l5-tg" + (bad ? " bad" : ""), "aria-pressed": o[key] ? "true" : "false" }, label);
+    b.addEventListener("click", () => { o[key] = !o[key]; b.setAttribute("aria-pressed", o[key] ? "true" : "false"); });
+    return b;
+  };
+  const rng = h("input", { type:"range", min:"4", max:"30", value:String(o.max), id:"l5-fail-max" });
+  const rout = h("output", { for:"l5-fail-max" }, String(o.max));
+  rng.addEventListener("input", () => { o.max = +rng.value; rout.textContent = rng.value; });
+  const run = h("button", { type:"button", class:"btn" }, "▶ Çalıştır");
+  const term = h("div", { class:"term-body", "aria-live":"off" });
+  const res = h("div", { class:"panel live l5-outc", "aria-live":"polite" }, h("span", { class:"muted" }, "Bir kombinasyon seç ve Çalıştır’a bas."));
+  const stats = h("div", { class:"stats" });
+  el.append(
+    h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Hata enjekte et"), tg("premature","Erken “bitti”",1), tg("loop","Döngü: etkisiz düzeltme",1), tg("flaky","Kararsız test",1), tg("drift","Sürüklenme",1)),
+    h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Korumalar"), tg("hook","Stop hook: dotnet test"), tg("watch","İlk dakikayı izle (Esc)"), tg("maxOn","MAX_TURNS sınırı")),
+    h("div", { class:"l5-row" }, h("div", { class:"range" }, h("label", { for:"l5-fail-max" }, "MAX_TURNS"), rng, rout), run),
+    h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "agent oturumu")), term),
+    stats, res);
+
+  function simulate(){
+    const L = []; let turn = 0, ctx = 9000, total = 0, blocks = 0, files = 1, stopped = false; const out = [];
+    const say = (c, t) => L.push([c, t]);
+    const call = desc => {
+      if (o.maxOn && turn >= o.max){ say("e", "MAX_TURNS=" + o.max + " doldu → harness döngüyü durdurur (MaxTurnsExceeded)."); out.push("max"); return false; }
+      turn++; total += ctx; say("v", "[tur " + turn + "] model → " + desc); return true;
+    };
+    const tool = (cmd, r, tok, cls) => { say("b", "   $ " + cmd); say(cls || "d", "   " + r); ctx += tok; };
+    const fin = () => ({ L, out, turn, ctx, total, files });
+    if (!call("tool_use Bash")) return fin();
+    tool("dotnet test --filter OrderMapper", "1 failed: Map_NullStatus_ReturnsUnknown (InvalidCastException)", 1800, "e");
+    if (!call("tool_use Read")) return fin();
+    tool("Read src/Orders/OrderMapper.cs", "88: dto.Status = (string)row[\"status_code\"];", 2400);
+    if (o.loop){
+      for (;;){
+        if (!o.maxOn && turn >= 40){ say("w", "... 40. turda simülasyonu kestik. Sınır yok; döngü kendiliğinden bitmeyecekti."); out.push("runaway"); return fin(); }
+        if (!call("tool_use Edit (aynı satırda başka bir cast denemesi)")) return fin();
+        tool("Edit OrderMapper.cs:88", "ok (davranış değişmedi)", 200);
+        if (o.premature){
+          if (!call("end_turn: “Düzelttim.”")) return fin();
+          if (!o.hook){ out.push("false"); return fin(); }
+          blocks++; ctx += 150;
+          say("w", "   Stop hook: dotnet test → 1 failed → exit 2 (art arda engel: " + blocks + ")");
+          if (blocks >= 8){ say("e", "   Stop hook art arda 8 kez engelledi → Claude Code hook’u geçersiz sayar, tur biter."); out.push("override"); return fin(); }
+        } else {
+          if (!call("tool_use Bash")) return fin();
+          tool("dotnet test --filter OrderMapper", "1 failed: Map_NullStatus_ReturnsUnknown (InvalidCastException)", 1800, "e");
+        }
+      }
+    }
+    if (!call("tool_use Edit")) return fin();
+    tool("Edit OrderMapper.cs:88", "ok: NULL için \"UNKNOWN\" atanıyor", 300);
+    if (o.premature){
+      if (!call("end_turn: “Düzelttim! Mapper artık NULL değerleri işliyor.”")) return fin();
+      if (!o.hook){ out.push("false"); return fin(); }
+      blocks++; ctx += 150;
+      say("w", "   Stop hook: dotnet test → expected \"UNKNOWN\", got \"unknown\" → exit 2");
+    } else {
+      if (!call("tool_use Bash")) return fin();
+      tool("dotnet test --filter OrderMapper", "1 failed: expected \"UNKNOWN\", got \"unknown\"", 1700, "e");
+    }
+    if (!call("tool_use Edit")) return fin();
+    tool("Edit OrderMapper.cs:91", "ok: UNKNOWN normalizasyon dışında tutuluyor", 300);
+    if (o.drift){
+      if (!call("tool_use Edit (OrderService.cs: “madem buradayım” isim düzeltmesi)")) return fin();
+      tool("Edit OrderService.cs", "ok", 400, "w"); files++;
+      if (o.watch){ say("p", "   Sen: Esc. “Sadece OrderMapper’a dokun.” → değişiklik geri alındı"); files = 1; ctx += 100; }
+      else {
+        if (!call("tool_use Edit (ShipmentService.cs, OrderQuery.cs isim düzeltmesi)")) return fin();
+        tool("Edit 2 dosya", "ok", 600, "w"); files += 2;
+        if (!call("tool_use Edit (3 dosyada daha “tutarlılık için” yeniden adlandırma)")) return fin();
+        tool("Edit 3 dosya", "ok", 800, "w"); files += 3;
+      }
+    }
+    if (!call("tool_use Bash")) return fin();
+    if (o.flaky){
+      tool("dotnet test", "1 failed: PaymentClientTests.Timeout (kararsız test)", 900, "e");
+      if (!call("tool_use Bash (yeniden dene)")) return fin();
+    }
+    tool("dotnet test", "Passed! 214 passed, 0 failed", 220, "p");
+    if (!call("end_turn: özet")) return fin();
+    if (o.hook){
+      if (o.flaky){
+        blocks++; ctx += 150;
+        say("w", "   Stop hook: dotnet test → PaymentClientTests.Timeout (kararsız) → exit 2");
+        if (!call("tool_use Edit (PaymentClientTests: [Fact(Skip = \"flaky\")])")) return fin();
+        tool("Edit PaymentClientTests.cs", "ok: test atlanıyor", 250, "w"); files++; out.push("skip");
+        if (!call("end_turn: “Tüm testler geçiyor.”")) return fin();
+      }
+      say("p", "   Stop hook: dotnet test → Passed! → exit 0");
+    }
+    if (o.drift && files > 2) out.push("drift");
+    out.push("ok");
+    return fin();
+  }
+  const OUT = {
+    ok:["ok","Bitti","Döngü çıktı ve testler yeşil."],
+    false:["r","Yanlış “bitti”","Model durdu ama en az 1 test hâlâ kırmızı. Agent’ın gözünde iş bitmişti; bunu CI ya da review’daki insan yakalayacak. Çare: döngünün çıkışına doğrulayıcı (Stop hook ya da /goal)."],
+    max:["c","Tur sınırında durdu","İş bitmedi ama maliyet sınırlı kaldı. İyi bir harness burada “şu noktada takıldım” diye rapor verir; yarım işi bitmiş gibi göstermez."],
+    runaway:["r","Kaçak döngü","MAX_TURNS kapalıyken etkisiz bir düzeltme döngüsü kendiliğinden bitmez. Her tur bütün geçmişi yeniden gönderdiği için maliyet her turda büyür."],
+    override:["c","Hook’un da sigortası var","Stop hook art arda 8 kez engelledi; Claude Code hook’u geçersiz sayıp turu bitirdi. Hook döngüyü sonsuza kadar kilitleyemez. Asıl sorun model tarafında: etkisiz bir düzeltmeyi tekrar edip duruyor. Bu noktada insan girmeli, /clear ve daha iyi bir prompt."],
+    skip:["r","Yeşil ama yanlış nedenle","Kararsız bir doğrulayıcı agent’ı en kısa yola itti: test atlandı. Hook yeşil diyor, ama bir test artık hiç çalışmıyor. Test dosyalarının diff’ini oku; test klasörünü bir hook ile koru."],
+    drift:["c","Diff şişti","Görev tek bir dosyaydı ama alakasız dosyalar da değişti. Review zorlaşır, istenmeyen davranış değişikliği riski artar. Çare: ilk dakikayı izle, sapmada Esc."]
+  };
+  const r = runner();
+  run.addEventListener("click", async () => {
+    const cancelled = r.start();
+    const res0 = simulate();
+    term.innerHTML = ""; res.innerHTML = ""; stats.innerHTML = "";
+    res.append(h("span", { class:"muted" }, "Çalışıyor…"));
+    for (const [c, t] of res0.L){
+      if (cancelled()) return;
+      term.append(h("div", { class:c }, t));
+      term.scrollTop = term.scrollHeight;
+      await sleep(Math.max(25, Math.min(110, Math.round(5000 / res0.L.length))));
+    }
+    if (cancelled()) return;
+    const fmt = n => n.toLocaleString("tr-TR");
+    stats.append(h("span", null, h("b", null, String(res0.turn)), "model turu"),
+      h("span", null, h("b", null, fmt(res0.ctx)), "son context (temsili)"),
+      h("span", null, h("b", null, fmt(res0.total)), "toplam işlenen girdi"),
+      h("span", null, h("b", null, String(res0.files)), "değişen dosya"));
+    res.innerHTML = "";
+    const order = ["false","runaway","skip","max","override","drift","ok"];
+    let outs = order.filter(k => res0.out.includes(k));
+    if (outs.includes("skip") || outs.includes("drift")) outs = outs.filter(k => k !== "ok");
+    outs.forEach(k => res.append(h("p", null, h("span", { class:"tag " + OUT[k][0] }, OUT[k][1]), " ", OUT[k][2])));
+  });
+});
+
+/* ---------------- 5. Uzun görev simülatörü ---------------- */
+Edu.widget("l5-long", el => {
+  const { h, $, $$ } = Edu;
+  const FN = ["F1 Sayfalama","F2 status_code filtresi","F3 CSV dışa aktarma","F4 Teslim süresi","F5 İptalde 500 hatası"];
+  const o = { prog:true, git:true, one:true };
+  let S;
+  const reset = () => { S = { n:0, f:FN.map(() => "todo"), dirty:false, declared:false, orient:0, logs:[] }; render(); };
+  const tg = (key, label) => {
+    const b = h("button", { type:"button", class:"l5-tg", "aria-pressed": o[key] ? "true" : "false" }, label);
+    b.addEventListener("click", () => { o[key] = !o[key]; b.setAttribute("aria-pressed", o[key] ? "true" : "false"); reset(); });
+    return b;
+  };
+  const nextB = h("button", { type:"button", class:"btn" }, "Sonraki oturum →");
+  const resetB = h("button", { type:"button", class:"btn ghost" }, "↺ Baştan");
+  const feats = h("div", { class:"l5-feats", "aria-label":"Özellik durumu" });
+  const stats = h("div", { class:"stats" });
+  const log = h("div", { class:"l5-slog", "aria-live":"polite" });
+  el.append(h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Tarifin parçaları"), tg("prog","progress + features.json + init.sh"), tg("git","Oturum sonunda commit"), tg("one","Oturum başına tek özellik")),
+    h("div", { class:"ctrl" }, nextB, resetB), feats, stats, log);
+  nextB.addEventListener("click", step);
+  resetB.addEventListener("click", reset);
+
+  function step(){
+    if (S.declared || S.f.every(x => x === "done")) return;
+    S.n++;
+    const L = []; let bad = false;
+    L.push("Boş context. Yüklenen: system prompt + CLAUDE.md.");
+    if (S.n === 1 && o.prog){
+      L.push("Başlatıcı oturum: init.sh, features.json (5 madde, hepsi \"passes\": false) ve claude-progress.txt oluşturuldu.");
+      L.push(o.git ? "İlk commit atıldı. Hiç özellik yazılmadı; bu oturumun işi zemini hazırlamaktı." : "Commit yok; dosyalar çalışma ağacında duruyor.");
+      S.logs.unshift({ t:"Oturum 1: başlatıcı", L, bad }); return render();
+    }
+    if (S.dirty){
+      if (o.git){ L.push("git status: yarım değişiklikler var → son temiz commit’e dönüldü (2 tur)."); S.orient += 2; }
+      else { L.push("Build kırık ve dönülecek temiz bir commit yok: 6 tur onarımla geçti."); S.orient += 6; bad = true; }
+      S.f = S.f.map(x => x === "half" ? "todo" : x);
+      S.dirty = false;
+    }
+    const doneN = S.f.filter(x => x === "done").length;
+    if (o.prog){
+      L.push("claude-progress.txt + features.json + git log -10 okundu (≈3K token, 1 tur). init.sh ile ortam kalktı, temel smoke test geçti.");
+      S.orient += 1;
+    } else {
+      L.push("Durum bilgisi yok: kod tabanı taranıyor, nasıl çalıştırılacağı ve neyin bittiği tahmin ediliyor (≈25K token, 7 tur).");
+      S.orient += 7;
+      if (doneN >= 2){
+        L.push("Kod tabanında çok iş yapılmış görünüyor. Model: “Proje büyük ölçüde tamamlanmış.” Kalan özellikler hiç ele alınmadan oturum bitti.");
+        S.declared = true; bad = true;
+        S.logs.unshift({ t:"Oturum " + S.n + ": erken bitirme", L, bad }); return render();
+      }
+    }
+    const todo = S.f.map((x, i) => x !== "done" ? i : -1).filter(i => i >= 0);
+    if (o.one){
+      const i = todo[0];
+      L.push(FN[i] + " seçildi → uygulandı → testi yazıldı ve geçti" + (o.prog ? " → features.json’da passes: true." : "."));
+      S.f[i] = "done";
+      L.push(o.git ? "Commit: feat(" + FN[i].split(" ")[0] + "). Çalışma ağacı temiz." : "Commit yok. Değişiklikler çalışıyor ama kayıt altında değil.");
+      if (o.prog) L.push("claude-progress.txt güncellendi: ne yapıldı, sıradaki ne, dikkat edilecekler.");
+    } else {
+      const pick = todo.slice(0, 3);
+      L.push("Tek oturumda " + pick.map(i => FN[i].split(" ")[0]).join(", ") + " birden başlatıldı.");
+      if (pick[0] !== undefined){ S.f[pick[0]] = "done"; L.push(FN[pick[0]] + " bitti."); }
+      if (pick[1] !== undefined){ S.f[pick[1]] = "half"; L.push(FN[pick[1]] + " yarım kaldı: context doldu, oturum ortada bitti."); S.dirty = true; bad = true; }
+      if (pick[2] !== undefined) L.push(FN[pick[2]] + " hiç başlayamadı.");
+      L.push(S.dirty ? "Çalışma ağacı kirli, build kırık. Sonraki oturum bunu devralacak." : "Oturum bitti.");
+    }
+    S.logs.unshift({ t:"Oturum " + S.n, L, bad });
+    render();
+  }
+  function render(){
+    feats.innerHTML = "";
+    FN.forEach((f, i) => feats.append(h("span", { class:"l5-feat " + (S.f[i] === "done" ? "done" : S.f[i] === "half" ? "half" : "") }, f)));
+    const doneN = S.f.filter(x => x === "done").length;
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, String(S.n)), "oturum"),
+      h("span", null, h("b", null, doneN + " / 5"), "geçen özellik"),
+      h("span", null, h("b", null, String(S.orient)), "oryantasyon ve onarım turu"));
+    log.innerHTML = "";
+    if (S.declared) log.append(h("div", { class:"s bad" }, h("h5", null, "Durdu"), "Model işi bitti sandı. Yapılandırılmış bir liste olmadan hangi özelliklerin kaldığını bilmesinin yolu yoktu."));
+    else if (doneN === 5) log.append(h("div", { class:"s" }, h("h5", null, "Tamamlandı"), S.n + " oturumda beş özellik geçti; " + S.orient + " tur oryantasyon ve onarıma gitti."));
+    if (!S.logs.length) log.append(h("p", { class:"muted" }, "“Sonraki oturum”a bas. Her oturum hafızasız başlar."));
+    S.logs.forEach(s => log.append(h("div", { class:"s" + (s.bad ? " bad" : "") }, h("h5", null, s.t), h("ul", null, s.L.map(x => h("li", null, x))))));
+    nextB.disabled = S.declared || doneN === 5;
+  }
+  reset();
+});
+
+/* ---------------- 6. Doğrulayıcı gezgini ---------------- */
+Edu.widget("l5-verify", el => {
+  const { h, $, $$ } = Edu;
+  const V = [
+    { id:"comp", n:"Derleyici + tip denetimi", s:15, det:true },
+    { id:"unit", n:"Birim testleri (filtreli)", s:40, det:true },
+    { id:"lint", n:"Linter / formatter", s:5, det:true },
+    { id:"integ", n:"Entegrasyon testi (PostgreSQL)", s:180, det:true },
+    { id:"perf", n:"Performans testi (sorgu sayısı)", s:240, det:true },
+    { id:"shot", n:"Ekran görüntüsü + model bakışı", s:60, det:false },
+    { id:"judge", n:"LLM-as-judge (diff’i okur)", s:30, det:false },
+    { id:"human", n:"İnsan review", s:0, det:false }
+  ];
+  const B = [
+    { t:"status_code NULL gelince InvalidCastException", c:{ unit:2, integ:2, judge:1, human:1 }, w:"Birim testi bu durumu birebir kapsıyor (Map_NullStatus_ReturnsUnknown). Entegrasyon testi de NULL’lı bir satırla patlar. LLM-as-judge ve insan, cast’i görürse fark edebilir ama garanti değil." },
+    { t:"Fallback değeri “UNKNOWN” yerine “unknown” dönüyor", c:{ unit:2, integ:1, judge:1, human:1 }, w:"Beklenen değeri yazan bir birim testi kesin yakalar. Diff’e bakan bir göz, Normalize çağrısının değeri küçülttüğünü ancak dikkatle okursa görür." },
+    { t:"Bir metodun imzası değişti, çağıran yer güncellenmedi", c:{ comp:2, judge:1, human:1 }, w:"Derleyici saniyeler içinde, kesin olarak yakalar. Agent döngüsünde en ucuz ve en güvenilir geri bildirim budur; testlerin çalışmasına bile gerek kalmaz." },
+    { t:"Kullanılmayan using ve tutarsız girinti", c:{ lint:2, judge:1, human:1 }, w:"Linter ya da formatter yakalar, hatta otomatik düzeltir. Bunu insana bırakmak review zamanını israf etmektir; Claude Code’da her düzenlemeden sonra formatter çalıştıran bir hook bunun için var (8. seviye)." },
+    { t:"Sipariş listesinde N+1 sorgu: her sipariş için example.order_items ayrı çekiliyor", c:{ perf:2, integ:1, judge:1, human:1 }, w:"Sorgu sayısını ölçen bir performans testi kesin yakalar. Entegrasyon testi yavaşlar ama geçer. Deneyimli bir göz döngü içindeki sorguyu görebilir." },
+    { t:"Mobilde “Tutar” sütunu taşıyor", c:{ shot:2, human:1 }, w:"Hiçbir birim testi bunu görmez. Ekran görüntüsünü modele gösteren bir görsel kontrol yakalar; yorum yine modele kalır, o yüzden deterministik değildir. İnsan ancak mobilde bakarsa görür." },
+    { t:"İptal edilen siparişler toplam tutara dahil edildi (iş kuralı)", c:{ integ:1, judge:1, human:2 }, w:"Kural bir testte yazılıysa entegrasyon testi yakalar; çoğu zaman yazılı değildir. LLM-as-judge kuralı ancak context’inde varsa bilebilir. İş kuralını bilen insan en güvenilir doğrulayıcı. Burası prompt’a kuralı ve gerekçesini yazmanın (3. seviye) değerini gösteriyor." },
+    { t:"Agent kırmızı testi geçirmek için assertion’ı gevşetti", c:{ judge:1, human:2 }, w:"Bütün otomatik kontroller yeşil, çünkü test artık daha az şey kontrol ediyor. Sadece test diff’ini okuyan biri fark eder. Test klasörünü değiştirmeyi bir hook ile engellemek ya da onaya bağlamak bu yüzden önemli." }
+  ];
+  const sel = new Set(["comp","unit"]);
+  const chips = h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Döngüdeki doğrulayıcılar"));
+  V.forEach(v => {
+    const b = h("button", { type:"button", class:"l5-tg", "aria-pressed": sel.has(v.id) ? "true" : "false" }, v.n);
+    b.addEventListener("click", () => { sel.has(v.id) ? sel.delete(v.id) : sel.add(v.id); b.setAttribute("aria-pressed", sel.has(v.id) ? "true" : "false"); render(); });
+    chips.append(b);
+  });
+  const stats = h("div", { class:"stats" });
+  const list = h("div", { class:"l5-vlist" });
+  const out = h("div", { class:"panel live", "aria-live":"polite" }, h("span", { class:"muted" }, "Bir hataya tıkla."));
+  el.append(chips, stats, list, out);
+  let cur = -1;
+  const best = b => { let m = 0, who = []; sel.forEach(id => { const x = b.c[id] || 0; if (x > m){ m = x; who = [id]; } else if (x && x === m) who.push(id); }); return [m, who]; };
+  const nm = id => V.find(v => v.id === id).n;
+  function render(){
+    list.innerHTML = "";
+    let y = 0, p = 0, n = 0;
+    B.forEach((b, i) => {
+      const [m] = best(b);
+      if (m === 2) y++; else if (m === 1) p++; else n++;
+      const t = m === 2 ? ["ok","yakalanır"] : m === 1 ? ["c","kısmen"] : ["r","PR’a kadar gider"];
+      const btn = h("button", { type:"button", class:"l5-bug", "aria-pressed": i === cur ? "true" : "false" }, h("span", null, b.t), h("span", { class:"tag " + t[0] }, t[1]));
+      btn.addEventListener("click", () => { cur = i; render(); });
+      list.append(btn);
+    });
+    const loopS = [...sel].map(id => V.find(v => v.id === id)).filter(v => v.s).reduce((a, v) => a + v.s, 0);
+    const detN = [...sel].filter(id => V.find(v => v.id === id).det).length;
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, y + " / 8"), "kesin yakalanan"),
+      h("span", null, h("b", null, String(p)), "kısmen"),
+      h("span", null, h("b", null, String(n)), "kaçan"),
+      h("span", null, h("b", null, loopS >= 60 ? Math.round(loopS / 60) + " dk" : loopS + " sn"), "tur başına bekleme (temsili)"),
+      h("span", null, h("b", null, detN + " / " + sel.size), "deterministik"));
+    if (sel.has("human")) stats.append(h("span", null, h("b", null, "+ saatler"), "insan review’ı döngünün dışında"));
+    if (cur >= 0){
+      const b = B[cur], [m, who] = best(b);
+      out.innerHTML = "";
+      out.append(h("p", null, h("b", null, b.t + ". "), b.w));
+      out.append(h("p", { class:"muted" }, m ? (m === 2 ? "Seçimine göre kesin yakalayan: " : "Seçimine göre kısmen fark edebilen: ") + who.map(nm).join(", ") + "." : "Seçtiğin doğrulayıcıların hiçbiri bunu görmüyor; hata PR’a, belki de canlıya kadar gider."));
+    }
+  }
+  render();
+});
+</script>

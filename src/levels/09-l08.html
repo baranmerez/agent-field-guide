@@ -1,0 +1,976 @@
+<section class="level" data-no="8" data-short="Claude Code" data-title="Claude Code’u gerçekten kullanmak"
+  data-accent="tool" data-time="90 dk"
+  data-lede="Harness kavramını ve iki ekosistemi tanıdın. Şimdi Claude Code’u ekibin kurallarına göre şekillendiriyoruz: çalışma ritmi, CLAUDE.md, izin kuralları, genişletme araçları, hook’lar, context komutları, checkpoint’ler ve paralel oturumlar.">
+
+  <!-- ============ 8.1 ============ -->
+  <div class="lesson" data-tab="Çalışma ritmi">
+    <h2>Keşfet, planla, uygula, doğrula</h2>
+    <p class="lead">Claude Code’u en verimli kullanan ekiplerde ortak bir ritim var ve bu ritim 2025’ten beri değişmedi: önce okut, sonra planlat, sonra uygulat, en sonda doğrulat. Değişen, bu ritmi destekleyen araçların olgunlaşması ve resmi rehberin onu daha keskin bir cümleye indirmesi.</p>
+    <p>Güncel “best practices” sayfası işi üç cümleye bağlıyor: Claude’a <b>göremediği şeyi söyle</b>, ona <b>çalıştırabileceği bir kontrol ver</b> ve <b>istisnası olmaması gereken kuralları zorla</b>. Birincisi context’in işi (bu konu ve CLAUDE.md), ikincisi doğrulamanın işi (testler, derleyici, <code>/verify</code>), üçüncüsü harness’ın işi (izin kuralları ve hook’lar). Bu seviyenin bütün konuları bu üç cümlenin açılımı.</p>
+
+    <h3>Neden önce plan?</h3>
+    <p>5. seviyede agent döngüsünü gördün: her tur, bütün geçmişi yeniden okuyan bir model çağrısı. Yanlış anlaşılmış bir görev üzerinde yirmi tur dönen bir agent hem context’i hem parayı hem senin zamanını yakar ve sonunda geri almak zorunda kalacağın bir diff üretir. Planı beş dakika okumak, en ucuz hata ayıklama yöntemidir. <span class="g" data-g="Plan mode">Plan mode</span> tam olarak bunun için var: agent dosyaları okuyabilir ve salt okunur komutlar çalıştırabilir, ama plan onaylanana kadar düzenleme yapamaz. Auto mode kullanılabiliyorsa sınıflandırıcının onayladığı komutlar plan modunda da çalışır.</p>
+    <p>Modlar arasında <kbd>Shift</kbd>+<kbd>Tab</kbd> ile dolaşırsın. Kasım 2026 itibarıyla döngü şöyle: <code>auto → default → acceptEdits → plan → (bypassPermissions) → auto</code>. Parantez içindeki mod yalnızca etkinleştirilmişse döngüye girer; <code>dontAsk</code> ise döngüde yok, yalnızca komut satırı bayrağıyla açılır.</p>
+
+    <div class="fig" data-widget="l8-modes">
+      <p class="fig-title">Shift+Tab döngüsü</p>
+      <p class="fig-cap">Düğmeye bas, bir sonraki moda geç. Her modda dört temsilî eylemin ne olacağını gör. “bypass etkin” kutusu, ayarlarda kapatılmamışsa döngüye bypass modunu ekler.</p>
+      <div class="ctrl l8-md-ctrl"></div>
+      <div class="l8-md-out live" aria-live="polite"></div>
+    </div>
+
+    <h3>İyi bir görev tarifi</h3>
+    <p>3. seviyede prompt’u bir iş emri gibi yazmayı konuştuk. Claude Code’da bunun pratik karşılığı: belirtiyi, nereye bakılacağını ve neyin “bitti” sayılacağını söylemek. Resmi rehberin örneği “giriş hatasını düzelt” yerine “oturum zaman aşımından sonra giriş başarısız oluyor; src/auth/ altındaki token yenilemeye bak; önce hatayı yeniden üreten başarısız bir test yaz, sonra düzelt” diyor. Aynı kalıbı kendi işine uygula:</p>
+    <div class="vs">
+      <div class="bad" data-label="Zayıf"><pre><code>sipariş toplamı yanlış, düzelt</code></pre></div>
+      <div class="good" data-label="Güçlü"><pre><code>example.orders’ta indirimli siparişlerde toplam
+iki kez indirimli çıkıyor (ör. order_id 1042).
+src/Orders/OrderTotal.cs içindeki hesaplamaya bak.
+Önce bunu yeniden üreten başarısız bir test yaz,
+sonra düzelt. dotnet test geçmeli; migration yok.</code></pre></div>
+    </div>
+
+    <div class="fig" data-widget="l8-ritim">
+      <p class="fig-title">Bir oturumun anatomisi</p>
+      <p class="fig-cap">Hayali <code>example_app</code> deposunda, yukarıdaki görevin gerçekçi bir oturumu. Adım adım ilerlet; her adımda hangi modda olduğunu, agent’ın ne yaptığını ve senin nerede devreye girdiğini izle.</p>
+    </div>
+
+    <h3>Direksiyon: ne zaman müdahale edersin?</h3>
+    <ul>
+      <li><kbd>Esc</kbd> agent’ı eylemin ortasında durdurur. Rehberin tavsiyesi: “ilk dakikayı izle, sapma başladığı an Esc’e bas”.</li>
+      <li><kbd>Esc</kbd> <kbd>Esc</kbd> ya da <code>/rewind</code> geri sarma menüsünü açar (bu seviyenin son konusu).</li>
+      <li><b>İki başarısız düzeltmeden sonra</b> üçüncüsünü yazma: <code>/clear</code> ile temizle ve daha iyi bir prompt’la yeniden başla. Başarısız denemelerle dolu bir context modeli aynı izde tutar.</li>
+      <li><code>/btw</code> geçmişi kirletmeden yan bir soru sormanı sağlar.</li>
+      <li><code>/rename</code> ile oturuma ad verip <code>claude --resume &lt;ad&gt;</code> ile dönersin.</li>
+      <li><code>/verify</code> uygulamayı derleyip çalıştırır; <code>/goal</code> bir koşulu her turda ayrı bir modele kontrol ettirir; <code>/code-review</code> değişikliği inceletir.</li>
+      <li><code>/effort high</code> ya da <code>xhigh</code>, ince hatalar ve şema değişiklikleri için düşünme bütçesini artırır.</li>
+    </ul>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Yeni katılan yetenekli bir junior’la çalışmak gibi. Önce kodu okumasını istersin, sonra ne yapacağını anlatmasını; planı onaylamadan dokunmasına izin vermezsin. İşi bitince testleri birlikte çalıştırırsınız. Fark: bu junior çok hızlı, hiç yorulmaz ve konuşmanın başını unutabilir.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Göremediğini söyle, çalıştırabileceği bir kontrol ver, istisnasız kuralları harness’ta zorla.</li>
+        <li>Plan mode okur ama düzenlemez; planı okumak en ucuz hata ayıklamadır.</li>
+        <li>Shift+Tab döngüsü: auto → default → acceptEdits → plan → (bypass) → auto. dontAsk yalnız bayrakla.</li>
+        <li>İki başarısız düzeltmeden sonra <code>/clear</code> ve daha iyi bir prompt.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/permission-modes">Claude Code: Permission modes</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-best-practices">Anthropic: Claude Code best practices (Nisan 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.2 ============ -->
+  <div class="lesson" data-tab="CLAUDE.md">
+    <h2>Her oturumda okunan talimatlar</h2>
+    <p><span class="g" data-g="CLAUDE.md">CLAUDE.md</span>, Claude Code’un her oturum başında context’e yüklediği bir Markdown dosyası. 3. seviyede kalıcı etki için her istekte otomatik eklenen katmanlara yatırım yapman gerektiğini söylemiştik; bu o katman. Ama bir şeyi baştan netleştirelim: CLAUDE.md bir <b>yönerge</b>dir, zorlama değil. Claude onu okur ve çoğunlukla uyar; ama resmi belgelerin ifadesiyle, bir satırın o durumda geçerli olmadığına karar vermesine izin verilir. Bu yüzden rehberdeki en önemli cümle şu: <em>Bir CLAUDE.md satırına vurgu ekleyip duruyorsan ve Claude hâlâ kaçırıyorsa, o satır bir hook’a aittir.</em> “IMPORTANT” eklemek muhtemelen çözmez.</p>
+
+    <h3>Hiyerarşi</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Kapsam</th><th>Konum</th><th>Kim için</th></tr></thead>
+      <tbody>
+        <tr><td>Yönetilen (kurum)</td><td><code>/etc/claude-code/CLAUDE.md</code>, Windows’ta <code>C:\Program Files\ClaudeCode\CLAUDE.md</code></td><td>Bütün kullanıcılar; BT dağıtır</td></tr>
+        <tr><td>Kullanıcı</td><td><code>~/.claude/CLAUDE.md</code></td><td>Senin bütün projelerin</td></tr>
+        <tr><td>Proje</td><td><code>./CLAUDE.md</code> ya da <code>./.claude/CLAUDE.md</code></td><td>Ekip; repoya commit edilir</td></tr>
+        <tr><td>Yerel</td><td><code>./CLAUDE.local.md</code></td><td>Sen, bu proje; git’e girmez</td></tr>
+        <tr><td>Kurallar</td><td><code>.claude/rules/*.md</code> (<code>paths:</code> başlığıyla)</td><td>Yalnız eşleşen dosyalara dokunulunca</td></tr>
+      </tbody>
+    </table></div>
+    <p>Başlangıçta kökten çalışma dizinine kadarki ata dizinlerdeki dosyalar yüklenir; alt dizinlerdekiler o dizindeki bir dosyaya dokunulduğunda. Dosyalar <b>birleştirilir</b>, birbirini ezmez: yakın olan sonra okunur. Bu, CSS’teki kaskada benzer ama tam aynısı değil; çelişen iki kural varsa ikisi de context’te durur ve model hangisinin geçerli olduğuna karar vermek zorunda kalır. Çelişkiyi sen çöz.</p>
+    <p><code>@yol/dosya.md</code> sözdizimiyle başka dosyaları içe aktarabilirsin. Yol, içe aktaran dosyaya göre görelidir; en fazla 4 atlama derinliğe izin verilir; proje dışındaki bir dosyayı içe aktarmak bir kerelik onay ister. Önemli bir yanılgıyı düzeltelim: içe aktarma context maliyetini <b>azaltmaz</b>; içe aktarılan dosya da tümüyle yüklenir. Asıl tasarruf aracı <code>.claude/rules/</code> altındaki <code>paths:</code> başlıklı kurallar ve skill’ler. Resmi hedef dosya başına 200 satırın altı. Otomatik bellek (MEMORY.md) için ilk 200 satır ya da 25 KB yüklenir. Monorepo’larda alakasız alt projelerin dosyalarını <code>claudeMdExcludes</code> ile dışarıda bırakabilirsin.</p>
+<pre data-title=".claude/rules/sql.md"><code>---
+paths:
+  - "**/*.sql"
+---
+- Şema adını her zaman nitelikli yaz: example.orders, example.customers.
+- DML script’leri BEGIN ile başlar, ROLLBACK ile biter; COMMIT’i insan koyar.</code></pre>
+
+    <h3>Ne yazılır, ne yazılmaz?</h3>
+    <div class="cols">
+      <div class="card ok"><h4>Yaz</h4><ul>
+        <li>Tam doğrulama komutları: tek test dosyası nasıl koşulur, typecheck, lint.</li>
+        <li>Yanıltıcı kod: “src/legacy/ hâlâ canlı ama kalıplarını yeni koda kopyalama”.</li>
+        <li>Repoda olmayan kararlar ve nedenleri.</li>
+        <li>İki kez düzelttiğin her şey.</li>
+      </ul></div>
+      <div class="card r"><h4>Yazma</h4><ul>
+        <li>Koddan çıkarılabilecek şeyler (“projede Angular kullanıyoruz”).</li>
+        <li>Kişisel tercihler: onlar <code>CLAUDE.local.md</code>’ye.</li>
+        <li>Uzun prosedürler: onlar skill’e.</li>
+        <li>İstisnasız yasaklar: onlar deny kuralına ya da hook’a.</li>
+        <li>Gizli anahtar, token, parola. Asla.</li>
+      </ul></div>
+    </div>
+    <p>Resmi belgelerdeki örnek dosya bu ilkelerin iyi bir özeti. Bir .NET projesi için uyarlanmış hali:</p>
+<pre data-title="CLAUDE.md"><code># Komutlar
+- Derleme: dotnet build -warnaserror
+- Tek test sınıfı: dotnet test --filter FullyQualifiedName~OrderTotalTests
+- Format kontrolü: dotnet format --verify-no-changes
+
+# Konvansiyonlar
+- Hata dönüşleri için src/Common/Result.cs kullan; ham exception fırlatma
+- src/Legacy/ hâlâ canlı ama kalıplarını yeni koda kopyalama
+
+# Tuzaklar
+- Entegrasyon testleri DATABASE_URL ister; .env.example’a bak
+- example.orders.amount numeric(12,2); C# tarafında decimal kullan</code></pre>
+
+    <div class="fig" data-widget="l8-claudemd">
+      <p class="fig-title">Bir CLAUDE.md’yi ayıklamak</p>
+      <p class="fig-cap">Bir ekibin “her şeyi CLAUDE.md’ye yazalım” toplantısından çıkan satırlar. Bir satıra tıkla: resmi rehbere göre nereye ait olduğunu ve nedenini gör; satır o hedefe taşınır. Sağdaki önizleme, geriye kalan CLAUDE.md’nin boyutunu ve her oturumda harcadığı yaklaşık token’ı gösterir.</p>
+      <div class="ctrl"><button type="button" class="btn sm l8-cm-all">Hepsini yerleştir</button><button type="button" class="btn ghost sm l8-cm-reset">↺ Baştan</button></div>
+      <div class="l8-cm-grid"></div>
+      <div class="panel live l8-cm-out" aria-live="polite"><span class="muted">Bir satıra tıkla.</span></div>
+    </div>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Yeni bir repoda <code>/init</code> bir başlangıç CLAUDE.md’si üretir; onu olduğu gibi bırakma, yukarıdaki süzgeçten geçir. Mevcut talimatlarının sorunlarını görmek için <code>/doctor prompt-audit</code> kullanılabilir. Ve en iyi alışkanlık: agent aynı hatayı ikinci kez yaptığında oraya tek bir satır ekle. Üçüncü kez yaparsa o satır muhtemelen bir hook olmalı.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>CLAUDE.md yönergedir, zorlama değil. Vurgu ekleyip hâlâ kaçırılıyorsa kural hook’a aittir.</li>
+        <li>Dosyalar birleştirilir, ezilmez; çelişkileri sen çöz.</li>
+        <li>@import maliyeti azaltmaz; tasarruf <code>.claude/rules</code> (paths) ve skill’lerle olur.</li>
+        <li>Komutlar, yanıltıcı kod, repoda olmayan kararlar ve iki kez düzeltilenler yazılır; gerisi başka yere.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/memory">Claude Code: Memory (CLAUDE.md)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.3 ============ -->
+  <div class="lesson" data-tab="İzinler">
+    <h2>İzin kuralları: kim neye, hangi sırayla</h2>
+    <p>7. seviyede izin modlarını gördün. Modlar kaba ayardır; ince ayar <span class="g" data-g="İzin kuralı">izin kuralları</span>yla yapılır. Bir kural <code>Araç</code> ya da <code>Araç(belirteç)</code> biçimindedir: <code>Bash(npm run *)</code>, <code>Read(./.env)</code>, <code>WebFetch(domain:example.com)</code>, <code>mcp__sunucu__arac</code>, <code>Skill(skill:release)</code>. Kurallar üç listeye yazılır: <code>deny</code>, <code>ask</code>, <code>allow</code>.</p>
+
+    <h3>Değerlendirme sırası: deny, ask, allow</h3>
+    <p>Bu konunun en önemli cümlesi: <b>önce deny, sonra ask, sonra allow değerlendirilir; ilk eşleşme kazanır ve özgüllüğün önemi yoktur.</b> Belgelerin ifadesiyle, bir allow kuralı bir deny kuralından istisna oyamaz. Güvenlik duvarı kurallarına alışkın biri için bu ilk başta ters gelebilir; orada çoğu zaman en özgül kural ya da sıradaki ilk kural kazanır. Burada liste türü kazanır.</p>
+
+    <h3>Bash kuralları nasıl eşleşir?</h3>
+    <ul>
+      <li>Kalıp bütün komuta uygulanan bir glob’dur. <code>Bash(npm run *)</code>, <code>npm run build</code> ile eşleşir, <code>npm install</code> ile eşleşmez.</li>
+      <li><code>*</code> önündeki boşluk önemlidir: <code>Bash(git diff *)</code> yalnızca <code>git diff …</code> ile eşleşir; <code>Bash(git diff*)</code> ise <code>git diff-index</code> ile de eşleşir.</li>
+      <li><span class="g" data-g="Bileşik komut">Bileşik komutlar</span> parçalanır: <code>&amp;&amp; || ; | |&amp; &amp;</code> ve yeni satır ayraçtır. Allow için <b>her</b> alt komutun izinli olması gerekir; deny ve ask <b>herhangi bir</b> alt komutta eşleşirse yeter. <code>$(…)</code>, alt kabuklar ve döngülerin içindekiler de alt komut sayılır.</li>
+      <li>Sarmalayıcılar soyulur: <code>timeout time nice nohup stdbuf command builtin noglob</code>. <code>timeout 30 npm run build</code>, <code>npm run build</code> gibi değerlendirilir.</li>
+      <li>Baştaki ortam değişkeni atamaları (<code>FOO=bar komut</code>): allow kuralları bunların ötesini eşleştirmez, deny kuralları eşleştirir. Böylece biri allow’u ortam değişkeniyle kandıramaz ama deny’dan da kaçamaz.</li>
+    </ul>
+
+    <div class="fig" data-widget="l8-matcher">
+      <p class="fig-title">İzin kuralı eşleştirici</p>
+      <p class="fig-cap">Kuralları düzenle, bir komut ya da yol yaz veya hazır örneklerden birini seç. Eşleştirici komutu alt komutlara böler, sarmalayıcıları soyar ve her parça için deny → ask → allow sırasıyla hangi kuralın eşleştiğini gösterir. Belgelerdeki kurallarla kurulmuş, öğretim amaçlı bir eşleştiricidir; gerçek uygulamanın her ayrıntısını taklit etmez.</p>
+      <div class="l8-mt-rules"></div>
+      <div class="ctrl l8-mt-tool"></div>
+      <div class="ctrl l8-mt-in"></div>
+      <div class="ctrl l8-mt-pre"></div>
+      <div class="panel live l8-mt-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout warn"><span class="ct">Dikkat: Bash deny bir güvenlik sınırı değildir</span>Belgeler bunu açıkça söylüyor. <code>Bash(curl *)</code> deny kuralı <code>/usr/bin/curl …</code> ya da <code>sh -c 'curl …'</code> komutunu durdurmaz; bir betik dosyasına yazılıp çalıştırılan curl’ü de durdurmaz. Deny kuralları kazara hatalara karşı iyi bir emniyet kemeridir. Gerçek sınır, komutun nasıl yazıldığından bağımsız işleyen bir mekanizmadır: sandbox’ın ağ izin listesi, işletim sistemi yetkileri, ajanın kimlik bilgilerinin dar kapsamı. Deny kuralını bunlarla <em>eşleştir</em>, yerine koyma.</div>
+
+    <h3>Read ve Edit yolları</h3>
+    <p>Dosya kuralları gitignore sözdizimini kullanır ve dört yol biçimi var: <code>//mutlak/yol</code>, <code>~/ev/dizini</code>, <code>/ayar-dosyasının-kaynağına-göre</code> ve <code>./göreli</code>. Dikkat: tek eğik çizgiyle başlayan yol mutlak değil, ayar dosyasının bulunduğu projeye görelidir; mutlak yol için çift eğik çizgi gerekir. Windows yolları normalleştirilir: <code>C:\Users\alice</code> kural tarafında <code>/c/Users/alice</code> olur; bütün sürücülerde <code>.env</code> dosyalarını kapatmak için <code>//**/.env</code> yazılır. Bir Read deny kuralı aynı yol için Edit ve Write’ı da engeller. Bir yanılgı: <code>.claudeignore</code> diye bir dosyanın hiçbir etkisi yok.</p>
+
+    <h3>Ayarların katmanları</h3>
+    <p>Kurallar <code>settings.json</code> dosyalarında durur ve öncelik sırası şöyle: <span class="g" data-g="Managed settings">yönetilen (managed) ayarlar</span> &gt; komut satırındaki <code>--settings</code> &gt; <code>.claude/settings.local.json</code> &gt; <code>.claude/settings.json</code> &gt; <code>~/.claude/settings.json</code>. <code>permissions.allow</code> gibi diziler katmanlar arasında <b>birleştirilir</b>, ezilmez. Güvenlik açısından iki ayrıntı önemli: projedeki allow kuralları çalışma alanı güveni (<span class="g" data-g="Workspace trust">workspace trust</span>) verilene kadar bekler, deny ve ask kuralları ise hemen uygulanır; ve proje ya da yerel dosyadaki <code>defaultMode: auto</code> veya <code>bypassPermissions</code> değeri yok sayılır (v2.1.257’den beri). Yani klonladığın bir repo kendi kendine kendini bypass moduna alamaz.</p>
+<pre data-title=".claude/settings.json (ekip)"><code>{
+  "permissions": {
+    "deny":  ["Bash(git push --force *)", "Read(./.env)", "Read(//**/.ssh/**)",
+              "Edit(./src/Generated/**)"],
+    "ask":   ["Bash(git clean *)"],
+    "allow": ["Bash(dotnet build *)", "Bash(dotnet test *)", "Bash(git diff *)", "Bash(git status)"]
+  }
+}</code></pre>
+    <p>Kurum düzeyinde sertleştirme için yeni anahtarlar var: <code>permissions.blockReadsOutsideWorkingDirectories</code> ve <code>permissions.blockWritesOutsideWorkingDirectories</code> (v2.1.314), <code>disableBypassPermissionsMode</code> ve <code>disableAutoMode</code>. Bunlar yönetilen ayarlara konduğunda kullanıcı tarafından gevşetilemez.</p>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Ekip ayarına (<code>.claude/settings.json</code>) yalnızca herkesin isteyeceği güvenli allow’ları ve kesin deny’ları koy: derleme ve test komutları serbest, force push ve gizli dosyalar kapalı. Kişisel kolaylıkları <code>settings.local.json</code>’a yaz. Bir komutu her gün onaylıyorsan onu allow’a eklemek, onay yorgunluğunu azaltır; onay istemlerinin %93’ü zaten onaylanıyor.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>deny → ask → allow; ilk eşleşme kazanır; allow deny’dan istisna oyamaz.</li>
+        <li>Bileşik komutta allow için her parça izinli olmalı; deny ve ask için tek parça yeter. Sarmalayıcılar soyulur.</li>
+        <li><code>*</code> önündeki boşluk önemlidir; tek eğik çizgili yol projeye, çift eğik çizgili yol köke görelidir.</li>
+        <li>Bash deny bir güvenlik sınırı değildir; sandbox ve dar kimlik bilgileriyle eşleştir.</li>
+        <li>Diziler katmanlar arasında birleşir; proje allow’ları güven verilene kadar bekler.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/permissions">Claude Code: Permissions</a></li>
+      <li><a href="https://code.claude.com/docs/en/settings">Claude Code: Settings</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-auto-mode">Anthropic: Claude Code auto mode</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.4 ============ -->
+  <div class="lesson" data-tab="Genişletme araçları">
+    <h2>Altı araç, tek soru: kim karar veriyor?</h2>
+    <p>Claude Code’u genişletmenin altı yolu var ve ekiplerin en sık yaptığı hata, işi yanlış araca vermek: istisnasız bir kuralı CLAUDE.md’ye yazmak, tek satırlık bir bilgiyi skill’e koymak, iyi bir CLI’ı olan bir sistem için MCP sunucusu kurmak. Doğru aracı seçmenin anahtarı tek bir soru: <b>bu davranışa Claude mu karar vermeli, harness mı?</b></p>
+    <div class="cols">
+      <div class="card m"><h4 class="m">Claude karar verir (olasılıksal)</h4>CLAUDE.md, <code>.claude/rules</code>, skill’ler, subagent tanımları, prompt’taki talimatlar. Model bunları okur ve çoğu zaman uyar; bağlama göre uymamayı da seçebilir.</div>
+      <div class="card h"><h4 class="h">Harness zorlar (deterministik)</h4>Hook’lar, deny kuralları, sıkı sandbox, yönetilen ayarlar, <code>--max-turns</code> ve <code>--max-budget-usd</code>, CI kontrolleri, branch koruması. Modelin ne düşündüğünden bağımsız işler.</div>
+    </div>
+
+    <h3>Araçlar tek tek</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Araç</th><th>Ne</th><th>Ne zaman yüklenir</th><th>Ne için</th></tr></thead>
+      <tbody>
+        <tr><td><b>CLAUDE.md / rules</b></td><td>Her zaman geçerli yönerge</td><td>Her oturum (rules: yola göre)</td><td>Claude’un koddan çıkaramayacağı bilgiler</td></tr>
+        <tr><td><b><span class="g" data-g="Skill">Skill</span></b></td><td><code>.claude/skills/&lt;ad&gt;/SKILL.md</code> + dosyalar; <code>/ad</code> ile ya da otomatik</td><td>Açıklama her zaman (1.536 karakterde kesilir); gövde çağrılınca; ek dosyalar referans verilince</td><td>Tekrarlanan ekip prosedürü: release, inceleme, migration</td></tr>
+        <tr><td><b><span class="g" data-g="Subagent">Subagent</span></b></td><td><code>.claude/agents/*.md</code>: ayrı context, kendi prompt’u, araçları, modeli</td><td>Devredildiğinde</td><td>Gürültülü işi yalıtmak, araçları kısıtlamak, paralellik; yalnız özet döner</td></tr>
+        <tr><td><b>MCP sunucusu</b></td><td>Dış araç ve veri</td><td>Araç adları varsayılan olarak ertelenir (tool search)</td><td>İyi bir CLI’ı olmayan sistemler; <code>gh</code>, <code>aws</code> varsa onları tercih et</td></tr>
+        <tr><td><b>Hook</b></td><td>Yaşam döngüsü olaylarında deterministik kod</td><td>Her zaman</td><td>İstisnası olmaması gereken kurallar</td></tr>
+        <tr><td><b><span class="g" data-g="Plugin">Plugin</span></b></td><td><code>.claude-plugin/plugin.json</code>: yukarıdakilerin paketi</td><td>Etkin eklentinin açıklamaları her oturumda</td><td>Bir kurulumu ekibe ya da bir pazar yerine dağıtmak; senin yetkilerinle çalışır</td></tr>
+      </tbody>
+    </table></div>
+    <p>Eski özel komutlar (<code>.claude/commands/*.md</code>) skill’lerle birleşti; yeni bir “slash komutu” yazmak istiyorsan bir skill yaz. Skill’in ön bilgi başlığında <code>name</code>, <code>description</code>, <code>when_to_use</code>, <code>allowed-tools</code>, <code>disable-model-invocation</code>, <code>model</code>, <code>effort</code>, <code>context: fork</code>, <code>paths</code> gibi alanlar var. Güçlü bir özellik dinamik context: skill gövdesindeki <code>!`git diff HEAD`</code> gibi bir satır, model skill’i görmeden önce çalıştırılır ve çıktısı yerine konur. SKILL.md’yi 500 satırın altında tut; ayrıntıyı ek dosyalara taşı.</p>
+<pre data-title=".claude/skills/release-notes/SKILL.md"><code>---
+name: release-notes
+description: example_app için sürüm notu taslağı hazırlar. Kullanıcı sürüm notu,
+  changelog ya da "bu sürümde ne değişti" istediğinde kullan.
+allowed-tools: Bash(git log *), Bash(git diff *), Read
+disable-model-invocation: false
+---
+Son etiketten bu yana değişiklikler:
+!`git log --oneline $(git describe --tags --abbrev=0)..HEAD`
+
+1. Değişiklikleri Özellik / Düzeltme / Bakım olarak grupla.
+2. Kullanıcıya görünen etkiyi bir cümleyle yaz; commit dilini kopyalama.
+3. Biçim için templates/release-notes.md dosyasına bak.</code></pre>
+    <p>Subagent’ın başlığında zorunlu alanlar <code>name</code> ve <code>description</code>; ayrıca <code>tools</code>, <code>disallowedTools</code>, <code>model</code> (sonnet, opus, haiku, fable, inherit ya da tam kimlik), <code>permissionMode</code>, <code>skills</code>, <code>hooks</code>, <code>isolation: worktree</code>, <code>background</code>, <code>maxTurns</code>, <code>mcpServers</code> gibi alanlar var. Hazır gelenler: Explore, Plan ve general-purpose. Subagent’lar 3 seviyeye kadar iç içe çağrılabilir. Birden çok agent’ın birbiriyle konuştuğu “agent teams” deneysel ve belgelere göre yaklaşık 7 kat token harcıyor.</p>
+
+    <div class="fig" data-widget="l8-tree">
+      <p class="fig-title">Hangi genişletme aracı?</p>
+      <p class="fig-cap">Soldaki karar ağacını sorulara cevap vererek kendin yürü ya da sağdaki gerçek senaryolardan birine tıkla; ağaç o senaryonun yolunu adım adım aydınlatır ve sonuçta neden o aracın seçildiğini açıklar.</p>
+      <div class="l8-tr-wrap"><div class="l8-tr-tree"></div><div class="l8-tr-sc"></div></div>
+      <div class="panel live l8-tr-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Ne kadar çok MCP sunucusu bağlarsam agent o kadar yetenekli olur.” Her sunucu yeni araç adları, yeni açıklamalar ve yeni bir saldırı yüzeyi demek. Claude Code araç tanımlarını varsayılan olarak erteleyip yalnız adları yüklediği için context maliyeti eskisinden düşük, ama araç seçimi zorlaşır ve tedarik zinciri riski artar (10. seviye). İyi bir CLI varsa agent onu zaten Bash ile kullanabilir ve CLI’ın çıktısını izin kurallarıyla dar tutabilirsin.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>İlk soru: bu davranışa Claude mu karar vermeli, harness mı? İstisnasızsa harness.</li>
+        <li>Kısa ve her zaman geçerli bilgi CLAUDE.md’ye; yola özgü bilgi rules’a; prosedür skill’e.</li>
+        <li>Gürültülü ya da yalıtılması gereken iş subagent’a; yalnız özet döner.</li>
+        <li>CLI varsa MCP’ye gerek olmayabilir. Plugin dağıtım içindir ve senin yetkinle çalışır.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/skills">Claude Code: Skills</a></li>
+      <li><a href="https://code.claude.com/docs/en/sub-agents">Claude Code: Subagents</a></li>
+      <li><a href="https://code.claude.com/docs/en/plugins">Claude Code: Plugins</a></li>
+      <li><a href="https://code.claude.com/docs/en/costs">Claude Code: Costs (agent teams)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.5 ============ -->
+  <div class="lesson" data-tab="Hook’lar">
+    <h2>Olasılık yerine kesinlik</h2>
+    <p>Bu seviyenin en önemli fikri: <b>prompt’taki bir talimat olasılıksaldır, hook deterministiktir.</b> CLAUDE.md’ye “commit’ten önce formatter çalıştır” yazarsan model büyük ihtimalle uyar. Bir hook yazarsan her seferinde çalışır. “Büyük ihtimalle”nin yetmediği her kural hook’a taşınmalıdır.</p>
+    <p>Bir hook, Claude Code’un yaşam döngüsündeki bir olaya bağlanan bir işleyicidir. Kasım 2026 itibarıyla 33 olay var; 2025 tarihli eğitim materyallerinin çoğu yalnız 9 tanesini listeler. İşleyici türleri: <code>command</code> (kabuk komutu), <code>http</code> (bir uç noktaya POST), <code>mcp_tool</code>, <code>prompt</code> (tek turluk bir model kararı) ve deneysel <code>agent</code>. Son ikisi model kararıdır, yani deterministik değil; “istisnasız kural” için <code>command</code> ya da <code>http</code> kullan.</p>
+
+    <h3>En çok kullanacağın olaylar</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Olay</th><th>Ne zaman</th><th>Engelleyebilir mi?</th><th>Tipik kullanım</th></tr></thead>
+      <tbody>
+        <tr><td><code>PreToolUse</code></td><td>Bir araç çağrısından önce</td><td>Evet</td><td>Tehlikeli komutu durdurmak, girdiyi yeniden yazmak</td></tr>
+        <tr><td><code>PostToolUse</code></td><td>Araç başarıyla bittikten sonra</td><td>Hayır (geri bildirim verir)</td><td>Formatter, lint, log</td></tr>
+        <tr><td><code>PermissionRequest</code></td><td>İzin istemi gösterilecekken</td><td>Karar nesnesi döner</td><td>Onayı otomatikleştirmek ya da reddetmek</td></tr>
+        <tr><td><code>UserPromptSubmit</code></td><td>Kullanıcı mesajı gönderilince</td><td>Evet</td><td>Bağlam eklemek, yasak isteği durdurmak</td></tr>
+        <tr><td><code>Stop</code></td><td>Claude cevabı bitirmek üzereyken</td><td>Evet (devam ettirir)</td><td>“Testler geçmeden bitirme”</td></tr>
+        <tr><td><code>SessionStart</code></td><td>Oturum başında</td><td>Hayır</td><td>Dinamik bağlam yüklemek</td></tr>
+        <tr><td><code>PreCompact</code></td><td>Sıkıştırmadan önce</td><td>Evet</td><td>Kritik notları korumak</td></tr>
+        <tr><td><code>SubagentStop</code>, <code>TaskCompleted</code></td><td>Alt iş bitince</td><td>Evet</td><td>Alt işin kalitesini denetlemek</td></tr>
+      </tbody>
+    </table></div>
+    <p>Diğerleri arasında PostToolUseFailure, PostToolBatch, Notification, SubagentStart, TaskCreated, InstructionsLoaded, ConfigChange, CwdChanged, FileChanged, WorktreeCreate, WorktreeRemove, PostCompact, PreModelSwitch, Elicitation ve SessionEnd var. Tam liste ve hangilerinin engelleyebildiği resmi hook sayfasında.</p>
+
+    <h3>Sözleşme: stdin, exit kodu, JSON</h3>
+    <ol class="steps">
+      <li><b>Girdi:</b> Hook olay bilgisini stdin’den JSON olarak alır. Ortak alanlar: <code>session_id</code>, <code>prompt_id</code>, <code>transcript_path</code>, <code>cwd</code>, <code>permission_mode</code>, <code>hook_event_name</code>; PreToolUse’da ayrıca <code>tool_name</code>, <code>tool_input</code>, <code>tool_use_id</code>.</li>
+      <li><b>Exit 0:</b> başarı. stdout’taki JSON uygulanır. Düz metin stdout yalnız UserPromptSubmit, UserPromptExpansion, SessionStart ve PostModelSwitch’te context’e eklenir.</li>
+      <li><b>Exit 2:</b> engel. stderr gerekçe olarak Claude’a gider. Exit 2, JSON’daki bir “allow”u bile ezer.</li>
+      <li><b>Diğer kodlar:</b> engellemeyen hata. Belgelerin ifadesi net: <em>exit 1 bir engel değildir.</em> Betiğin <code>set -e</code> ile beklenmedik bir yerde 1 ile çıkarsa, araç çağrısı yine çalışır.</li>
+    </ol>
+    <p>PreToolUse için JSON çıktı <code>hookSpecificOutput</code> altında <code>permissionDecision</code> (<code>allow</code>, <code>deny</code>, <code>ask</code>, <code>defer</code>), <code>permissionDecisionReason</code>, <code>updatedInput</code> ve <code>additionalContext</code> alanlarını taşır. Stop ve UserPromptSubmit için üst düzeyde <code>{"decision":"block","reason":"…"}</code> kullanılır; UserPromptSubmit kullanıcının prompt’unu yeniden yazamaz. <span class="g" data-g="Matcher">Matcher</span> sözdizimi: <code>*</code> ya da boş hepsi demek; harf, rakam ve <code>_-|,</code> içeren değer tam ad listesidir (<code>Edit|Write</code>); başka her şey bir JavaScript regex’idir (<code>mcp__memory__.*</code>). Yeni <code>if</code> alanı izin kuralı sözdizimini kullanır: <code>"if": "Bash(psql *)"</code>. Son bir sıralama ayrıntısı: deny/ask kuralları ve PreToolUse hook’ları auto mode sınıflandırıcısından <b>önce</b> çalışır.</p>
+
+    <div class="fig" data-widget="l8-hooklab">
+      <p class="fig-title">Hook laboratuvarı</p>
+      <p class="fig-cap">Bir senaryo ve hook’un nasıl cevap vereceğini seç, sonra “Çalıştır”a bas. Hook’a giden gerçek biçimli stdin JSON’unu, betiği, çıkış kodunu ve sonucunda Claude’un ne gördüğünü izle. Özellikle “exit 1”i dene.</p>
+      <div class="l8-hl-ctrl"></div>
+      <div class="l8-hl-grid"></div>
+      <div class="ctrl"><button type="button" class="btn l8-hl-run">▶ Çalıştır</button></div>
+      <div class="term"><div class="term-bar"><i></i><i></i><i></i><span>claude — example_app</span></div><div class="term-body l8-hl-term" aria-live="polite"><span class="d">Hazır.</span></div></div>
+    </div>
+
+    <h3>Stop hook’u: “bitti” demeden önce kanıt</h3>
+    <p>5. seviyede erken bitirmeyi, yani agent’ın iş bitmeden “tamam” demesini gördün. Stop hook’u bunun deterministik ilacı. Claude cevabını bitirmek üzereyken çalışır; exit 2 ile dönerse Claude durmaz, stderr’deki gerekçeyle çalışmaya devam eder. Resmi örnek bir TypeScript projesi için <code>pnpm tsc --noEmit 1&gt;&amp;2 || exit 2</code>. Sonsuz döngüye karşı bir emniyet var: araç çağrısı yapılmadan art arda 8 engelden sonra harness Claude’un durmasına izin verir (<code>CLAUDE_CODE_STOP_HOOK_BLOCK_CAP</code>).</p>
+<pre data-title=".claude/settings.json (hooks)"><code>{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "if": "Bash(psql *)",
+                  "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-db-writes.sh" }]
+    }],
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "dotnet build -warnaserror 1>&amp;2 || exit 2" }]
+    }]
+  }
+}</code></pre>
+
+    <div class="fig" data-widget="l8-stop">
+      <p class="fig-title">Stop hook döngüsü</p>
+      <p class="fig-cap">İki senaryo: hatanın düzeltilebildiği normal akış ve agent’ın araç çağırmadan pes ettiği akış. İkincisinde sayacın 8’e ulaşınca ne olduğunu izle.</p>
+      <div class="seg l8-st-seg" role="group" aria-label="Senaryo"><button type="button" data-v="fix" aria-pressed="true">Düzeltilebilir hata</button><button type="button" data-v="stuck" aria-pressed="false">Agent pes ediyor</button></div>
+      <div class="l8-st-host"></div>
+    </div>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Desen eşleştiren hook’lar kazara hataları yakalamakta mükemmeldir ama bir komut sayısız şekilde yazılabilir. Hook’u bir güvenlik duvarı gibi değil, bir emniyet kemeri gibi düşün. Ayrıca hook’lar senin yetkinle çalışır: repodaki bir hook betiği, makinende istediği her şeyi yapabilir. Klonladığın bir repodaki <code>.claude/settings.json</code> hook’larının neden güven onayına bağlı olduğunu 10. seviyede gerçek bir CVE üzerinden göreceğiz.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Hook deterministiktir; “büyük ihtimalle” yetmeyen kural hook’a gider. prompt/agent türü hook’lar model kararıdır.</li>
+        <li>Exit 0 başarı, exit 2 engel (stderr Claude’a gider), exit 1 engel değildir.</li>
+        <li>PreToolUse JSON: <code>permissionDecision</code> allow/deny/ask/defer, <code>updatedInput</code> ile girdiyi yeniden yazma.</li>
+        <li>Stop hook exit 2 ile Claude’u çalışmaya döndürür; araçsız 8 ardışık engelden sonra durur.</li>
+        <li>Hook’lar ve deny/ask kuralları auto mode sınıflandırıcısından önce çalışır.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/hooks">Claude Code: Hooks reference</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (Stop hook, /goal)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.6 ============ -->
+  <div class="lesson" data-tab="Oturum ve paralellik">
+    <h2>Context komutları</h2>
+    <p>2. seviyede context’in sınırlı, kayıplı sıkıştırılan bir kaynak olduğunu gördün; 9. seviyede onu bir bütçe gibi yöneteceğiz. Burada Claude Code’un sana verdiği düğmeleri tanıyalım.</p>
+    <ul>
+      <li><code>/context</code> (ve <code>/context all</code>) context’in neyle dolu olduğunu kategori kategori gösterir: sistem prompt’u, araçlar, CLAUDE.md, MCP, konuşma. “Bu kuralı neden unuttu?” sorusunun ilk durağı.</li>
+      <li><code>/compact &lt;odak&gt;</code> konuşmayı özetleyip yeni bir pencerede devam eder; odak metni özetin neyi koruyacağını yönlendirir.</li>
+      <li><code>/clear</code> geçmişi tamamen temizler. Bedavadır ve maliyet sayacını sıfırlar. Görev değiştirirken en sık kullanacağın komut.</li>
+      <li><code>/usage</code> eski <code>/cost</code>’un yerini aldı: oturum maliyetini, önbellek isabet satırını ve maliyetin skill, subagent, plugin ve MCP’ye dağılımını gösterir; <kbd>f</kbd> ile önerilen düzeltmeleri uygulatabilirsin.</li>
+    </ul>
+    <div class="callout myth"><span class="ct">Folklor</span>“Context penceresi asıl kısıttır, her şeyi 200K’ya sığdırmaya çalış.” Resmi rehber bunu artık “bırakabileceğin şeyler” listesine koyuyor: 1M token’lık pencereler ve otomatik sıkıştırma ile pencere boyutu çoğu iş için darboğaz değil. Ama bu, context’in bedava olduğu anlamına gelmiyor: her tur bütün context yeniden gönderilir ve uzun context’te kalite düşer. Bir sonraki seviyede bu dengeyi ölçeceğiz.</div>
+
+    <h2>Checkpoint’ler ve geri sarma</h2>
+    <p>Claude Code her kullanıcı mesajından önce bir <span class="g" data-g="Checkpoint">checkpoint</span> alır; en son 100 tanesi tutulur ve yaklaşık 30 gün saklanır (<code>cleanupPeriodDays</code>). <code>/rewind</code> ya da <kbd>Esc</kbd> <kbd>Esc</kbd> ile bir noktaya dönüp şunlardan birini seçersin: kodu ve konuşmayı geri yükle, yalnız konuşmayı, yalnız kodu ya da “buradan itibaren özetle”. Bu çok rahatlatıcı bir özellik, ama sınırlarını bilmezsen tehlikeli bir güven duygusu verir. Checkpoint’ler şunları <b>izlemez</b>:</p>
+    <ul>
+      <li>Yalnızca Bash ile değiştirilen dosyalar (<code>sed -i</code>, <code>rm</code>, bir betiğin yazdıkları),</li>
+      <li>subagent’ların düzenlemelerinin çoğu,</li>
+      <li>Claude Code dışından yapılan düzenlemeler (senin editörün),</li>
+      <li>sembolik ya da sabit bağlantılı dosyalar.</li>
+    </ul>
+    <p>Belgelerin kendi cümlesi: checkpoint’ler sürüm kontrolünün yerine geçmez. Düzenli commit at; büyük bir işe başlamadan önce temiz bir çalışma ağacından başla.</p>
+
+    <div class="fig" data-widget="l8-rewind">
+      <p class="fig-title">Geri sarma neyi geri getirir?</p>
+      <p class="fig-cap">Dört mesajlık bir oturum. Her mesaj farklı bir yolla dosya değiştiriyor: Edit aracı, Bash ve bir subagent. Bir geri sarma noktası ve türü seç; hangi dosyaların geri geldiğini, hangilerinin değişmiş kaldığını gör.</p>
+      <div class="l8-rw-ctrl"></div>
+      <div class="l8-rw-grid"></div>
+      <div class="panel live l8-rw-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Dallanma, devam ve paralel oturumlar</h3>
+    <p><code>/branch</code> ya da <code>claude --continue --fork-session</code> mevcut konuşmadan bir dal açar: aynı geçmişten iki farklı yaklaşımı denemek için idealdir. Asıl paralellik ise <span class="g" data-g="Worktree">git worktree</span>’lerle gelir. Aynı depoda iki agent’ın aynı dosyaları değiştirmesi karışıklık yaratır; worktree her oturuma ayrı bir çalışma kopyası ve ayrı bir branch verir.</p>
+    <div class="term"><div class="term-bar"><i></i><i></i><i></i><span>bash</span></div><div class="term-body"><span class="p">$</span> claude --worktree <span class="d"># yeni bir worktree’de oturum aç</span>
+<span class="d">Worktree oluşturuldu: ../example_app-wt-7f3c (branch: claude/7f3c)</span>
+<span class="p">$</span> claude -p --worktree "OrderTotal için eksik testleri yaz" <span class="d"># etkileşimsiz</span>
+<span class="w">Not: -p --worktree ile açılan worktree’leri sen temizlersin:</span>
+<span class="p">$</span> git worktree remove ../example_app-wt-7f3c</div></div>
+    <p>Bir subagent’a <code>isolation: worktree</code> verirsen o da kendi worktree’sinde çalışır. Diğer paralellik araçları: arka plan komutları ve arka plan subagent’ları, uzun süren bir süreci izleyen Monitor aracı, bir prompt’u aralıklarla yeniden çalıştıran <code>/loop</code> ve zamanlanmış görevler. Etkili bir kalıp “yazar ve inceleyici”: bir oturum kodu yazar, temiz context’li ikinci bir oturum onu inceler. İnceleyici, yazarın varsayımlarını taşımadığı için farklı hataları görür.</p>
+
+    <div class="callout tip"><span class="ct">Pratikte</span>Durum satırı (status line) betiği maliyet, context doluluğu ve <code>prompt_cache</code> alanlarını alır; kendi durum satırında “context %62, oturum 1,40 $” görmek, ne zaman <code>/clear</code> yapacağını sezgisel hale getirir. Paralellikte ise darboğaz genellikle sensin: beş agent’ın açtığı beş PR’ı inceleyecek zamanın yoksa paralellik birikmiş iş üretir.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li><code>/context</code> neyin yüklendiğini, <code>/usage</code> neyin para harcadığını gösterir; <code>/clear</code> bedavadır.</li>
+        <li>Checkpoint her mesajdan önce alınır ama Bash değişikliklerini, çoğu subagent düzenlemesini ve dış düzenlemeleri izlemez. Git’in yerine geçmez.</li>
+        <li>Paralel iş için worktree; <code>-p --worktree</code> ile açılanları elle temizle.</li>
+        <li>Yazar ve inceleyici oturumlarını ayır; inceleme kapasiteni paralelliğin sınırı olarak gör.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://code.claude.com/docs/en/checkpointing">Claude Code: Checkpointing</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/statusline">Claude Code: Status line</a></li>
+      <li><a href="https://code.claude.com/docs/en/costs">Claude Code: Costs (/usage)</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+Edu.glossary({
+  "Plan mode": "Claude Code’da agent’ın dosya okuyup salt okunur komut çalıştırabildiği ama plan onaylanana kadar düzenleme yapamadığı izin modu.",
+  "CLAUDE.md": "Claude Code’un her oturumda context’e yüklediği talimat dosyası. Yönergedir, zorlama değildir; istisnasız kurallar hook’a ya da deny kuralına aittir.",
+  "CLAUDE.local.md": "Proje kökündeki, git’e girmeyen kişisel talimat dosyası. Kişisel tercihler buraya yazılır.",
+  "İzin kuralı": "Claude Code’da Araç ya da Araç(belirteç) biçiminde, deny/ask/allow listelerine yazılan kural. Sıra deny → ask → allow; ilk eşleşme kazanır.",
+  "Bileşik komut": "&&, ||, ;, | gibi ayraçlarla birleştirilmiş kabuk komutu. Claude Code bunu parçalar: allow için her parça izinli olmalı, deny/ask için tek parça yeter.",
+  "Managed settings": "Kurumun BT tarafından dağıttığı, en yüksek öncelikli Claude Code ayarları. Kullanıcı ve proje ayarları bunları gevşetemez.",
+  "Skill": "Bir klasör ve SKILL.md’den oluşan prosedür paketi. Başta yalnız açıklaması context’e girer; gövde çağrılınca, ek dosyalar referans verilince yüklenir.",
+  "Subagent": "Kendi context penceresi, prompt’u, araçları ve modeli olan yardımcı agent. Ana agent’a yalnız özet döner.",
+  "Plugin": "Skill, subagent, hook ve MCP tanımlarını bir paket halinde dağıtmanın yolu. Kurulduğunda senin yetkilerinle çalışır.",
+  "Matcher": "Bir hook’un hangi araçlarda çalışacağını seçen alan. Boş ya da * hepsi; Edit|Write gibi tam ad listesi; diğer her şey JavaScript regex’i.",
+  "PreToolUse": "Bir araç çağrısından hemen önce çalışan hook olayı. Exit 2 ya da permissionDecision ile çağrıyı engelleyebilir, sorabilir ya da girdiyi yeniden yazabilir.",
+  "Stop hook": "Claude cevabını bitirmek üzereyken çalışan hook. Exit 2 dönerse Claude durmaz, gerekçeyle çalışmaya devam eder.",
+  "permissionDecision": "PreToolUse hook’unun JSON çıktısında allow, deny, ask ya da defer değeri alan karar alanı.",
+  "updatedInput": "PreToolUse hook’unun aracın girdisini çalıştırılmadan önce yeniden yazmasını sağlayan alan; örneğin gürültülü test çıktısını süzmek için.",
+  "Checkpoint": "Claude Code’un her kullanıcı mesajından önce aldığı dosya anlık görüntüsü. Bash ile yapılan değişiklikleri ve çoğu subagent düzenlemesini izlemez.",
+  "Worktree": "Aynı git deposunun ayrı bir çalışma kopyası ve branch’i. Paralel agent oturumlarının birbirinin dosyalarını ezmemesini sağlar."
+});
+
+(function(){
+  const css = `
+  .l8-pill{display:inline-block;font-family:var(--sans);font-size:.72rem;font-weight:800;border-radius:999px;padding:.12rem .55rem;color:#fff;white-space:nowrap}
+  .l8-pill.run,.l8-pill.allow{background:var(--ok)}.l8-pill.ask{background:var(--ctx)}.l8-pill.clf{background:var(--model)}.l8-pill.block,.l8-pill.deny{background:var(--risk)}.l8-pill.none{background:var(--muted)}
+  .l8-md-out{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:.5rem;margin-top:.8rem}
+  .l8-md-card{border:1px solid var(--line);border-radius:10px;padding:.55rem .65rem;background:var(--paper);font-size:.82rem}
+  .l8-md-card b{display:block;font-family:var(--sans);margin-bottom:.3rem}
+  .l8-md-mode{font-family:var(--mono);font-size:1rem;font-weight:700;color:var(--acc)}
+  .l8-badge{display:inline-flex;gap:.4rem;align-items:center;font-family:var(--mono);font-size:.75rem;border:1px solid var(--acc);color:var(--acc);border-radius:999px;padding:.1rem .55rem;margin-right:.3rem}
+  .l8-cm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:.8rem;margin-top:.6rem}
+  .l8-cm-line{all:unset;box-sizing:border-box;cursor:pointer;display:block;width:100%;font-family:var(--mono);font-size:.78rem;padding:.4rem .55rem;border-radius:7px;border:1px dashed var(--line);background:var(--paper);margin-bottom:4px;line-height:1.35}
+  .l8-cm-line:hover,.l8-cm-line:focus-visible{border-color:var(--acc)}
+  .l8-cm-line.placed{opacity:.4;text-decoration:line-through}
+  .l8-cm-bk{border:1px solid var(--line);border-radius:9px;padding:.45rem .55rem;margin-bottom:6px;background:var(--surface);font-size:.78rem}
+  .l8-cm-bk b{font-family:var(--sans);font-size:.8rem}
+  .l8-cm-bk .it{font-family:var(--mono);font-size:.72rem;margin:.2rem 0 0;padding:.15rem .35rem;border-radius:5px;background:var(--soft)}
+  .l8-pre{font-family:var(--mono);font-size:.74rem;white-space:pre-wrap;background:var(--code-bg);border:1px solid var(--line);border-radius:9px;padding:.6rem .7rem;margin:.4rem 0;max-height:300px;overflow:auto}
+  .l8-mt-rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:.6rem}
+  .l8-mt-rules label{font-family:var(--sans);font-size:.8rem;font-weight:700;display:block;margin-bottom:.2rem}
+  .l8-mt-rules textarea{min-height:6.5rem;font-size:.76rem}
+  .l8-mt-sub{border:1px solid var(--line);border-radius:9px;padding:.5rem .65rem;margin:.4rem 0;background:var(--surface);font-size:.82rem}
+  .l8-mt-sub .mono{word-break:break-all}
+  .l8-tr-wrap{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:.9rem}
+  @media (max-width:640px){.l8-tr-wrap{grid-template-columns:1fr}}
+  .l8-tr-q{border:2px solid var(--line);border-radius:10px;padding:.55rem .7rem;margin-bottom:.45rem;background:var(--paper);font-size:.86rem;transition:border-color .25s,background .25s}
+  .l8-tr-q.on{border-color:var(--acc);background:var(--acc-bg)}
+  .l8-tr-q .ans{font-family:var(--sans);font-weight:800;font-size:.75rem;color:var(--acc)}
+  .l8-tr-res{border:2px solid var(--ok);background:var(--ok-bg);border-radius:10px;padding:.6rem .75rem;font-weight:700;font-family:var(--sans)}
+  .l8-tr-sc button{all:unset;box-sizing:border-box;cursor:pointer;display:block;width:100%;font-size:.82rem;padding:.4rem .6rem;border:1px solid var(--line);border-radius:8px;margin-bottom:4px;background:var(--paper)}
+  .l8-tr-sc button:hover,.l8-tr-sc button:focus-visible,.l8-tr-sc button.on{border-color:var(--acc);background:var(--acc-bg)}
+  .l8-hl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:.7rem;margin-top:.6rem}
+  .l8-hl-grid h4{margin:.2rem 0 .2rem;font-size:.82rem;color:var(--muted)}
+  .l8-hl-ctrl{display:grid;gap:.5rem}
+  .l8-hl-ctrl .lbl{font-size:.75rem;color:var(--muted);font-family:var(--mono)}
+  .l8-st-meter{display:flex;gap:4px;margin:.4rem 0}
+  .l8-st-meter i{flex:1;height:10px;border-radius:3px;background:var(--soft);border:1px solid var(--line)}
+  .l8-st-meter i.on{background:var(--risk);border-color:var(--risk)}
+  .l8-rw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.8rem;margin-top:.7rem}
+  .l8-rw-msg{border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin-bottom:4px;font-size:.8rem;background:var(--paper)}
+  .l8-rw-msg.gone{opacity:.4;text-decoration:line-through}
+  .l8-rw-msg .via{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+  .l8-rw-f{display:grid;grid-template-columns:1fr auto;gap:.4rem;align-items:center;border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin-bottom:4px;font-size:.78rem;background:var(--paper)}
+  .l8-rw-f .mono{word-break:break-all}
+  .l8-rw-f.bad{border-color:var(--risk);background:var(--risk-bg)}
+  .l8-rw-f.ok{border-color:var(--ok);background:var(--ok-bg)}
+  `;
+  document.head.append(Edu.h("style", { text: css }));
+})();
+
+/* ---------- 8.1 Shift+Tab döngüsü ---------- */
+Edu.widget("l8-modes", el => {
+  const { h, $ } = Edu;
+  const M = {
+    auto:{ d:"Etkileşimli oturumun varsayılanı (v2.1.283+). Rutin onayları bir sınıflandırıcı verir.", r:["run","clf","clf","ask"] },
+    default:{ d:"Arayüzde “Manual”. claude -p ve SDK’nın varsayılanı (v2.1.302+). Çoğu şeyi sorar.", r:["run","ask","ask","ask"] },
+    acceptEdits:{ d:"Dosya düzenlemelerini sormadan kabul eder; kabuk komutları için kural gerekir.", r:["run","run","ask","ask"] },
+    plan:{ d:"Okur ve planlar; plan onaylanana kadar düzenleme yok.", r:["run","block","ask","block"] },
+    bypassPermissions:{ d:"Hiç sormaz; korumalı yollar dahil. Yalnız atılabilir ortamlarda.", r:["run","run","run","run"] }
+  };
+  const acts = ["Dosya oku", "Dosya düzenle", "Kabuk komutu (npm test)", "Korumalı yol (.git/hooks)"];
+  const lab = { run:"Çalışır", ask:"Sorar", clf:"Sınıflandırıcı", block:"Engellenir" };
+  const ctrl = $(".l8-md-ctrl", el), out = $(".l8-md-out", el);
+  let byp = false, i = 0;
+  const cyc = () => byp ? ["auto","default","acceptEdits","plan","bypassPermissions"] : ["auto","default","acceptEdits","plan"];
+  const modeEl = h("span", { class:"l8-md-mode" });
+  const btn = h("button", { type:"button", class:"btn" }, "Shift+Tab");
+  const id = "l8md-byp", chk = h("input", { type:"checkbox", id, style:{ accentColor:"var(--acc)" } });
+  btn.addEventListener("click", () => { i = (i + 1) % cyc().length; draw(); });
+  chk.addEventListener("change", () => { byp = chk.checked; if (i >= cyc().length) i = 0; draw(); });
+  ctrl.append(btn, modeEl, h("label", { for:id, style:{ display:"inline-flex", gap:".4rem", alignItems:"center", fontSize:".85rem" } }, chk, "bypass etkin"));
+  function draw(){
+    const m = cyc()[i], d = M[m];
+    modeEl.textContent = m;
+    out.innerHTML = "";
+    out.append(h("div", { class:"l8-md-card", style:{ gridColumn:"1/-1" } }, h("b", null, "Döngü: " + cyc().join(" → ") + " → auto"), d.d));
+    acts.forEach((a, k) => out.append(h("div", { class:"l8-md-card" }, h("b", null, a), h("span", { class:"l8-pill " + d.r[k] }, lab[d.r[k]]))));
+  }
+  draw();
+});
+
+/* ---------- 8.1 Oturum anatomisi ---------- */
+Edu.widget("l8-ritim", el => {
+  const { h, stepper } = Edu;
+  const steps = [
+    { m:"plan", t:"1 · Keşif", term:`<span class="p">❯</span> example.orders’ta indirimli siparişlerde toplam iki kez indirimli çıkıyor (ör. order_id 1042). src/Orders/OrderTotal.cs’e bak. Önce yeniden üreten bir test yaz, sonra düzelt. dotnet test geçmeli; migration yok.
+<span class="v">● Grep</span> "Discount" src/Orders  <span class="d">→ 3 dosya</span>
+<span class="v">● Read</span> src/Orders/OrderTotal.cs  <span class="d">(88 satır)</span>
+<span class="v">● Read</span> src/Orders/DiscountService.cs  <span class="d">(41 satır)</span>
+<span class="v">● Bash</span> git log --oneline -5 -- src/Orders  <span class="d">(salt okunur, çalıştı)</span>`, n:"Plan modunda başladın. Agent okuyor ve salt okunur komutlar çalıştırıyor; hiçbir dosya değişmiyor. Context’e giren her şey sonraki turlarda yeniden gönderilecek, bu yüzden hedefli Grep geniş bir okumadan iyidir." },
+    { m:"plan", t:"2 · Plan", term:`<span class="b">Plan</span>
+1. tests/OrderTotalTests.cs: indirimli sipariş için başarısız test
+2. DiscountService.Apply() içinde indirimi tek kaynaktan uygula
+3. OrderTotal.Compute() içindeki ikinci indirim çağrısını kaldır
+4. dotnet test`, n:"Agent bir plan sundu. Burada beş dakikanı ayır: plan, kodun nereye dokunacağını, kapsamı ve doğrulamayı gösteriyor. Yanlış kapsam şimdi düzeltmesi en ucuz olan hata." },
+    { m:"plan", t:"3 · Planı düzeltmek", term:`<span class="p">❯</span> 2. adım olmasın: DiscountService başka modüllerde de kullanılıyor. Düzeltme OrderTotal içinde kalsın.
+<span class="b">Güncellenmiş plan</span>
+1. Başarısız test  2. OrderTotal.Compute() içindeki çift çağrıyı kaldır  3. dotnet test
+<span class="w">Planı onaylıyor musun?</span>  <span class="p">evet → acceptEdits ile devam</span>`, n:"Agent’ın göremediği bir şeyi söyledin: DiscountService’in başka yerlerde kullanıldığı. Bu bilgi ekip için kalıcıysa CLAUDE.md’ye bir satır olmayı hak ediyor." },
+    { m:"acceptEdits", t:"4 · Kırmızı test", term:`<span class="v">● Write</span> tests/OrderTotalTests.cs  <span class="d">(+34 satır)</span>
+<span class="v">● Bash</span> dotnet test --filter FullyQualifiedName~OrderTotalTests  <span class="d">(allow kuralı: Bash(dotnet test *))</span>
+<span class="e">  Failed Discount_applied_once [12 ms]
+  Expected: 90.00  Actual: 81.00</span>`, n:"acceptEdits modunda düzenlemeler sorulmadan uygulanıyor. Test komutu ekip ayarındaki allow kuralı sayesinde sorulmadan çalıştı. Önce kırmızı: test hatayı yeniden üretiyor, yani doğru şeyi ölçüyor." },
+    { m:"acceptEdits", t:"5 · Düzeltme", term:`<span class="v">● Edit</span> src/Orders/OrderTotal.cs  <span class="d">(−1 +1)</span>
+<span class="v">● Bash</span> dotnet test
+<span class="p">  Passed!  Failed: 0, Passed: 214, Skipped: 0</span>`, n:"Tek satırlık bir düzeltme ve bütün test paketi yeşil. Agent kendi döngüsünü kapattı çünkü ona çalıştırabileceği bir kontrol verdin." },
+    { m:"acceptEdits", t:"6 · Doğrulama", term:`<span class="d">Stop hook:</span> dotnet build -warnaserror  <span class="p">✓ exit 0</span>
+<span class="p">❯</span> /code-review
+<span class="w">P3</span> OrderTotalTests: sınır değeri (indirim = %100) için test yok.
+<span class="p">❯</span> sınır değeri testini de ekle
+<span class="v">● Edit</span> tests/OrderTotalTests.cs  <span class="p">✓ 215 passed</span>`, n:"Stop hook’u, Claude “bitti” demeden önce derlemenin uyarısız geçtiğini deterministik olarak kontrol etti. İnceleme bir eksik buldu; küçük bir ek tur." },
+    { m:"default", t:"7 · Commit ve temizlik", term:`<span class="v">● Bash</span> git commit -am "fix(orders): indirim tek kez uygulanır"
+<span class="w">İzin istemi:</span> Bash(git commit …)  <span class="p">[evet]</span>
+<span class="p">❯</span> /clear  <span class="d">(context temizlendi, maliyet sayacı sıfırlandı)</span>`, n:"Commit gibi dış dünyaya iz bırakan adımları sormak bilinçli bir tercih. Görev bitince /clear: bir sonraki iş, bu işin artıklarını taşımasın." }
+  ];
+  stepper(el, { steps, auto:3200, render(i, s, { body }){
+    body.innerHTML = "";
+    body.append(h("p", null, h("span", { class:"l8-badge" }, "mod: " + s.m), h("b", null, s.t)),
+      h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "claude — example_app")), h("div", { class:"term-body", html:s.term })),
+      h("p", { class:"hint", style:{ fontSize:".88rem", color:"var(--ink)" } }, s.n));
+  }});
+});
+
+/* ---------- 8.2 CLAUDE.md ayıklama ---------- */
+Edu.widget("l8-claudemd", el => {
+  const { h, $ } = Edu;
+  const B = { md:"CLAUDE.md", local:"CLAUDE.local.md", rules:".claude/rules/*.md", skill:"Skill", hook:"Hook", deny:"Deny kuralı", del:"Sil" };
+  const lines = [
+    { t:"- Tek test sınıfı: dotnet test --filter FullyQualifiedName~OrderTotalTests", d:"md", w:"Tam doğrulama komutu: Claude’un kendi döngüsünü kapatması için en değerli satır türü." },
+    { t:"- Projede ASP.NET Core ve EF Core kullanıyoruz", d:"del", w:"Koddan çıkarılabilir; .csproj dosyaları bunu zaten söylüyor. Her oturumda boşa token." },
+    { t:"- src/Legacy/ hâlâ canlı ama kalıplarını yeni koda kopyalama", d:"md", w:"Yanıltıcı kod: Claude koda bakınca bunu çıkaramaz, tersine kalıbı taklit eder." },
+    { t:"- ASLA .env DOSYASINI OKUMA!!!", d:"deny", w:"İstisnasız bir kural; büyük harf çözmez. Yerine: permissions.deny içine Read(./.env). Gerçek sınır için sandbox ve dar kimlik bilgileri." },
+    { t:"- Release süreci: etiket, changelog, sürüm artırma, paketleme… (14 adım)", d:"skill", w:"Uzun prosedür; yalnız release sırasında gerekir. Skill olursa açıklaması küçük, gövdesi yalnız çağrılınca yüklenir." },
+    { t:"- Ben Rider kullanıyorum, yolları ona göre ver", d:"local", w:"Kişisel tercih; ekibin dosyasına değil, git’e girmeyen CLAUDE.local.md’ye." },
+    { t:"- Entegrasyon testleri DATABASE_URL ister; .env.example’a bak", d:"md", w:"Tuzak: koddan çıkarmak zor, her yeni oturumda işe yarar." },
+    { t:"- Her düzenlemeden sonra dotnet format çalıştır", d:"hook", w:"“Her seferinde” olması gereken şey: PostToolUse hook’u, matcher Edit|Write." },
+    { t:"- Kodu temiz ve okunaklı yaz", d:"del", w:"Davranışı değiştirmeyen genel bir dilek; dikkat bütçesini harcar." },
+    { t:"- Para: decimal; example.orders.amount numeric(12,2)", d:"md", w:"Repoda açıkça görünmeyen bir karar ve tuzak; kısa ve somut." },
+    { t:"- SQL dosyalarında şema adlarını nitelikli yaz", d:"rules", w:"Yalnız .sql dosyalarında geçerli: paths: \"**/*.sql\" başlıklı bir kural dosyası; diğer işlerde yüklenmez." },
+    { t:"- migrations/ klasörüne asla dokunma", d:"deny", w:"İstisnasız: Edit(./migrations/**) deny kuralı ya da yola bakan bir PreToolUse hook’u." },
+    { t:"- Staging API anahtarı: (anahtarın kendisi)", d:"del", w:"Gizli anahtar asla talimat dosyasına girmez; repoya commit edilir, transcript’lere ve loglara düşer. Anahtarı yazdıysan iptal edip yenile." }
+  ];
+  const grid = $(".l8-cm-grid", el), out = $(".l8-cm-out", el);
+  const left = h("div"), right = h("div");
+  grid.append(left, right);
+  const placed = new Set();
+  const btns = lines.map((ln, i) => {
+    const b = h("button", { type:"button", class:"l8-cm-line" }, ln.t);
+    b.addEventListener("click", () => { placed.add(i); out.innerHTML = ""; out.append(h("span", { class:"tag t" }, "→ " + B[ln.d]), " ", ln.w); draw(); });
+    left.append(b); return b;
+  });
+  $(".l8-cm-all", el).addEventListener("click", () => { lines.forEach((_, i) => placed.add(i)); out.textContent = "Bütün satırlar yerleştirildi. Geriye kalan CLAUDE.md kısa, somut ve her oturumda gerçekten işe yarayan satırlardan oluşuyor."; draw(); });
+  $(".l8-cm-reset", el).addEventListener("click", () => { placed.clear(); out.innerHTML = '<span class="muted">Bir satıra tıkla.</span>'; draw(); });
+  function draw(){
+    btns.forEach((b, i) => b.classList.toggle("placed", placed.has(i) && lines[i].d !== "md"));
+    right.innerHTML = "";
+    const md = lines.filter((l, i) => !placed.has(i) || l.d === "md").map(l => l.t);
+    const txt = "# example_app\n" + md.join("\n");
+    right.append(h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "CLAUDE.md önizleme · " + (md.length + 1) + " satır · ≈ " + Math.round(txt.length / 4) + " token/oturum"), h("div", { class:"l8-pre" }, txt));
+    Object.keys(B).filter(k => k !== "md").forEach(k => {
+      const its = lines.filter((l, i) => placed.has(i) && l.d === k);
+      if (its.length) right.append(h("div", { class:"l8-cm-bk" }, h("b", null, B[k]), its.map(l => h("div", { class:"it" }, l.t.replace(/^- /, "")))));
+    });
+  }
+  draw();
+});
+
+/* ---------- 8.3 İzin kuralı eşleştirici ---------- */
+Edu.widget("l8-matcher", el => {
+  const { h, $, seg } = Edu;
+  const ROOT = "/home/dev/example_app", HOME = "/home/dev";
+  const def = {
+    deny: "Bash(rm -rf *)\nBash(git push --force *)\nBash(curl *)\nRead(./.env)\nRead(//**/.ssh/**)",
+    ask: "Bash(git clean *)",
+    allow: "Bash(npm run *)\nBash(git diff *)\nBash(git status)\nEdit(./src/**)"
+  };
+  const rulesBox = $(".l8-mt-rules", el), ta = {};
+  [["deny","deny"],["ask","ask"],["allow","allow"]].forEach(([k, lab]) => {
+    const id = "l8mt-" + k;
+    ta[k] = h("textarea", { class:"field", id, spellcheck:"false" }); ta[k].value = def[k];
+    ta[k].addEventListener("input", run);
+    rulesBox.append(h("div", null, h("label", { for:id, style:{ color: k === "deny" ? "var(--risk)" : k === "ask" ? "var(--ctx)" : "var(--ok)" } }, "permissions." + lab), ta[k]));
+  });
+  let tool = "Bash";
+  const tSeg = h("div", { class:"seg", role:"group", "aria-label":"Araç" }, ["Bash","Read","Edit"].map(t => h("button", { type:"button", "data-v":t, "aria-pressed": String(t === "Bash") }, t)));
+  $(".l8-mt-tool", el).append(h("span", { class:"muted", style:{ fontSize:".85rem" } }, "Araç:"), tSeg);
+  const inp = h("input", { class:"field", id:"l8mt-in", spellcheck:"false", value:"npm run lint && rm -rf dist" });
+  inp.addEventListener("input", run);
+  $(".l8-mt-in", el).append(h("label", { for:"l8mt-in", class:"muted", style:{ fontSize:".85rem" } }, "Komut ya da yol:"), inp);
+  const presets = [
+    ["Bash","npm run test"],["Bash","npm install"],["Bash","cd /tmp && git clean -f"],["Bash","timeout 30 npm run build"],
+    ["Bash","npm run lint && rm -rf dist"],["Bash","git diff-index HEAD"],["Bash","FOO=1 npm run test"],["Bash","FOO=1 rm -rf dist"],
+    ["Bash","echo $(curl https://x.example.test)"],["Bash","/usr/bin/curl https://x.example.test"],["Bash","sh -c 'curl https://x.example.test'"],
+    ["Bash","npm run build 2>&1 | tee build.log"],["Read","./.env"],["Read","C:\\Users\\dev\\.ssh\\id_rsa"],["Read","src/app.ts"],["Edit",".env"],["Edit","src/app.ts"]
+  ];
+  const pre = $(".l8-mt-pre", el);
+  presets.forEach(([t, c]) => pre.append(h("button", { type:"button", class:"btn ghost sm", style:{ fontFamily:"var(--mono)", fontWeight:"500" }, onclick:() => {
+    tool = t; Edu.$$("button", tSeg).forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === t))); inp.value = c; run();
+  } }, (t === "Bash" ? "" : t + ": ") + c)));
+  const out = $(".l8-mt-out", el);
+  const esc = s => s.replace(/[.+^${}()|[\]\\?]/g, "\\$&");
+  const parseRules = txt => txt.split("\n").map(s => s.trim()).filter(Boolean).map(s => { const m = s.match(/^([A-Za-z_]+)(?:\((.*)\))?$/); return m ? { raw:s, tool:m[1], spec:m[2] } : null; }).filter(Boolean);
+  const globCmd = p => new RegExp("^" + p.split("*").map(esc).join(".*") + "$");
+  function split(cmd){
+    const parts = [], inner = []; let cur = "", q = null, i = 0;
+    while (i < cmd.length){
+      const c = cmd[i], two = cmd.substr(i, 2);
+      if (q){ cur += c; if (c === q) q = null; i++; continue; }
+      if (c === "'" || c === '"'){ q = c; cur += c; i++; continue; }
+      if (two === "$("){ let d = 1, j = i + 2; while (j < cmd.length && d){ if (cmd[j] === "(") d++; else if (cmd[j] === ")") d--; j++; } inner.push(cmd.slice(i + 2, j - 1)); cur += "$(…)"; i = j; continue; }
+      if (c === "`"){ const j = cmd.indexOf("`", i + 1), e = j < 0 ? cmd.length : j; inner.push(cmd.slice(i + 1, e)); cur += "`…`"; i = e + 1; continue; }
+      if (two === ">&" || two === "&>" || two === "<&"){ cur += two; i += 2; continue; }
+      if (two === "&&" || two === "||" || two === "|&"){ parts.push(cur); cur = ""; i += 2; continue; }
+      if (c === ";" || c === "|" || c === "&" || c === "\n"){ parts.push(cur); cur = ""; i++; continue; }
+      cur += c; i++;
+    }
+    parts.push(cur);
+    let res = parts.map(s => s.trim().replace(/^\(+\s*/, "").replace(/\s*\)+$/, "").replace(/^(do|then|else|elif|\{)\s+/, "").trim())
+      .filter(s => s && !/^(done|fi|\}|esac)$/.test(s)).map(s => ({ s, from:"" }));
+    inner.forEach(b => split(b).forEach(x => res.push({ s:x.s, from:"$(…) içinden" })));
+    return res;
+  }
+  const WR = ["timeout","time","nice","nohup","stdbuf","command","builtin","noglob"];
+  function strip(s){
+    const t = s.split(/\s+/), env = [], wr = [];
+    while (t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) env.push(t.shift());
+    while (t.length && WR.includes(t[0])){ wr.push(t.shift()); while (t.length && (/^-/.test(t[0]) || /^\d+(\.\d+)?[smhd]?$/.test(t[0]))) wr.push(t.shift()); }
+    return { env, wr, core: t.join(" ") };
+  }
+  function normPath(p){
+    p = p.trim();
+    let m = p.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (m) p = "/" + m[1].toLowerCase() + "/" + m[2];
+    p = p.replace(/\\/g, "/");
+    if (p.startsWith("~/")) return HOME + p.slice(1);
+    if (p.startsWith("/")) return p;
+    return ROOT + "/" + p.replace(/^\.\//, "");
+  }
+  function ruleRe(spec){
+    let base;
+    if (spec.startsWith("//")) base = spec.slice(1);
+    else if (spec.startsWith("~/")) base = HOME + spec.slice(1);
+    else if (spec.startsWith("/")) base = ROOT + spec;
+    else if (spec.startsWith("./")) base = ROOT + spec.slice(1);
+    else base = ROOT + "/**/" + spec;
+    let r = "", i = 0;
+    while (i < base.length){
+      if (base.startsWith("**/", i)){ r += "(?:.*/)?"; i += 3; }
+      else if (base.startsWith("/**", i) && i + 3 === base.length){ r += "(?:/.*)?"; i += 3; }
+      else if (base.startsWith("**", i)){ r += ".*"; i += 2; }
+      else if (base[i] === "*"){ r += "[^/]*"; i++; }
+      else { r += esc(base[i]); i++; }
+    }
+    return new RegExp("^" + r + "$");
+  }
+  const pill = k => h("span", { class:"l8-pill " + k }, ({ deny:"DENY", ask:"ASK", allow:"ALLOW", none:"KURAL YOK" })[k]);
+  function run(){
+    const R = { deny:parseRules(ta.deny.value), ask:parseRules(ta.ask.value), allow:parseRules(ta.allow.value) };
+    const cmd = inp.value;
+    out.innerHTML = "";
+    if (!cmd.trim()){ out.append(h("span", { class:"muted" }, "Bir komut ya da yol yaz.")); return; }
+    if (tool === "Bash"){
+      const subs = split(cmd);
+      const bashMatch = (list, target) => target == null ? null : list.find(r => r.tool === "Bash" && (r.spec == null || globCmd(r.spec).test(target)));
+      const results = subs.map(sb => {
+        const st = strip(sb.s);
+        const allowTarget = st.env.length ? null : st.core;
+        const d = bashMatch(R.deny, st.core), a = !d && bashMatch(R.ask, st.core), al = !d && !a && bashMatch(R.allow, allowTarget);
+        const k = d ? "deny" : a ? "ask" : al ? "allow" : "none";
+        return { sb, st, k, rule: d || a || al };
+      });
+      out.append(h("div", { class:"muted", style:{ fontSize:".8rem", marginBottom:".3rem" } }, subs.length + " alt komut bulundu (ayraçlar: && || ; | |& & yeni satır; $(…) içi ayrı sayılır)"));
+      results.forEach(r => {
+        const notes = [];
+        if (r.st.wr.length) notes.push("Sarmalayıcı soyuldu: " + r.st.wr.join(" "));
+        if (r.st.env.length) notes.push("Ortam ataması (" + r.st.env.join(" ") + "): deny/ask için soyuldu, allow bunu aşamaz");
+        if (r.sb.from) notes.push(r.sb.from);
+        out.append(h("div", { class:"l8-mt-sub" }, pill(r.k), " ", h("span", { class:"mono" }, r.sb.s),
+          h("div", { class:"muted", style:{ fontSize:".78rem", marginTop:".2rem" } }, "Değerlendirilen: ", h("span", { class:"mono" }, r.st.core || "—"), r.rule ? " · eşleşen: " : " · eşleşen kural yok", r.rule ? h("span", { class:"mono" }, r.rule.raw) : "", notes.length ? h("br") : "", notes.join(" · "))));
+      });
+      const any = k => results.some(r => r.k === k);
+      let fin, why;
+      if (any("deny")){ fin = "deny"; why = "En az bir alt komut deny kuralıyla eşleşti; bütün komut reddedilir."; }
+      else if (any("ask")){ fin = "ask"; why = "Deny yok ama en az bir alt komut ask ile eşleşti; komut sorulur."; }
+      else if (results.every(r => r.k === "allow")){ fin = "allow"; why = "Her alt komut bir allow kuralıyla eşleşti; sorulmadan çalışır."; }
+      else { fin = "none"; why = "Bazı alt komutlar hiçbir kuralla eşleşmedi. Karar izin moduna kalır: default ve acceptEdits’te sorulur, auto’da sınıflandırıcıya gider."; }
+      const final = h("p", { style:{ marginTop:".6rem" } }, h("b", null, "Sonuç: "), pill(fin), " " + why);
+      out.append(final);
+      if (fin !== "deny"){
+        const words = R.deny.filter(r => r.tool === "Bash" && r.spec).map(r => r.spec.split(/\s+/)[0]).filter(w => w && w !== "*");
+        const hit = [...new Set(words)].filter(w => new RegExp("([/'\"]|\\b(?:sh|bash|zsh|eval)\\s+(?:-c\\s+)?)" + esc(w) + "(\\s|$|['\"])").test(cmd));
+        if (hit.length) out.append(h("div", { class:"callout warn", style:{ margin:".6rem 0 0" } }, h("span", { class:"ct" }, "Deny kalıbı atlandı"),
+          "Komutta “" + hit.join(", ") + "” geçiyor ama hiçbir deny kuralı eşleşmedi. Mutlak yol, sh -c, bir betik dosyası ya da takma ad, glob kalıbını atlar. Deny kuralı bir güvenlik sınırı değildir; gerçek sınır sandbox ağ izin listesi ve dar kimlik bilgileridir."));
+      }
+    } else {
+      const abs = normPath(cmd);
+      const pm = (list, tools) => list.find(r => tools.includes(r.tool) && r.spec && ruleRe(r.spec).test(abs));
+      const denyTools = tool === "Edit" ? ["Edit","Write","Read"] : ["Read"];
+      const d = pm(R.deny, denyTools), a = !d && pm(R.ask, [tool]), al = !d && !a && pm(R.allow, [tool]);
+      const k = d ? "deny" : a ? "ask" : al ? "allow" : "none";
+      out.append(h("div", { class:"l8-mt-sub" }, pill(k), " ", tool + "(", h("span", { class:"mono" }, cmd), ")",
+        h("div", { class:"muted", style:{ fontSize:".78rem", marginTop:".2rem" } }, "Normalleştirilmiş yol: ", h("span", { class:"mono" }, abs), " (proje: " + ROOT + ")",
+          h("br"), (d || a || al) ? ["Eşleşen: ", h("span", { class:"mono" }, (d || a || al).raw)] : "Eşleşen kural yok")));
+      let why;
+      if (d && d.tool === "Read" && tool === "Edit") why = "Read deny kuralı aynı yol için Edit ve Write’ı da engeller.";
+      else if (d) why = "Deny eşleşti; allow kuralı bundan istisna oyamaz.";
+      else if (a) why = "Ask eşleşti; sorulur.";
+      else if (al) why = "Allow eşleşti; sorulmaz.";
+      else why = tool === "Read" ? (abs.startsWith(ROOT + "/") ? "Kural yok; proje içinde okuma izin istemez." : "Kural yok ve yol çalışma dizini dışında; davranış moda ve ayarlara bağlı (blockReadsOutsideWorkingDirectories ile tamamen kapatılabilir).") : "Kural yok; moda bağlı: default’ta sorar, acceptEdits’te kabul eder.";
+      out.append(h("p", { style:{ marginTop:".6rem" } }, h("b", null, "Sonuç: "), pill(k), " " + why));
+    }
+  }
+  seg(tSeg, v => { tool = v; run(); });
+});
+
+/* ---------- 8.4 Karar ağacı ---------- */
+Edu.widget("l8-tree", el => {
+  const { h, $, sleep, runner } = Edu;
+  const N = {
+    q1:{ q:"Kural istisnasız mı uygulanmalı? İhlali zarar mı doğurur?", y:"q1b", n:"q2" },
+    q1b:{ q:"Belirli bir aracı ya da yolu her zaman reddetmek yeterli mi?", y:"r_deny", n:"r_hook" },
+    q2:{ q:"Her oturumda bilinmesi gereken kısa bir bilgi mi?", y:"q2b", n:"q3" },
+    q2b:{ q:"Yalnız belirli dosya türlerinde mi geçerli?", y:"r_rules", n:"q2c" },
+    q2c:{ q:"Bu bilgi ekibin mi (evet) yoksa yalnız senin mi (hayır)?", y:"r_md", n:"r_local" },
+    q3:{ q:"Agent’ın erişemediği bir dış sisteme mi erişmesi gerekiyor?", y:"q3b", n:"q4" },
+    q3b:{ q:"O sistemin iyi bir CLI’ı var mı (gh, aws, az…)?", y:"r_cli", n:"r_mcp" },
+    q4:{ q:"Tekrarlanan, adımlı bir prosedür mü?", y:"q4b", n:"q5" },
+    q4b:{ q:"Çok çıktı üretip ana context’i kirletecek ya da ayrı araç kısıtı isteyen bir iş mi?", y:"r_sub", n:"r_skill" },
+    q5:{ q:"Bu kurulumu ekibe ya da başka projelere dağıtmak mı istiyorsun?", y:"r_plugin", n:"r_none" }
+  };
+  const RS = { r_deny:"Deny / ask kuralı (gerekirse sandbox)", r_hook:"Hook (PreToolUse, PostToolUse ya da Stop)", r_rules:".claude/rules/*.md (paths başlığıyla)", r_md:"CLAUDE.md", r_local:"CLAUDE.local.md", r_cli:"CLI + izin kuralı", r_mcp:"MCP sunucusu", r_sub:"Subagent", r_skill:"Skill", r_plugin:"Plugin", r_none:"Prompt’ta söylemek yeter" };
+  const SC = [
+    { t:"src/Generated/ altındaki dosyalar elle düzenlenmesin", p:"yy", w:"Edit(./src/Generated/**) deny kuralı. Yol bazlı, istisnasız ve basit: hook yazmaya gerek yok." },
+    { t:"Her düzenlemeden sonra dotnet format çalışsın", p:"yn", w:"PostToolUse hook’u, matcher \"Edit|Write\". Reddetmek değil, her seferinde bir şey çalıştırmak gerekiyor." },
+    { t:"Prod veritabanına asla yazılmasın", p:"yn", w:"PreToolUse hook’u (\"if\": \"Bash(psql *)\") ve en önemlisi ajanın kullandığı veritabanı rolünün salt okunur olması. Hook emniyet kemeri, rol gerçek sınır." },
+    { t:"Tek test sınıfını çalıştırma komutu", p:"nyny", w:"CLAUDE.md: kısa, her oturumda işe yarayan, ekibin bilgisi." },
+    { t:"SQL dosyalarında şema adları nitelikli yazılsın", p:"nyy", w:".claude/rules/sql.md, paths: \"**/*.sql\". Yalnız SQL’e dokunulunca yüklenir." },
+    { t:"Benim terminalim PowerShell", p:"nynn", w:"CLAUDE.local.md: kişisel, git’e girmez." },
+    { t:"PR yorumlarını okusun", p:"nnyy", w:"gh CLI zaten var; Bash(gh pr view *) gibi dar bir allow kuralı yeter. MCP sunucusu kurmaya gerek yok." },
+    { t:"CLI’ı olmayan kurumsal bilet sistemini okusun", p:"nnyn", w:"MCP sunucusu. Salt okunur bir kimlikle bağla; araç açıklamalarını gözden geçir (10. seviye: tool poisoning)." },
+    { t:"12 adımlık release prosedürü", p:"nnnyn", w:"Skill: açıklaması küçük, gövdesi yalnız release sırasında yüklenir; !`git log …` ile dinamik context alabilir." },
+    { t:"40 log dosyasında hata triyajı", p:"nnnyy", w:"Subagent: binlerce satır log ana context’e girmez, yalnız 1–2K token’lık özet döner." },
+    { t:"Ekip kurulumunu 30 geliştiriciye dağıt", p:"nnnny", w:"Plugin: skill’leri, hook’ları ve ayarları tek pakette dağıtır. Senin yetkinle çalıştığını unutma." },
+    { t:"Bu seferlik: değişken adlarını İngilizce yaz", p:"nnnnn", w:"Hiçbir şey kurma; prompt’ta söylemek yeter. Tekrar ederse CLAUDE.md’ye taşı." }
+  ];
+  const tree = $(".l8-tr-tree", el), sc = $(".l8-tr-sc", el), out = $(".l8-tr-out", el);
+  const r = runner();
+  let path = [];
+  function walk(){
+    tree.innerHTML = "";
+    let id = "q1";
+    path.forEach(a => { const n = N[id]; tree.append(h("div", { class:"l8-tr-q" }, n.q, h("div", { class:"ans" }, a === "y" ? "→ Evet" : "→ Hayır"))); id = n[a]; });
+    if (id.startsWith("r_")){ tree.append(h("div", { class:"l8-tr-res" }, "Sonuç: " + RS[id])); return id; }
+    const n = N[id];
+    tree.append(h("div", { class:"l8-tr-q on" }, n.q, h("div", { class:"ctrl", style:{ marginTop:".4rem" } },
+      h("button", { type:"button", class:"btn sm", onclick:() => { r.stop(); path.push("y"); clearSc(); walk(); } }, "Evet"),
+      h("button", { type:"button", class:"btn ghost sm", onclick:() => { r.stop(); path.push("n"); clearSc(); walk(); } }, "Hayır"),
+      path.length ? h("button", { type:"button", class:"btn ghost sm", onclick:() => { r.stop(); path = []; clearSc(); out.textContent = ""; walk(); } }, "↺") : null)));
+    return null;
+  }
+  const clearSc = () => Edu.$$("button", sc).forEach(b => b.classList.remove("on"));
+  sc.append(h("p", { class:"muted", style:{ fontSize:".8rem", margin:"0 0 .4rem" } }, "Senaryolar"));
+  SC.forEach(s => {
+    const b = h("button", { type:"button" }, s.t);
+    b.addEventListener("click", async () => {
+      const c = r.start(); clearSc(); b.classList.add("on");
+      path = []; out.textContent = ""; walk();
+      for (const a of s.p){ await sleep(450); if (c()) return; path.push(a); walk(); }
+      const id = walk();
+      out.innerHTML = ""; out.append(h("b", null, (id ? RS[id] : "") + ": "), s.w);
+    });
+    sc.append(b);
+  });
+  walk();
+});
+
+/* ---------- 8.5 Hook laboratuvarı ---------- */
+Edu.widget("l8-hooklab", el => {
+  const { h, $, json, sleep, runner, seg } = Edu;
+  const base = { session_id:"abc123", prompt_id:"550e8400-e29b-41d4-a716-446655440000", transcript_path:"/home/dev/.claude/projects/example/abc123.jsonl", cwd:"/home/dev/example_app", permission_mode:"auto", hook_event_name:"PreToolUse" };
+  const SC = {
+    db:{ lab:"psql ile DELETE", tool:"Bash", input:{ command:"psql -h db.example.test -c \"DELETE FROM example.orders\"", description:"Clean orders", timeout:120000, run_in_background:false }, runs:'<span class="e">DELETE 1834</span>\n<span class="e">example.orders tablosundan 1834 satır silindi.</span>', reason:"Writes to example.* are blocked. Use a read-only SELECT instead.", adapt:"Anladım, silmek yerine önce kaç satırın etkileneceğini SELECT count(*) ile kontrol edeyim." },
+    test:{ lab:"npm test (gürültülü)", tool:"Bash", input:{ command:"npm test", description:"Run tests", timeout:120000, run_in_background:false }, runs:'<span class="d">… 412 satır test çıktısı (≈ 9.000 token) context’e girdi …</span>\n<span class="e">FAIL src/orders/total.test.ts</span>', reason:"Run the focused suite instead.", adapt:"Daha dar bir test komutu çalıştırıyorum." },
+    mig:{ lab:"migrations/ düzenleme", tool:"Edit", input:{ file_path:"/home/dev/example_app/migrations/20261104_add_status.sql", old_string:"status_code varchar(10)", new_string:"status_code varchar(20)" }, runs:'<span class="w">migrations/20261104_add_status.sql düzenlendi.</span>\n<span class="d">(Uygulanmış bir migration değişti; ortamlar arası şema kayması riski.)</span>', reason:"migrations/ is append-only. Create a new migration file instead.", adapt:"Mevcut migration’ı değiştirmek yerine yeni bir migration dosyası oluşturacağım." }
+  };
+  const RESP = {
+    e0:{ lab:"exit 0", script:sc => `#!/usr/bin/env bash
+# Hiçbir karar vermeden çık
+exit 0` },
+    e1:{ lab:"exit 1 + stderr", script:sc => `#!/usr/bin/env bash
+in=$(cat)
+target=$(echo "$in" | jq -r '.tool_input.command // .tool_input.file_path')
+if [[ "$target" == ${sc === "mig" ? "*migrations/*" : sc === "db" ? "*DELETE*" : "*npm\\ test*"} ]]; then
+  echo "${SC[sc].reason}" >&2
+  exit 1        # HATA: 1 engel değildir
+fi
+exit 0` },
+    e2:{ lab:"exit 2 + stderr", script:sc => `#!/usr/bin/env bash
+in=$(cat)
+target=$(echo "$in" | jq -r '.tool_input.command // .tool_input.file_path')
+if [[ "$target" == ${sc === "mig" ? "*migrations/*" : sc === "db" ? "*DELETE*" : "*npm\\ test*"} ]]; then
+  echo "${SC[sc].reason}" >&2
+  exit 2        # engelle; stderr Claude’a gider
+fi
+exit 0` },
+    jdeny:{ lab:"JSON deny", script:sc => `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"deny",
+ "permissionDecisionReason":"${SC[sc].reason}"}}
+JSON
+exit 0` },
+    jask:{ lab:"JSON ask", script:sc => `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"ask",
+ "permissionDecisionReason":"Paylaşılan bir kaynağa dokunuyor; insan onayı gerekli"}}
+JSON
+exit 0` },
+    jupd:{ lab:"JSON updatedInput", script:sc => sc === "test" ? `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"allow",
+ "updatedInput":{"command":"npm test 2>&1 | grep -A5 -E '(FAIL|ERROR)'"}}}
+JSON
+exit 0` : `# Bu senaryoda girdiyi yeniden yazmak anlamlı değil.
+# updatedInput en çok çıktıyı daraltmak ya da güvenli
+# bir bayrak eklemek için kullanılır (npm test senaryosuna bak).
+exit 0` }
+  };
+  const S = { sc:"db", rp:"e2" };
+  const ctrl = $(".l8-hl-ctrl", el), grid = $(".l8-hl-grid", el), term = $(".l8-hl-term", el);
+  const sSeg = h("div", { class:"seg", role:"group", "aria-label":"Senaryo" }, Object.entries(SC).map(([k, v]) => h("button", { type:"button", "data-v":k, "aria-pressed": String(k === S.sc) }, v.lab)));
+  const rSeg = h("div", { class:"seg", role:"group", "aria-label":"Hook cevabı" }, Object.entries(RESP).map(([k, v]) => h("button", { type:"button", "data-v":k, "aria-pressed": String(k === S.rp) }, v.lab)));
+  ctrl.append(h("div", null, h("div", { class:"lbl" }, "Senaryo"), sSeg), h("div", null, h("div", { class:"lbl" }, "Hook’un cevabı"), rSeg));
+  const r = runner();
+  function draw(){
+    r.stop();
+    const sc = SC[S.sc];
+    const payload = Object.assign({}, base, { tool_name: sc.tool, tool_input: sc.input, tool_use_id:"toolu_01ABC123" });
+    grid.innerHTML = "";
+    const jv = h("div", { class:"jsonv", html: json(payload, { hl:["tool_name","tool_input","hook_event_name"] }) });
+    grid.append(h("div", null, h("h4", null, "stdin → hook (PreToolUse)"), jv),
+      h("div", null, h("h4", null, ".claude/hooks/guard.sh"), h("div", { class:"l8-pre" }, RESP[S.rp].script(S.sc))));
+    term.innerHTML = '<span class="d">“Çalıştır”a bas.</span>';
+  }
+  async function play(){
+    const c = r.start(), sc = SC[S.sc], rp = S.rp;
+    const lines = [];
+    const add = async (html, ms = 500) => { if (c()) return true; lines.push(html); term.innerHTML = lines.join("\n"); term.scrollTop = term.scrollHeight; await sleep(ms); return c(); };
+    const cmd = sc.tool === "Bash" ? sc.input.command : "Edit " + sc.input.file_path.replace("/home/dev/example_app/", "");
+    if (await add('<span class="v">● ' + sc.tool + '</span> ' + Edu.esc(cmd))) return;
+    if (await add('<span class="d">PreToolUse hook çalışıyor: guard.sh …</span>', 700)) return;
+    if (rp === "e0" || (rp === "jupd" && S.sc !== "test")){
+      if (await add('<span class="d">exit 0, çıktı yok → hook karar vermedi; izin akışı devam eder (deny/ask kuralları, sonra auto sınıflandırıcısı).</span>')) return;
+      if (S.sc === "db"){ await add('<span class="w">auto sınıflandırıcısı değerlendiriyor… Bu tür bir silmeyi büyük ihtimalle durdurur, ama olasılıksal. Hook’un işi bunu kesinleştirmekti.</span>'); return; }
+      await add(sc.runs); return;
+    }
+    if (rp === "e1"){
+      if (await add('<span class="w">hook hatası (exit 1): ' + Edu.esc(sc.reason) + '</span>')) return;
+      if (await add('<span class="d">Exit 1 engellemeyen bir hatadır → araç çağrısı devam ediyor.</span>')) return;
+      if (S.sc === "db"){ await add('<span class="w">Karar auto sınıflandırıcısına kaldı. Engel sandığın şey bir uyarıydı.</span>'); return; }
+      await add(sc.runs); return;
+    }
+    if (rp === "e2" || rp === "jdeny"){
+      if (await add(rp === "e2" ? '<span class="e">exit 2 → engellendi.</span> <span class="d">stderr Claude’a gider:</span>' : '<span class="e">permissionDecision: deny → engellendi.</span> <span class="d">Gerekçe Claude’a gider:</span>')) return;
+      if (await add('<span class="w">  “' + Edu.esc(sc.reason) + '”</span>')) return;
+      await add('<span class="b">Claude:</span> ' + Edu.esc(sc.adapt)); return;
+    }
+    if (rp === "jask"){
+      if (await add('<span class="w">İzin istemi: ' + Edu.esc(cmd) + '</span>\n<span class="d">  Gerekçe: Paylaşılan bir kaynağa dokunuyor; insan onayı gerekli  [evet / hayır]</span>')) return;
+      await add('<span class="d">Karar sende. auto modunda bile bu çağrı sınıflandırıcıya değil sana gelir.</span>'); return;
+    }
+    if (rp === "jupd"){
+      if (await add('<span class="b">updatedInput:</span> npm test 2>&amp;1 | grep -A5 -E \'(FAIL|ERROR)\'')) return;
+      await add('<span class="e">FAIL src/orders/total.test.ts</span>\n<span class="e">  ✕ discount applied once (12 ms)</span>\n<span class="d">    Expected: 90  Received: 81</span>\n<span class="p">Context’e 6 satır girdi (412 yerine).</span>');
+    }
+  }
+  seg(sSeg, v => { S.sc = v; draw(); });
+  seg(rSeg, v => { S.rp = v; draw(); });
+  $(".l8-hl-run", el).addEventListener("click", play);
+});
+
+/* ---------- 8.5 Stop hook döngüsü ---------- */
+Edu.widget("l8-stop", el => {
+  const { h, $, seg, stepper } = Edu;
+  const host = $(".l8-st-host", el);
+  const T = s => h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "Stop hook: dotnet build -warnaserror 1>&2 || exit 2")), h("div", { class:"term-body", html:s }));
+  const fix = [
+    { t:'<span class="b">Claude:</span> Düzeltme tamam, testler geçiyor.\n<span class="d">Stop hook çalışıyor…</span>\n<span class="e">OrderTotal.cs(42,17): warning CS8602: Dereference of a possibly null reference.</span>\n<span class="e">exit 2 → Claude durmuyor; stderr gerekçe olarak geri gidiyor.</span>', n:1, m:"Claude bittiğini sandı; hook derlemenin uyarısız geçmediğini gördü." },
+    { t:'<span class="v">● Read</span> src/Orders/OrderTotal.cs\n<span class="v">● Edit</span> src/Orders/OrderTotal.cs  <span class="d">(null kontrolü eklendi)</span>', n:0, m:"Araç çağrısı yapıldı: ardışık engel sayacı sıfırlanır." },
+    { t:'<span class="b">Claude:</span> Uyarıyı da giderdim.\n<span class="d">Stop hook çalışıyor…</span>\n<span class="p">Build succeeded. 0 Warning(s) 0 Error(s) → exit 0</span>\n<span class="p">Claude duruyor.</span>', n:0, m:"Bu sefer “bitti” iddiası deterministik bir kontrolle doğrulandı." }
+  ];
+  const stuck = [];
+  for (let k = 1; k <= 8; k++) stuck.push({ t:(k === 1 ? '<span class="b">Claude:</span> Bitti.' : '<span class="b">Claude:</span> Bu uyarıyı düzeltemiyorum; elle bakmanız gerekiyor.') + '\n<span class="e">exit 2 → engel #' + k + ' (araya araç çağrısı girmedi)</span>', n:k, m: k < 8 ? "Claude araç çağırmadan yeniden durmaya çalışıyor; sayaç artıyor." : "Sekizinci ardışık engel." });
+  stuck.push({ t:'<span class="w">Stop hook araç çağrısı olmadan 8 kez art arda engelledi → döngü sınırı aşıldı.</span>\n<span class="p">Harness Claude’un durmasına izin veriyor.</span>\n<span class="d">(Sınır: CLAUDE_CODE_STOP_HOOK_BLOCK_CAP)</span>', n:8, m:"Sonsuz döngü emniyeti. Burada senin müdahalen gerekiyor: görev mi imkânsız, hook mu yanlış?" });
+  seg($(".l8-st-seg", el), v => {
+    host.innerHTML = "";
+    const steps = v === "fix" ? fix : stuck;
+    stepper(host, { steps, auto:1500, render(i, s, { body }){
+      body.innerHTML = "";
+      const meter = h("div", { class:"l8-st-meter", "aria-label":"Ardışık engel: " + s.n + " / 8" }, Array.from({ length:8 }, (_, k) => h("i", { class: k < s.n ? "on" : "" })));
+      body.append(h("div", { class:"muted", style:{ fontSize:".8rem" } }, "Araçsız ardışık engel: " + s.n + " / 8"), meter, T(s.t), h("p", { class:"hint", style:{ color:"var(--ink)" } }, s.m));
+    }});
+  });
+});
+
+/* ---------- 8.6 Geri sarma ---------- */
+Edu.widget("l8-rewind", el => {
+  const { h, $, seg } = Edu;
+  const MSG = [
+    { t:"1 · “Başarısız bir test yaz”", ch:[{ f:"tests/OrderTotalTests.cs", via:"Write aracı", tr:true, d:"oluşturuldu" }] },
+    { t:"2 · “Hatayı düzelt”", ch:[{ f:"src/Orders/OrderTotal.cs", via:"Edit aracı", tr:true, d:"değişti" }] },
+    { t:"3 · “Sürümü artır, eski logu sil”", ch:[{ f:"version.txt", via:"Bash: sed -i", tr:false, d:"1.4.0 → 1.4.1" }, { f:"logs/old.log", via:"Bash: rm", tr:false, d:"silindi" }] },
+    { t:"4 · “docs’u bir subagent’la güncelle”", ch:[{ f:"docs/api.md", via:"subagent düzenlemesi", tr:false, d:"değişti" }] }
+  ];
+  const S = { p:1, mode:"both" };
+  const ctrl = $(".l8-rw-ctrl", el), grid = $(".l8-rw-grid", el), out = $(".l8-rw-out", el);
+  const pSeg = h("div", { class:"seg", role:"group", "aria-label":"Geri sarma noktası" }, [1,2,3,4].map(k => h("button", { type:"button", "data-v":String(k), "aria-pressed": String(k === 1) }, k + ". mesajdan önce")));
+  const mSeg = h("div", { class:"seg", role:"group", "aria-label":"Geri sarma türü" }, [["both","Kod + konuşma"],["conv","Yalnız konuşma"],["code","Yalnız kod"]].map(([v, l]) => h("button", { type:"button", "data-v":v, "aria-pressed": String(v === "both") }, l)));
+  ctrl.append(h("div", { class:"ctrl" }, pSeg), h("div", { class:"ctrl" }, mSeg));
+  function draw(){
+    grid.innerHTML = "";
+    const codeBack = S.mode !== "conv", convBack = S.mode !== "code";
+    const conv = h("div", null, h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "Konuşma"));
+    MSG.forEach((m, i) => conv.append(h("div", { class:"l8-rw-msg" + (convBack && i + 1 >= S.p ? " gone" : "") }, m.t, h("div", { class:"via" }, m.ch.map(c => c.via + " → " + c.f).join(" · ")))));
+    const files = h("div", null, h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "Dosyalar geri sarmadan sonra"));
+    let lost = 0, back = 0;
+    MSG.forEach((m, i) => m.ch.forEach(c => {
+      const after = i + 1 >= S.p;
+      let cls = "", st;
+      if (!after){ st = "değişikliği korunur (geri sarma noktasından önce)"; }
+      else if (!codeBack){ st = "değişmiş kalır (yalnız konuşma geri sarıldı)"; }
+      else if (c.tr){ cls = "ok"; st = "geri yüklendi"; back++; }
+      else { cls = "bad"; st = "değişmiş kaldı: checkpoint izlemiyor (" + c.via + ")"; lost++; }
+      files.append(h("div", { class:"l8-rw-f " + cls }, h("span", null, h("span", { class:"mono" }, c.f), h("br"), h("span", { class:"muted", style:{ fontSize:".72rem" } }, c.d)), h("span", { style:{ fontSize:".75rem", textAlign:"right" } }, st)));
+    }));
+    grid.append(conv, files);
+    out.innerHTML = "";
+    if (!codeBack) out.append("Yalnız konuşma geri sarıldı: Claude o mesajları “unutur” ama diskteki dosyalar olduğu gibi kalır. Model ile disk arasında bir tutarsızlık doğar; Claude bir sonraki adımda dosyaları yeniden okumalı.");
+    else out.append(back + " dosya geri yüklendi" + (lost ? ", " : "."), lost ? h("b", { class:"r" }, lost + " dosya değişmiş kaldı") : "", lost ? ". Bash ile yapılan değişiklikler ve subagent düzenlemelerinin çoğu checkpoint’e girmez. Bunları ancak git geri getirir: git checkout -- version.txt, git restore logs/old.log." : "", !convBack ? " Konuşma korundu: Claude geri alınan değişiklikleri hâlâ yapılmış sanıyor olabilir." : "");
+  }
+  seg(pSeg, v => { S.p = +v; draw(); });
+  seg(mSeg, v => { S.mode = v; draw(); });
+});
+</script>

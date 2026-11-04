@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img" aria-label="Agent = Model + Harness">
+  <title>Model, Harness, Agent</title>
+  <style>
+    :root{--bg:#F5F6FA;--ink:#141B27;--muted:#5B6578;--line:#DCE1EA;--model:#8A2C9C;--harness:#0B7A70;--ctx:#B06F00;--tool:#2456C9;--chip:#FCF1DA}
+    @media (prefers-color-scheme:dark){:root{--bg:#0F131A;--ink:#E7EAF0;--muted:#9BA5B6;--line:#2A3241;--model:#D58BE6;--harness:#3CC8BA;--ctx:#EDB24B;--tool:#7EA6FF;--chip:#33260D}}
+    text{font-family:"Segoe UI",system-ui,-apple-system,Helvetica,Arial,sans-serif}
+    .bg{fill:var(--bg);stroke:var(--line)}
+    .kick{fill:var(--tool);font-size:14px;font-weight:700;letter-spacing:2.5px}
+    .w{font-size:62px;font-weight:800;letter-spacing:-2px;opacity:0;animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
+    .agent{fill:var(--ink)} .op{fill:var(--muted);font-weight:400} .model{fill:var(--model)} .harness{fill:var(--harness)}
+    .d1{animation-delay:.2s}.d2{animation-delay:.45s}.d3{animation-delay:.7s}.d4{animation-delay:.95s}.d5{animation-delay:1.2s}
+    @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+    .sub{fill:var(--muted);font-size:17px;opacity:0;animation:fade .8s 1.6s forwards}
+    @keyframes fade{to{opacity:1}}
+    .chip rect{fill:var(--chip);stroke:var(--ctx);stroke-opacity:.5}
+    .chip text{fill:var(--ink);font-family:Consolas,"Cascadia Code",ui-monospace,monospace;font-size:13px}
+    .stream{animation:slide 14s linear infinite}
+    @keyframes slide{from{transform:translateX(0)}to{transform:translateX(-540px)}}
+    .cursor{fill:var(--ctx);animation:blink 1s steps(1) infinite}
+    @keyframes blink{50%{opacity:0}}
+    @media (prefers-reduced-motion:reduce){.w,.sub{animation:none;opacity:1}.stream,.cursor{animation:none}}
+  </style>
+  <rect class="bg" x="1" y="1" width="898" height="298" rx="18"/>
+  <text class="kick" x="48" y="62">YAZILIMCILAR İÇİN TÜRKÇE EĞİTİM SETİ</text>
+  <g transform="translate(48 140)">
+    <text class="w agent d1" x="0" y="0">Agent</text>
+    <text class="w op d2" x="196" y="0">=</text>
+    <text class="w model d3" x="252" y="0">Model</text>
+    <text class="w op d4" x="452" y="0">+</text>
+    <text class="w harness d5" x="508" y="0">Harness</text>
+  </g>
+  <text class="sub" x="48" y="182">Token’dan agent döngüsüne, Claude Code ve Codex pratiğinden harness güvenliğine.</text>
+  <clipPath id="c"><rect x="48" y="214" width="804" height="40" rx="8"/></clipPath>
+  <g clip-path="url(#c)">
+    <g class="stream">
+      <g class="chip" transform="translate(48 222)">
+        <rect width="58" height="24" rx="5"/><text x="9" y="17">sipar</text>
+        <rect x="64" width="40" height="24" rx="5"/><text x="73" y="17">iş</text>
+        <rect x="110" width="50" height="24" rx="5"/><text x="119" y="17">lerim</text>
+        <rect x="166" width="58" height="24" rx="5"/><text x="175" y="17">izdeki</text>
+        <rect x="230" width="78" height="24" rx="5"/><text x="239" y="17">tool_use</text>
+        <rect x="314" width="40" height="24" rx="5"/><text x="323" y="17"> {</text>
+        <rect x="360" width="66" height="24" rx="5"/><text x="369" y="17">"path"</text>
+        <rect x="432" width="102" height="24" rx="5"/><text x="441" y="17">stop_reason</text>
+        <rect x="540" width="58" height="24" rx="5"/><text x="549" y="17">sipar</text>
+        <rect x="604" width="40" height="24" rx="5"/><text x="613" y="17">iş</text>
+        <rect x="650" width="50" height="24" rx="5"/><text x="659" y="17">lerim</text>
+        <rect x="706" width="58" height="24" rx="5"/><text x="715" y="17">izdeki</text>
+        <rect x="770" width="78" height="24" rx="5"/><text x="779" y="17">tool_use</text>
+        <rect x="854" width="40" height="24" rx="5"/><text x="863" y="17"> {</text>
+        <rect x="900" width="66" height="24" rx="5"/><text x="909" y="17">"path"</text>
+        <rect x="972" width="102" height="24" rx="5"/><text x="981" y="17">stop_reason</text>
+        <rect x="1080" width="58" height="24" rx="5"/><text x="1089" y="17">sipar</text>
+        <rect x="1144" width="40" height="24" rx="5"/><text x="1153" y="17">iş</text>
+        <rect x="1190" width="50" height="24" rx="5"/><text x="1199" y="17">lerim</text>
+        <rect x="1246" width="58" height="24" rx="5"/><text x="1255" y="17">izdeki</text>
+        <rect x="1310" width="78" height="24" rx="5"/><text x="1319" y="17">tool_use</text>
+      </g>
+    </g>
+  </g>
+  <rect class="cursor" x="858" y="222" width="10" height="24" rx="2"/>
+</svg>

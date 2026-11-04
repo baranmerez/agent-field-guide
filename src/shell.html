@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Model, Harness, Agent</title>
+<meta name="description" content="Yazılımcılar için LLM, harness ve coding agent eğitim seti: sıfırdan ileri seviyeye, etkileşimli.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/*LOGO-CSS*/
+/*CSS*/
+</style>
+<script>
+/* Tema tercihi ilk boyamadan önce uygulanır (yanıp sönmeyi önler). */
+try{
+  var d = document.documentElement, g = function(k){ return JSON.parse(localStorage.getItem("egitim:" + k)); };
+  var t = g("theme"), f = g("font"), s = g("fs");
+  if (t) d.dataset.theme = t;
+  if (f) d.dataset.font = f;
+  if (s) d.style.setProperty("--fs", s);
+}catch(e){}
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="top-row">
+<!--LOGO-START-->    <span class="logo-plate"><span class="logo" role="img" aria-label="Şirket logosu"></span></span><!--LOGO-END-->
+    <div class="top-title">Model, Harness, Agent<small>Yazılımcılar için eğitim seti</small></div>
+    <div class="top-spacer"></div>
+    <button class="prog" id="progBtn" type="button" title="İlerleme: tıkla, sıfırlama seçeneği açılır" aria-haspopup="true" aria-expanded="false" aria-controls="progPanel"><span class="prog-ring" id="progRing"></span><span id="progTxt">%0</span></button>
+    <button class="icon-btn" id="glossBtn" type="button">Sözlük</button>
+    <button class="icon-btn" id="themeBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="lookPanel" title="Tema, yazı tipi ve boyutu">◐ <span class="look-lbl">Görünüm</span></button>
+  </div>
+  <div class="pop-panel" id="progPanel" hidden>
+    <p class="pp-title">İlerleme</p>
+    <p class="pp-stat" id="progStat"></p>
+    <div class="meter" aria-hidden="true"><i id="progMeter" style="width:0;background:var(--ok)"></i></div>
+    <p class="hint">Açtığın konular yalnızca bu tarayıcıda tutulur. Sıfırlayınca bütün ✓ işaretleri silinir; bulunduğun konu ve görünüm ayarların kalır.</p>
+    <div class="ctrl"><button class="btn ghost sm" id="progReset" type="button">İlerlemeyi sıfırla</button><span class="hint live" id="progMsg" aria-live="polite"></span></div>
+  </div>
+  <div class="pop-panel look" id="lookPanel" hidden>
+    <p class="pp-title">Tema</p>
+    <div class="theme-grid" id="themeGrid" role="group" aria-label="Tema"></div>
+    <p class="pp-title">Yazı tipi</p>
+    <div class="seg" id="fontSeg" role="group" aria-label="Yazı tipi">
+      <button type="button" data-v="sans">Sans</button><button type="button" data-v="serif">Serif</button><button type="button" data-v="legible">Okunaklı</button>
+    </div>
+    <p class="pp-title">Yazı boyutu</p>
+    <div class="ctrl" style="margin-top:0">
+      <div class="seg" role="group" aria-label="Yazı boyutu"><button type="button" id="fsDown" aria-label="Küçült">A−</button><button type="button" id="fsVal" aria-label="Varsayılan boyuta dön">%100</button><button type="button" id="fsUp" aria-label="Büyüt">A+</button></div>
+    </div>
+  </div>
+  <nav class="ltabs" id="ltabs" role="tablist" aria-label="Seviyeler"></nav>
+</header>
+
+<main id="main">
+<!--LEVELS-->
+</main>
+<!--FOOTER-->
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="gloss" aria-hidden="true" aria-label="Sözlük">
+  <div class="drawer-head"><h2>Sözlük</h2><button class="icon-btn" id="glossClose" type="button">Kapat</button></div>
+  <div class="drawer-body">
+    <input class="field" id="glossSearch" type="search" placeholder="Terim ara: token, hook, MCP…" aria-label="Sözlükte ara">
+    <div id="glossList"></div>
+  </div>
+</aside>
+
+<script>
+/*CORE*/
+</script>
+<!--LEVEL-SCRIPTS-->
+<script>
+/*APP*/
+</script>
+</body>
+</html>

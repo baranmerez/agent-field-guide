@@ -1,0 +1,6 @@
+# İç sürüm çıktısı ve şirket logosu depoya girmez
+dist/
+src/logo.datauri
+*.local.md
+node_modules/
+.claude/

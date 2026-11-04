@@ -1,0 +1,1101 @@
+<section class="level" data-no="4" data-short="Tool use" data-title="Tool use: modelin elleri yok, JSON’u var"
+  data-accent="harness" data-time="55 dk"
+  data-lede="Model hiçbir şey çalıştırmaz; yalnızca “şunu şu argümanlarla çalıştır” diyen bir JSON yazar. Döngüyü, araç tanımını, iyi araç tasarımını, ölçek sorununu ve MCP’yi ham mesajlar üzerinden açıyoruz.">
+
+  <!-- ============ 1. MEKANİZMA ============ -->
+  <div class="lesson" data-tab="Mekanizma">
+    <h2>Model hiçbir şey çalıştırmaz</h2>
+    <p class="lead">Bir coding agent’ın dosya okuduğunu, test koştuğunu, veritabanına sorgu attığını izliyorsun. Ama bunların hiçbirini model yapmıyor. Model yalnızca token üretir; bu token’ların bir kısmı “şu aracı şu argümanlarla çalıştırmak istiyorum” diyen, makinenin ayrıştırabileceği bir JSON parçasıdır. Çalıştıran, senin kodun ya da kullandığın <span class="g" data-g="Harness">harness</span>’tır.</p>
+    <p>Anthropic’in dokümantasyonu bunu açıkça söylüyor: model kendi başına hiçbir şey çalıştırmaz; yapılandırılmış bir istek üretir, senin kodun işlemi yapar ve sonuç geri akar. Bu cümleyi ciddiye aldığında <span class="g" data-g="Tool use">tool use</span>’un bütün mimarisi yerine oturuyor: izin, güvenlik, hata yönetimi, loglama, hepsi senin tarafında. Modelin tarafında ise yalnızca bir karar var: bu turda metin mi yazacağım, yoksa bir araç mı isteyeceğim?</p>
+    <p>Model bu kararı nereden biliyor? Post-training sırasında (1. seviyede gördük) araç tanımlarını okuyup doğru biçimde çağrı bloğu üretmek üzerine eğitildi. Yani tool use bir API özelliği olduğu kadar, modelin öğrenilmiş bir davranışıdır. API ise bu davranışın etrafına katı bir sözleşme çizer.</p>
+
+    <h3>Döngünün dört hareketi</h3>
+    <ol class="steps">
+      <li><b>İstek.</b> Kodun API’ye system prompt’u, <code>tools</code> dizisini (her araç için <code>name</code>, <code>description</code>, <code>input_schema</code>) ve <code>messages</code> dizisini gönderir. API durumsuzdur: her istekte bütün geçmiş yeniden gider (2. seviye).</li>
+      <li><b>Karar.</b> Model bir araca ihtiyaç duyarsa düz metin yerine bir ya da daha fazla <span class="g" data-g="tool_use bloğu">tool_use bloğu</span> üretir: <code>id</code>, <code>name</code>, <code>input</code>. Yanıt <code>stop_reason: "tool_use"</code> ile biter. Bu, “ben durdum, sıra sende” demektir.</li>
+      <li><b>Yürütme.</b> Kodun bloğu okur, girdiyi doğrular, izinleri kontrol eder ve aracı çalıştırır. Bir dosya mı okunacak, SQL mi koşulacak, HTTP isteği mi atılacak; bu artık sıradan yazılım.</li>
+      <li><b>Sonuç.</b> Kodun modelin yanıtını <code>assistant</code> mesajı olarak geçmişe ekler, ardından içeriği <span class="g" data-g="tool_result">tool_result</span> bloklarıyla başlayan bir <code>user</code> mesajı ekler ve modeli yeniden çağırır. Her <code>tool_result</code>, <code>tool_use_id</code> alanıyla hangi çağrıya cevap olduğunu söyler.</li>
+    </ol>
+    <p>Ham hali şöyle görünür. Model yanıtı:</p>
+<pre data-title="Yanıt: model bir araç istiyor"><code>{
+  "role": "assistant",
+  "stop_reason": "tool_use",
+  "content": [
+    { "type": "text", "text": "Siparişin kaydına bakıyorum." },
+    { "type": "tool_use", "id": "toolu_01",
+      "name": "example_orders_get", "input": { "order_id": 1042 } }
+  ]
+}</code></pre>
+    <p>Senin bir sonraki isteğinin <code>messages</code> dizisine eklediğin iki mesaj:</p>
+<pre data-title="Sonraki istek: geçmiş + sonuç"><code>{ "role": "assistant", "content": [ ...yukarıdaki content aynen... ] },
+{ "role": "user", "content": [
+    { "type": "tool_result", "tool_use_id": "toolu_01",
+      "content": "{\"order_id\":1042,\"status_code\":\"DELIVERED\"}" }
+] }</code></pre>
+    <p>Dikkat: modelin yanıtını geçmişe olduğu gibi geri koyuyorsun. Model, kendi önceki turunu “hatırlamaz”; sen ona tekrar gösterirsin. <code>tool_use_id</code> da bu yüzden var: model aynı turda üç araç istediyse, hangi sonucun hangi isteğe ait olduğunu ancak bu kimlikle eşleştirebilir.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Mesaj kuyruklarındaki istek-yanıt kalıbı: istemci bir <em>correlation id</em> ile mesaj yollar, yanıt aynı id’yle geri gelir. Burada istemci model, kuyruğu dinleyen işçi senin kodun, correlation id de <code>tool_use.id</code> ↔ <code>tool_result.tool_use_id</code>. Ya da planlayıcı-yürütücü ayrımı: model plan yazar, yürütücü planı uygular ve raporlar. Planlayıcı yürütücünün gerçekten çalışıp çalışmadığını bilemez; ona ne rapor edilirse onu görür.</div>
+
+    <h3>Üç araç kovası</h3>
+    <p>Anthropic’in API’sinde araçlar, kimin tanımladığına ve kimin çalıştırdığına göre üç gruba ayrılır. Bu ayrım, sorumluluğun kimde olduğunu söylediği için önemli.</p>
+    <div class="cols">
+      <div class="card t"><h4 class="t">Senin araçların</h4>Adı, açıklamayı, şemayı sen yazarsın; çalıştıran da sensin. <code>example_orders_get</code> gibi iş araçları, kendi MCP sunucuların burada. Döngü senin kodunda döner.</div>
+      <div class="card h"><h4 class="h">Anthropic şemalı client araçları</h4><code>bash</code>, <code>text_editor</code>, <code>memory</code>, <code>computer</code>, <code>browser</code>. Şemayı Anthropic belirler, çalıştırmak yine senin işin. Model bu imzalarla binlerce başarılı yörünge üzerinde eğitildiği için onları daha güvenilir çağırır. 6. seviyede “eğitime gömülü araçlar” olarak döneceğiz.</div>
+      <div class="card m"><h4 class="m">Sunucu araçları</h4><code>web_search</code>, <code>web_fetch</code>, <code>code_execution</code>, <code>tool_search</code>. Anthropic’in altyapısında çalışır; sonuç yanıtın içinde gelir. Sunucu tarafındaki döngü bir yineleme sınırına takılırsa yanıt <code>pause_turn</code> ile döner, sen isteği yeniden gönderip devam ettirirsin.</div>
+    </div>
+
+    <h3>Sözleşmenin katı kuralları</h3>
+    <p>API, mesaj geçmişinin biçimini sıkı denetler. Kurallar keyfi değil; modelin eğitimde gördüğü düzeni koruyorlar. İhlal edersen model hiç çalışmaz, istek HTTP 400 ile döner:</p>
+    <ul>
+      <li><b>Sonuç hemen gelir.</b> <code>tool_use</code> içeren assistant mesajından hemen sonra, sonuçları taşıyan user mesajı gelmelidir. Araya başka bir mesaj sokamazsın.</li>
+      <li><b>Önce sonuçlar.</b> O user mesajının <code>content</code> dizisinde <code>tool_result</code> blokları en başta durur. Önlerine bir metin bloğu koyarsan 400 alırsın; kullanıcıya ait bir not eklemen gerekiyorsa sonuçlardan sonra ekle.</li>
+      <li><b>Paralel sonuçlar tek mesajda.</b> Model aynı turda iki araç istediyse iki <code>tool_result</code> aynı user mesajında gider (4. konu).</li>
+      <li><b>Her istek bir cevap bekler.</b> Her <code>tool_use</code> bloğu için, doğru <code>tool_use_id</code> ile bir <code>tool_result</code> dönersin. Araç patladıysa bile: o zaman <code>is_error: true</code> ve açıklayıcı bir mesaj.</li>
+    </ul>
+    <p>Son madde pratikte en çok atlanan. Aracın içinde bir exception oluştuğunda döngüyü çökertmek yerine hatayı <code>is_error: true</code> ile modele geri vermek, modele kendini düzeltme şansı verir. Anthropic’in dokümantasyonuna göre geçersiz bir çağrıdan sonra model genellikle düzeltmeler yaparak iki üç kez yeniden dener, ancak sonra özür dileyip vazgeçer. Bu denemelerin işe yarayıp yaramayacağını ise hata mesajının kalitesi belirler. Aşağıdaki simülasyonda <em>“failed”</em> ile eyleme dönük bir hata mesajı arasındaki farkı kendi gözünle gör.</p>
+
+    <div class="fig" data-widget="l4-cycle">
+      <p class="fig-title">Bir tool call’un ham yolculuğu</p>
+      <p class="fig-cap">Example Co’nun 1042 numaralı siparişi neden geç teslim edildi? Üç model çağrısı, paralel iki araç, bir hata ve bir düzeltme. Her adımda giden ya da gelen gerçek biçimli JSON’u gör; sarı satırlar <code>id</code> ↔ <code>tool_use_id</code> eşleşmesini ve döngüyü yöneten alanları gösteriyor. Üstteki düğmelerle bir hata enjekte et ve döngünün nasıl değiştiğini izle.</p>
+      <div class="seg l4-mode" role="group" aria-label="Enjekte edilecek hata">
+        <button type="button" data-v="ok" aria-pressed="true">Doğru akış</button>
+        <button type="button" data-v="textfirst">Metin önce</button>
+        <button type="button" data-v="noid">tool_use_id yok</button>
+        <button type="button" data-v="failed">“failed” hatası</button>
+      </div>
+      <div class="l4-stage"></div>
+    </div>
+
+    <h3>OpenAI tarafı: aynı fikir, başka alan adları</h3>
+    <p>OpenAI’ın Responses API’si aynı döngüyü kurar; isimler ve bir önemli ayrıntı farklıdır.</p>
+    <div class="tbl"><table>
+      <thead><tr><th></th><th>Anthropic Messages</th><th>OpenAI Responses</th></tr></thead>
+      <tbody>
+        <tr><td>Tanım</td><td><code>name</code>, <code>description</code>, <code>input_schema</code></td><td><code>type:"function"</code>, <code>name</code>, <code>description</code>, <code>parameters</code>, <code>strict</code></td></tr>
+        <tr><td>Modelin isteği</td><td><code>tool_use</code> bloğu: <code>id</code>, <code>name</code>, <code>input</code> (nesne)</td><td><code>function_call</code> öğesi: <code>call_id</code>, <code>name</code>, <code>arguments</code> (<b>JSON string</b>)</td></tr>
+        <tr><td>Senin cevabın</td><td><code>tool_result</code>: <code>tool_use_id</code>, <code>content</code>, <code>is_error</code></td><td><code>function_call_output</code>: <code>call_id</code>, <code>output</code></td></tr>
+        <tr><td>“Sıra sende” sinyali</td><td><code>stop_reason: "tool_use"</code></td><td>Çıktıda <code>function_call</code> öğeleri olması</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>arguments</code>’ın string olması küçük ama sinsi bir fark: kodun onu <code>JSON.parse</code> ile açmak zorunda ve bu adım patlayabilir. Patladığında döngüyü düşürme; ayrıştırma hatasını açıklayan bir <code>function_call_output</code> dön, model düzeltsin. Strict mod açıksa (bir sonraki konu) bu sınıf hata pratikte ortadan kalkar.</p>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Model yalnızca senin sonuç diye gösterdiğini görür ve onu okur. Bir web sayfası, bir e-posta, bir issue yorumu ya da <code>example.customers</code> tablosundaki bir not alanı, talimat gibi görünen metin içerebilir. Anthropic bu yüzden güvenilmeyen içeriği system prompt’a değil <code>tool_result</code>’ın içine koymanı öneriyor. Ama bu tek başına koruma değildir; asıl savunma harness’taki yetki sınırlarıdır. 10. seviye: prompt injection.</div>
+
+    <h3>Sık yapılan hatalar</h3>
+    <ul>
+      <li>Modelin yanıtını geçmişe eklemeden sadece sonuçları göndermek. API, karşılığı olmayan <code>tool_result</code>’ı reddeder.</li>
+      <li>Araç exception’ını yakalamayıp döngüyü çökertmek. Agent, kendini düzeltebileceği bir hatada ölür.</li>
+      <li>Hata mesajı olarak <code>"failed"</code> ya da 80 satırlık traceback dönmek. İlki bilgi vermez, ikincisi context’i doldurur (3. konu).</li>
+      <li>Modelin aracı “çalıştırdığına” inanıp loglamayı modele bırakmak. Gerçekte ne çalıştığını yalnızca senin kodun bilir; denetim kaydı orada tutulur.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Model aracı çağırmaz, çağırma <em>isteği</em> yazar. Çalıştıran, doğrulayan ve sonucu geri veren senin kodundur.</li>
+        <li>Döngünün anahtarı <code>stop_reason: "tool_use"</code>; eşleşmenin anahtarı <code>tool_use.id</code> ↔ <code>tool_use_id</code>.</li>
+        <li>Sözleşme katıdır: sonuçlar hemen gelir, content’in başında durur, paralel sonuçlar tek mesajdadır. Aksi 400.</li>
+        <li>Araç hatası döngünün sonu değil, bir <code>is_error: true</code> sonucudur. Hata mesajının kalitesi modelin toparlanmasını belirler.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Anthropic: How tool use works</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls">Anthropic: Handle tool calls</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. ARAÇ TANIMI ============ -->
+  <div class="lesson" data-tab="Araç tanımı">
+    <h2>Araç tanımı bir prompt’tur</h2>
+    <p class="lead">Model, bir aracı ne zaman ve nasıl kullanacağına yalnızca senin yazdığın üç alana bakarak karar verir: ad, açıklama ve girdi şeması. Kaynak koduna, testlerine, wiki sayfana erişimi yok. Bu üç alan, aracın modele sunduğu tek kullanım kılavuzu.</p>
+    <p>Araştırmadan bir örnek, sevkiyat olaylarını arayan bir araç:</p>
+<pre data-title="example_shipments_search"><code>{
+  "name": "example_shipments_search",
+  "description": "Search shipment events for one order in example.shipments.
+    Use when the user asks where an order is or why it was late.
+    Returns events oldest-first. Use response_format=summary unless
+    the user needs every scan.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "order_id": { "type": "integer", "description": "example.orders.order_id" },
+      "response_format": { "type": "string", "enum": ["summary", "full"] }
+    },
+    "required": ["order_id"],
+    "additionalProperties": false
+  },
+  "strict": true
+}</code></pre>
+
+    <h3>Alan alan</h3>
+    <p><b><code>name</code></b> modelin aklında aracın kimliğidir ve diğer araçlarla aynı listede durur. <code>search</code> gibi bir ad, üç ayrı MCP sunucusu aynı adı getirdiğinde anlamını yitirir. Servis ve kaynakla <span class="g" data-g="Namespacing">ad alanı</span> vermek (<code>example_shipments_search</code>) hem seçimi kolaylaştırır hem çakışmayı önler. Bir sonraki konuda bunun ölçülmüş etkisine bakacağız.</p>
+    <p><b><code>description</code></b> asıl iş buradadır. İyi bir açıklama dört soruyu cevaplar: araç ne yapar, ne zaman kullanılmalı (ve ne zaman kullanılmamalı), ne döndürür, sınırları ve tuzakları neler. Anthropic, araç açıklamalarını “yeni işe başlayan birine anlatır gibi” yazmayı öneriyor. Kendi SWE-bench Verified çalışmalarında yalnızca araç açıklamalarını iyileştirmenin Claude Sonnet 3.5’i o dönemin en iyi sonucuna taşıdığını bildiriyorlar.</p>
+    <p><b><code>input_schema</code></b> standart bir <span class="g" data-g="JSON Schema">JSON Schema</span> nesnesidir: <code>type</code>, <code>properties</code>, <code>required</code>, <code>enum</code>, alan bazında <code>description</code>. Şema iki işe yarar: modele neyi göndermesi gerektiğini söyler, sana da gelen girdiyi doğrulamak için bir sözleşme verir. Birbirinin aynısı iki alan adı (<code>user</code> ile <code>user_id</code>), serbest metin bırakılmış bir biçim alanı, tipi belirsiz bir kimlik, modelin tahmin etmesi gereken yerlerdir; her tahmin bir hata ihtimali.</p>
+
+    <div class="callout myth"><span class="ct">Folklor</span>“Şema yeterli; açıklama süs, token harcamasın diye kısa tut.” Şema neyin <em>geçerli</em> olduğunu söyler, açıklama ise neyin <em>doğru</em> olduğunu. Model iki geçerli araç arasında seçim yaparken şemaya değil açıklamaya bakar. Anthropic’in SWE-bench sonucu tam olarak açıklama iyileştirmesinden geldi. Token’ı açıklamadan kısarak değil, gereksiz araçları kaldırarak ya da tanımları ertelenmiş yükleyerek (5. konu) kazanırsın.</div>
+
+    <h3>strict: true ve garanti edilen şema</h3>
+    <p>Varsayılan durumda model şemayı “okur” ama ona uymak zorunda değildir; bazen zorunlu bir alanı atlar, enum dışı bir değer yazar, tamsayı yerine string koyar. Sen girdiyi doğrular, hata döner, model düzeltir; bu bir tur ve birkaç bin token demek. <span class="g" data-g="strict mode">strict</span> modda API, üretilen girdinin şemaya uyacağını garanti eder. Anthropic bunu açıkça “geçersiz çağrıları ortadan kaldırır” diye anlatıyor. Bedeli, şema üzerinde bazı kısıtlar.</p>
+    <p>OpenAI tarafında kısıtlar net yazılı: strict modda <code>additionalProperties: false</code> zorunlu, <code>properties</code>’teki <b>her alan</b> <code>required</code> listesinde olmalı. İsteğe bağlı bir alanı ise “yok olabilir” diye değil, “null olabilir” diye ifade edersin:</p>
+<pre data-title="OpenAI strict: isteğe bağlı alan"><code>"response_format": { "type": ["string", "null"], "enum": ["summary", "full", null] }
+"required": ["order_id", "response_format"]</code></pre>
+    <p>Bu başta garip gelir ama mantıklıdır: şema bir dilbilgisi gibi davranır; “bu alan ya vardır ya yoktur” belirsizliği yerine “bu alan her zaman vardır, değeri null olabilir” demek üretimi kesinleştirir.</p>
+
+    <h3>input_examples: şemanın anlatamadığı</h3>
+    <p>JSON Schema “tarih bir string’dir” diyebilir ama “bu API’de tarihler <code>2026-10-01</code> biçiminde, saat dilimi UTC, iç içe filtrelerde önce müşteri sonra durum gelir” diyemez. Anthropic’in <code>input_examples</code> alanı, aracın tanımına birkaç örnek girdi eklemeni sağlar. Anthropic’in kendi ölçümüne göre (Kasım 2025, üretici verisi) karmaşık parametrelerde doğruluk %72’den %90’a çıktı. Örnekler de token’dır; her araca değil, girdisi gerçekten karmaşık olanlara koy.</p>
+
+    <h3>Tanımların token maliyeti</h3>
+    <p>Araç tanımları sihirli bir yan kanaldan gitmez; prompt’un parçasıdır ve her istekte yeniden gönderilir. Kasım 2026 itibarıyla Anthropic’in dokümantasyonuna göre, araç kullanımı açıldığında API senin tanımlarından <em>önce</em> yaklaşık <b>286 token</b>’lık bir araç kullanım sistem prompt’u ekliyor (Opus, Sonnet ve Haiku 5.5). Aracı zorunlu kıldığında (<code>tool_choice</code>: <code>any</code> ya da <code>tool</code>, 4. konu) bu sayı artıyor; Opus 5 için verilen örnek 286’ya karşı 406. Üstüne her tanımın kendi token’ları biner.</p>
+    <p>Bunun ikinci, daha az bilinen bir sonucu var: prompt caching (2. seviye). Anthropic’te önbellek öneki <code>tools → system → messages</code> sırasıyla kurulur ve araç tanımlarını değiştirmek önbelleğin <em>tamamını</em> geçersiz kılar. Oturumun ortasında bir araç eklemek, açıklamasını “biraz düzeltmek” ya da listenin sırasını karıştırmak, sonraki istekte bütün önekin baştan yazılması demektir. Araç listesini oturum boyunca sabit tut. MCP’nin güncel sürümünün <code>tools/list</code> yanıtının deterministik olmasını önermesinin sebebi de bu (6. konu).</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>OpenAPI dokümanı yazmak gibi, ama okuyucunun soru soramadığı, dokümanı her istekte baştan okuduğu ve kelime başına ücret ödediği bir durumda. OpenAI’ın rehberi buna “stajyer testi” diyor: modele verdiğin bilgiyle bir stajyer bu fonksiyonu doğru kullanabilir miydi? Cevap hayırsa model de kullanamaz.</div>
+
+    <div class="fig" data-widget="l4-designer">
+      <p class="fig-title">Araç tasarım tezgâhı</p>
+      <p class="fig-cap">Aynı sevkiyat aracını farklı seçimlerle kur. Sağda ortaya çıkan tanımı, yaklaşık token sayısını ve her seçimin modele ne söylediğini gör. Bir not kırmızıysa, model orada tahmin etmek zorunda kalıyor demektir. Sağlayıcıyı değiştirip aynı aracın OpenAI biçimini ve strict kurallarının şemayı nasıl dönüştürdüğünü de izle.</p>
+      <div class="l4-grid2 l4-ctrls"></div>
+      <div class="l4-split" style="margin-top:.8rem">
+        <div><div class="jsonv l4-def" aria-label="Araç tanımı"></div><p class="hint l4-tok"></p></div>
+        <ul class="l4-lint" aria-live="polite"></ul>
+      </div>
+    </div>
+
+    <h3>Tuzaklar</h3>
+    <ul>
+      <li><b>Örtüşen araçlar.</b> <code>search_orders</code> ve <code>find_orders</code> aynı listede durursa model ikisi arasında rastgele seçer. Bir insan hangisinin kullanılacağını kesin söyleyemiyorsa model de söyleyemez.</li>
+      <li><b>Açıklamada yalan.</b> “Hızlıdır” yazan ama 40 saniye süren bir araç, modelin onu döngü içinde defalarca çağırmasına yol açar. Açıklama gerçek davranışı anlatmalı.</li>
+      <li><b>Büyük harfle bağırmak.</b> “CRITICAL: You MUST use this tool when…” gibi ifadeler eski modellerde yetersiz çağrıyı düzeltmek için yazılırdı; yeni modellerde aşırı çağrıya yol açıyor. Anthropic bunu yumuşatmayı öneriyor: “Use this tool when…”. Ayrıntısı 3. seviyede.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Ad, açıklama ve şema modelin araç hakkında bildiği her şeydir. Açıklamaya kod kadar emek ver.</li>
+        <li>Belirsiz ad, belirsiz parametre, serbest metin biçim alanı: her biri modelin tahmin ettiği bir yer.</li>
+        <li><code>strict: true</code> geçersiz çağrı sınıfını kapatır; OpenAI’da her alan required, isteğe bağlılık null ile.</li>
+        <li>Tanımlar her istekte token’dır ve cache önekinin başıdır. Listeyi oturum içinde sabit tut.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (sistem prompt token’ları, tool_choice)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents (11 Eylül 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/advanced-tool-use">Anthropic: Advanced tool use (input_examples, 24 Kasım 2025)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (strict kuralları)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic: Prompt caching</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. İYİ ARAÇ TASARIMI ============ -->
+  <div class="lesson" data-tab="İyi araç tasarımı">
+    <h2>Agent için arayüz tasarlamak</h2>
+    <p class="lead">Kullanıcı arayüzü tasarımını bilirsin: aynı işlev, iyi bir ekranla kolay, kötü bir ekranla imkânsız. Agent’lar için de durum aynı. SWE-agent makalesi buna <em>agent-computer interface</em> (ACI) diyor ve aynı modelin yalnızca arayüz değişince belirgin biçimde daha iyi iş çıkardığını gösteriyor.</p>
+    <p>SWE-agent çalışmasında (Yang ve ark., NeurIPS 2024) GPT-4 Turbo, yalnızca ham shell ile SWE-bench Lite’ta yaklaşık %11 çözerken, 100 satırlık pencereli bir dosya görüntüleyici, sözdizimi bozuk düzenlemeleri reddeden linter’lı bir düzenleme komutu ve kısa çıktılı bir arama ile yaklaşık %18’e çıktı; düzenleme komutu çıkarılınca %10 civarına düştü. Bu rakamlar ikincil özetlerden geliyor; alıntılamadan önce makaledeki tabloyla doğrula. Ama yön tartışmasız: model aynı, arayüz farklı, sonuç farklı. 6. seviyede bu fikri bütün harness’a genişleteceğiz.</p>
+
+    <h3>Anthropic’in yedi ilkesi</h3>
+    <p>Anthropic, Eylül 2025’te araç yazma üzerine kendi deneyimlerini derledi. Aşağıda her ilkeyi Example Co’nun sipariş sistemi üzerinden anlatıyorum.</p>
+    <ol>
+      <li><b>Uç noktaları sarmalama, iş akışı etrafında topla.</b> REST API’n <code>list_users</code>, <code>list_events</code>, <code>create_event</code> sunuyor diye agent’a üç araç vermek, ona orkestrasyonu da yüklemek demektir: üç tur, üç sonuç context’te, araya girebilecek üç hata. Anthropic’in örneği bunları tek bir <code>schedule_event</code> aracında birleştirmek; <code>read_logs</code> yerine <code>search_logs</code> sunmak. Sipariş tarafında: “siparişi getir, sonra sevkiyatları getir, sonra durum kodunu çöz” yerine, gecikme sorusuna cevap verecek bilgiyi tek seferde döndüren bir araç.</li>
+      <li><b>Ad alanı ver.</b> <code>example_orders_search</code>, <code>example_shipments_search</code>. Birden çok MCP sunucusu aynı listeye araç döktüğünde ad alanı hem seçimi hem okunabilirliği kurtarır. Anthropic, önek ile sonek tercihinin bile ölçülebilir etkisi olduğunu bildiriyor.</li>
+      <li><b>Anlamlı bağlam döndür.</b> UUID yerine insanların okuyacağı adlar: <code>customer_id: "9f3c…"</code> değil <code>customer: "Example Co"</code>. Bir <code>response_format</code> enum’u (<code>concise</code> / <code>detailed</code>) ile modelin ihtiyacına göre ayrıntı seçmesine izin ver. Anthropic’in Slack örneğinde kısa biçim, ayrıntılı biçimin yaklaşık üçte biri kadar token tuttu.</li>
+      <li><b>Token’a saygı.</b> Sayfalama, filtre, makul varsayılanlarla kırpma. Claude Code araç yanıtlarını <b>25.000 token</b>’da kesiyor. Kırptığında modele bunu söyle ve bir sonraki isteği nasıl daraltacağını göster: “İlk 200 kayıt gösterildi; daha dar bir tarih aralığı ya da <code>status_code</code> filtresi kullan.”</li>
+      <li><b>Eyleme dönük hatalar.</b> Traceback değil, ne yanlış ve doğrusu ne: geçerli değerler ve doğru bir girdi örneği.</li>
+      <li><b>Açıklamaları yeni işe başlayana yazar gibi yaz.</b> Örtük bilgiyi (iç terimler, kısaltmalar, kaynaklar arası ilişkiler) açıkça yaz. Parametre adları belirsiz olmasın: <code>user</code> değil <code>user_id</code>.</li>
+      <li><b>Gerçekçi görevlerle ölç.</b> Tek çağrılık oyuncak testler değil, birkaç aracın zincirlendiği gerçek görevler. Transkriptleri modele analiz ettir, araçları ona yeniden yazdır. Anthropic’in çoklu agent araştırma sisteminde araç test eden bir agent, araç açıklamalarını yeniden yazarak sonraki agent’ların görev süresini %40 kısalttı (üretici verisi).</li>
+    </ol>
+
+    <div class="fig" data-widget="l4-logs">
+      <p class="fig-title">Aynı soru, üç araç tasarımı</p>
+      <p class="fig-cap">Soru: “Dün gece 02:00–03:00 arasında example_app’te hangi hatalar oldu?” Her tasarımda modelin context’ine ne girdiğini ve kaç token tuttuğunu gör. Token sayıları temsili; kısa biçimin ayrıntılı biçimin yaklaşık üçte biri olması oranı Anthropic’in Slack örneğinden.</p>
+      <div class="seg" role="group" aria-label="Araç tasarımı">
+        <button type="button" data-v="raw" aria-pressed="true">read_logs (ham)</button>
+        <button type="button" data-v="detailed">search, detailed</button>
+        <button type="button" data-v="concise">search, concise</button>
+      </div>
+      <div class="l4-logout"></div>
+      <div class="bars l4-logbars"></div>
+      <div class="panel l4-lognote" aria-live="polite"></div>
+    </div>
+
+    <h3>Poka-yoke: hatayı imkânsız kıl</h3>
+    <p>Japon üretim mühendisliğinden gelen <span class="g" data-g="Poka-yoke">poka-yoke</span>, yanlış kullanımı fiziksel olarak imkânsız kılan tasarım demek: USB fişinin ters takılamaması gibi. Anthropic, Aralık 2024’te SWE-bench agent’ı üzerinde çalışırken modelin, kök dizinden çıktıktan sonra göreli dosya yollarıyla hata yaptığını gördü. Çözüm modele “dikkatli ol” demek değil, aracın <b>mutlak yol</b> istemesiydi; bu bir hata sınıfını tamamen ortadan kaldırdı.</p>
+    <p>Kendi araçlarında poka-yoke fırsatları: kimlikleri tamsayı tipinde iste, biçimleri enum’la sınırla, tehlikeli işlemlerde onay alanı ekle, tarih için tek bir biçim kabul et ve açıklamada yaz. Kuralı prompt’a yazmak bir rica, şemaya yazmak bir garantidir. Bu fikrin genel halini 6. seviyede “bir kuralın doğru yeri” başlığıyla göreceğiz.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span><code>git status</code> ile <code>git status --porcelain</code> farkı. İlki insan için, ikincisi makine için tasarlanmış; aynı bilgi, farklı tüketici. <code>response_format</code> enum’u aynı fikrin agent versiyonu. Ve bir CLI’ın iyi hata mesajı (“unknown option --forse; did you mean --force?”) neyse, eyleme dönük araç hatası da o.</div>
+
+    <h3>Hata mesajı bir talimattır</h3>
+    <p>Araç hata döndüğünde modelin elindeki tek bilgi o mesajdır. “failed” dersen model ne olduğunu bilmeden aynı çağrıyı tekrarlar ya da rastgele bir varyasyon dener. Traceback dersen düzeltmeyi büyük ihtimalle bulur, ama iç dosya yollarını ve yığın çerçevelerini context’e döker; uzun bir yığın binlerce token tutar. Eyleme dönük mesaj, modelin bir sonraki turda düzeltebileceği kadar bilgiyi, gerekenden fazlasını vermeden sunar. MCP’nin 2025-11-25 sürümü de girdi doğrulama hatalarının protokol hatası olarak değil <em>araç yürütme hatası</em> olarak dönmesini şart koştu; amaç tam olarak modelin hatayı görüp kendini düzeltebilmesi.</p>
+
+    <div class="fig" data-widget="l4-errors">
+      <p class="fig-title">Üç hata mesajı, üç farklı sonraki tur</p>
+      <p class="fig-cap">Model <code>example_orders_search</code> aracına tarihi yanlış biçimde gönderdi. Araç hatayı üç farklı biçimde dönebilir. Her birinde modelin bir sonraki adımda ne yapacağını (simüle) ve bunun kaça mal olduğunu gör.</p>
+      <div class="seg" role="group" aria-label="Hata biçimi">
+        <button type="button" data-v="tb" aria-pressed="true">Traceback</button>
+        <button type="button" data-v="failed">“failed”</button>
+        <button type="button" data-v="act">Eyleme dönük</button>
+      </div>
+      <div class="l4-errout" aria-live="polite"></div>
+    </div>
+
+    <h3>Tuzaklar</h3>
+    <ul>
+      <li><b>Her şeyi yapan tek araç.</b> “İş akışı etrafında topla” ilkesini aşırıya götürüp 30 parametreli bir <code>example_do_anything</code> yazmak, seçim sorununu araç listesinden parametre listesine taşır. Ölçü şu: bir araç, kullanıcının sorabileceği bir soruya ya da yapmak isteyeceği bir işe karşılık gelmeli.</li>
+      <li><b>“Ne olur ne olmaz” diye her şeyi döndürmek.</b> Model fazladan alanı görmezden gelmez; okur, üzerinde akıl yürütür, bazen de yanlış alanı kullanır. Varsayılan yanıt kısa, ayrıntı isteğe bağlı olsun.</li>
+      <li><b>Sessiz kırpma.</b> Sonucu 200 satırda kesip bunu söylememek, modelin eksik veriyle kesin bir sonuç çıkarmasına yol açar. Kırptıysan sayıyı ve devamını almanın yolunu yaz.</li>
+      <li><b>Hata mesajında sır.</b> Bağlantı dizesi, iç sunucu adı, token içeren bir exception metni doğrudan context’e, oradan loglara ve belki başka bir araca gider. Hata mesajı modele yazılmış bir metindir; bir kullanıcıya göstermeyeceğin şeyi oraya koyma.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Araçlar agent’ın arayüzüdür; aynı model iyi arayüzle belirgin biçimde daha iyi çalışır.</li>
+        <li>Uç nokta sarmalama; iş akışını tek araçta topla. Ad alanı ver, anlamlı adlar döndür, ayrıntı seviyesini seçtir.</li>
+        <li>Kırparken nasıl daraltılacağını söyle; hata dönerken doğru girdinin örneğini ver.</li>
+        <li>Kuralı mümkünse şemaya göm (poka-yoke): rica değil garanti.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents — with agents (11 Eylül 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (19 Aralık 2024, ACI ve poka-yoke)</a></li>
+      <li><a href="https://arxiv.org/abs/2405.15793">Yang ve ark.: SWE-agent: Agent-Computer Interfaces (NeurIPS 2024)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/multi-agent-research-system">Anthropic: How we built our multi-agent research system (13 Haziran 2025)</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/changelog">MCP 2025-11-25 changelog</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. PARALEL VE TOOL_CHOICE ============ -->
+  <div class="lesson" data-tab="Paralel ve tool_choice">
+    <h2>Bir turda birden çok çağrı</h2>
+    <p class="lead">Model aynı yanıtta birden fazla <code>tool_use</code> bloğu üretebilir. Bunlara <span class="g" data-g="Paralel tool call">paralel tool call</span> denir ve Anthropic’te varsayılan olarak açıktır. Bu küçük özellik, bir agent oturumunun hem süresini hem maliyetini kökten değiştirir.</p>
+    <p>Neden? Çünkü her model turu iki şeye mal olur. Birincisi süre: modelin girdiyi işlemesi ve çıktıyı token token üretmesi zaman alır; bir aracın kendisi çoğu zaman bundan hızlıdır. İkincisi token: API durumsuz olduğu için her turda bütün geçmiş yeniden gönderilir. Model üç dosyayı tek tek okursa dört tur, dördünde de büyüyen bir geçmiş. Üçünü aynı turda isterse iki tur. Fark, bağımsız okuma sayısı arttıkça açılır.</p>
+    <p>Mekanizma tarafında yeni bir şey yok: model birden çok blok yazar, her birinin kendi <code>id</code>’si vardır. Senin kodun bunları istersen eşzamanlı çalıştırır ve bütün sonuçları <b>tek bir</b> user mesajında, her biri kendi <code>tool_use_id</code>’siyle geri yollar. 1. konudaki simülasyonda bunu gördün: <code>toolu_01</code> ve <code>toolu_02</code> aynı turda gitti, sonuçları aynı mesajda döndü.</p>
+
+    <div class="fig" data-widget="l4-parallel">
+      <p class="fig-title">Sıralı ve paralel: zaman çizelgesi</p>
+      <p class="fig-cap">Model turu süresini ve bağımsız araç sayısını değiştir. Mor bloklar model turları, mavi bloklar araç çalışması. Altta model çağrısı sayısını ve geçmişin toplamda kaç kez yeniden gönderildiğini gör. Süreler ve token’lar temsili; ilişki gerçek.</p>
+      <div class="l4-grid2">
+        <div class="range"><label for="l4-pl-m">Model turu (sn)</label><input id="l4-pl-m" type="range" min="0.5" max="4" step="0.1" value="1.6"><output>1.6</output></div>
+        <div class="range"><label for="l4-pl-n">Bağımsız araç</label><input id="l4-pl-n" type="range" min="1" max="6" step="1" value="3"><output>3</output></div>
+      </div>
+      <div class="l4-tl"></div>
+      <div class="stats l4-plstats" aria-live="polite"></div>
+    </div>
+
+    <h3>Ne zaman paralel güvenli?</h3>
+    <p>Paralellik model tarafında bir öneridir; neyin gerçekten eşzamanlı çalışacağına senin yürütücün karar verir. Bağımsız okumalar (iki dosya, üç sorgu) rahatça paralel çalışır. Aynı kaynağa yazan iki çağrı ise (aynı dosyayı düzenleyen iki <code>edit</code>, aynı siparişi güncelleyen iki istek) sıralanmalıdır; model iki bloğu aynı turda yazdı diye onları aynı anda çalıştırmak zorunda değilsin. Bu, veritabanında bağımsız SELECT’leri paralel koşturup UPDATE’leri sıraya sokmakla aynı mühendislik kararı.</p>
+    <p>Paralelliği kapatmak istersen Anthropic’te <code>tool_choice</code> içinde <code>disable_parallel_tool_use: true</code>, OpenAI’da <code>parallel_tool_calls: false</code> kullanırsın; OpenAI bu durumda turda sıfır ya da bir çağrı olacağını söylüyor. Ters yönde, paralel çağrıyı artırmak da mümkün: Anthropic’in prompt rehberindeki <code>&lt;use_parallel_tool_calls&gt;</code> bloğu, bağımsız işlemleri aynı turda yapmayı “neredeyse yüzde yüze” çıkardığını söylüyor. Fable 5.1’de bu talimatın her turda yeniden verilmesi öneriliyor (Kasım 2026 itibarıyla).</p>
+
+    <h2>tool_choice: aracı kim seçer?</h2>
+    <p>Varsayılan durumda model araç kullanıp kullanmamaya kendisi karar verir. <span class="g" data-g="tool_choice">tool_choice</span> bu kararı daraltmanı sağlar.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Anthropic</th><th>Anlamı</th><th>OpenAI karşılığı</th></tr></thead>
+      <tbody>
+        <tr><td><code>auto</code></td><td>Varsayılan. Model araç çağırır ya da metinle cevap verir.</td><td><code>auto</code></td></tr>
+        <tr><td><code>any</code></td><td>Model bir araç çağırmak zorunda; hangisi olduğuna kendisi karar verir.</td><td><code>required</code></td></tr>
+        <tr><td><code>tool</code> + <code>name</code></td><td>Belirli bir aracı çağırmak zorunda.</td><td>Belirli bir function’ı zorlamak</td></tr>
+        <tr><td><code>none</code></td><td>Araç tanımları gitse bile çağrı yapılmaz.</td><td><code>none</code></td></tr>
+        <tr><td>(karşılığı yok)</td><td></td><td><code>allowed_tools</code>: listeyi değiştirmeden bir alt kümeyle sınırla</td></tr>
+      </tbody>
+    </table></div>
+    <p>Zorlama ne zaman mantıklı? En yaygın kullanım yapılandırılmış veri çıkarmak: bir “kayıt” aracı tanımlarsın, <code>tool</code> ile zorlarsın, modelin ürettiği <code>input</code> doğrudan istediğin JSON olur. Bu yöntem ayrıca önem kazandı: Claude 4.6 modellerinden itibaren son assistant turunu önceden doldurmak (prefill) 400 hatası veriyor; JSON almak için önerilen yollar structured outputs ya da araçlar (3. seviye). Sohbet içinde ise zorlamak genellikle kötü fikir: <code>any</code> açıkken kullanıcı “teşekkürler” dese bile model bir araç çağırmak zorunda kalır.</p>
+    <p>OpenAI’ın <code>allowed_tools</code> seçeneği ince bir mühendislik kararını yansıtıyor: araç listesini değiştirmek prompt cache’ini bozar (2. konu), ama izin verilen alt kümeyi ayrı bir alanda vermek bozmaz. Böylece “bu adımda yalnızca okuma araçları” diyebilir, önbelleği koruyabilirsin. Anthropic’te de bir uyarı geçerli: <code>tool_choice</code>’u değiştirmek önbelleğin mesajlar kısmını geçersiz kılıyor. Her turda değiştirme.</p>
+
+    <div class="fig" data-widget="l4-choice">
+      <p class="fig-title">tool_choice’u değiştir, davranışı izle</p>
+      <p class="fig-cap">İki farklı kullanıcı mesajı, dört <code>tool_choice</code> ayarı. İstek gövdesinin ilgili kısmını ve modelin (simüle) davranışını gör. Paralel çağrıyı kapatmayı da dene.</p>
+      <div class="l4-opts"><span class="lab">tool_choice</span>
+        <div class="seg l4-tc" role="group" aria-label="tool_choice">
+          <button type="button" data-v="auto" aria-pressed="true">auto</button>
+          <button type="button" data-v="any">any</button>
+          <button type="button" data-v="tool">tool</button>
+          <button type="button" data-v="none">none</button>
+        </div></div>
+      <div class="l4-opts"><span class="lab">Kullanıcı</span>
+        <div class="seg l4-q" role="group" aria-label="Kullanıcı mesajı">
+          <button type="button" data-v="q1" aria-pressed="true">“1042 nerede kaldı?”</button>
+          <button type="button" data-v="q2">“Teşekkürler, bu kadar.”</button>
+        </div></div>
+      <div class="l4-opts"><label><input type="checkbox" class="l4-dp"> disable_parallel_tool_use</label></div>
+      <div class="l4-split">
+        <div class="jsonv l4-tcjson"></div>
+        <div class="panel l4-tcout" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <h3>Prompt ile tetiklemeyi ayarlamak</h3>
+    <p><code>tool_choice</code> kaba bir anahtar; ince ayar prompt’ta yapılır. Anthropic’in dokümantasyonu iki uç örnek veriyor: “Use the tools to investigate before responding.” araç çağrısını artırır; “Use your judgment…” tarzı bir ifade modeli daha tutucu kılar. Yeni modeller system prompt’a çok daha duyarlı olduğu için, eski modellerde az tetiklenmeyi düzeltmek için yazılmış agresif ifadeler bugün aşırı tetiklemeye yol açıyor. OpenAI da aynı şeyi söylüyor: GPT-5 ile çalışan bir ekip, “Be THOROUGH when gathering information” talimatının küçük işlerde bile gereksiz arama yaptırdığını, ifadeyi yumuşatınca düzeldiğini anlatıyor.</p>
+
+    <h3>Sık yapılan hatalar</h3>
+    <ul>
+      <li><b>Sonuçları ayrı mesajlara bölmek.</b> İki paralel çağrının sonucunu iki ayrı user mesajında göndermek sözleşmeyi bozar: ilk mesajda <code>toolu_02</code>’nin cevabı eksik kalır. Bütün sonuçları toplayıp tek mesajda yolla.</li>
+      <li><b>En yavaş araca takılmak.</b> Paralel bir turda model, bütün sonuçlar gelene kadar bekler. Biri asılı kalırsa tur da asılı kalır. Her araca bir zaman aşımı koy; süre dolarsa o çağrı için <code>is_error: true</code> ve “30 sn’de yanıt gelmedi, daha dar bir filtreyle tekrar dene” gibi bir sonuç dön, diğerlerini bekletme.</li>
+      <li><b>Paralel yan etkileri körlemesine çalıştırmak.</b> Model aynı turda “dosyayı düzenle” ve “testleri koş” isteyebilir. İkisini aynı anda çalıştırırsan testler eski dosyaya karşı koşar. Yan etkili çağrıları sırayla, modelin yazdığı sırayla yürüt.</li>
+      <li><b><code>tool_choice</code>’u kalıcı bırakmak.</b> Bir çıkarma adımı için <code>tool</code>’a çektiğin ayarı sonraki sohbet turunda <code>auto</code>’ya döndürmeyi unutursan model her mesaja aynı aracı çağırarak cevap verir.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Paralel çağrı, model turu sayısını ve yeniden gönderilen geçmişi azaltır. Bağımsız okumalar paralel, aynı kaynağa yazanlar sıralı.</li>
+        <li>Bütün paralel sonuçlar tek user mesajında, her biri kendi <code>tool_use_id</code>’siyle.</li>
+        <li><code>tool_choice</code>: <code>auto</code> sohbet için, <code>tool</code> yapılandırılmış çıkarma için. <code>any</code> ve <code>tool</code> sistem prompt’unu büyütür.</li>
+        <li>Araç listesini ve <code>tool_choice</code>’u her turda değiştirme; cache bozulur. Alt küme gerekiyorsa OpenAI’da <code>allowed_tools</code>.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (tool_choice, tetikleme)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Prompting best practices (paralel çağrı, prefill)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (parallel_tool_calls, allowed_tools)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. ÖLÇEK ============ -->
+  <div class="lesson" data-tab="Ölçek: tool search">
+    <h2>Araç tanımları da context’tir</h2>
+    <p class="lead">Beş araçla çalışan bir agent’ta tanımların maliyeti önemsizdir. Ama üç dört MCP sunucusu bağladığında tablo değişir: Anthropic’in kendi örneğinde 58 MCP aracı, konuşma daha başlamadan yaklaşık <b>55.000 token</b> tutuyor.</p>
+    <p>Bu iki ayrı sorun yaratır. Birincisi maliyet ve süre: o 55 bin token her istekte yeniden gider. Cache okuması bunu ucuzlatır ama sıfırlamaz; Kasım 2026 fiyatlarıyla Opus 5.5’te normal girdi milyon token başına 4 dolar, cache okuması 0,20 dolar. İkincisi, daha sinsi olanı, dikkat: context pencerenin büyüklüğü (bugün 1M) kapasiteyi söyler, kaliteyi değil. Pencere doldukça hatırlama zayıflıyor (2. seviyede context rot), ve birbirine benzeyen onlarca araç arasında doğru olanı seçmek zorlaşıyor. OpenAI’ın function calling rehberi bunun için kaba bir sınır da veriyor: 20’den az fonksiyonu hedefle.</p>
+
+    <h3>Tool search: tanımları ihtiyaç anında yükle</h3>
+    <p>Anthropic’in çözümü, Kasım 2025’te duyurulan <span class="g" data-g="Tool search">Tool Search Tool</span>. Bir aracı <span class="g" data-g="defer_loading">defer_loading</span><code>: true</code> ile işaretlediğinde tanımı baştan context’e girmez. Model, araç aramaya yarayan küçük bir araç görür; bir yeteneğe ihtiyaç duyduğunda onu arar ve yalnızca eşleşen araçların tanımları yüklenir. Bunu, uygulamanın bütün modülleri açılışta yüklemek yerine dinamik import ile gerektiğinde yüklemesine benzetebilirsin.</p>
+    <p>Anthropic’in bildirdiği sonuçlar (üretici verisi, 24 Kasım 2025): 58 araçlık örnekte tanım yükü yaklaşık 55K’dan yaklaşık <b>8,7K</b> token’a indi (yaklaşık %85 azalma). MCP değerlendirmesinde doğruluk Opus 4’te %49’dan %74’e, Opus 4.5’te %79,5’ten %88,1’e çıktı. Yani yalnızca tasarruf değil; daha az ama daha alakalı araç gören model daha iyi seçiyor.</p>
+    <p>Claude Code bunu varsayılan yapıyor: MCP araç tanımları tool search üzerinden ertelenir, context’te yalnızca araç adları ve sunucu talimatları durur. Kendi oturumunda <code>/context</code> ile bu dağılımı görebilirsin (8. ve 9. seviye). OpenAI tarafında da tool search ve namespace desteği var; Kasım 2026 itibarıyla gpt-5.4 ve sonrası modeller gerekiyor.</p>
+
+    <div class="fig" data-widget="l4-budget">
+      <p class="fig-title">Araç bütçesi: her istekte ne gidiyor?</p>
+      <p class="fig-cap">MCP sunucularını bağla, tool search’ü aç kapat. Çubuk, konuşma başlamadan önce her istekte giden sabit yükü gösteriyor (ölçek: ilk 100K token; pencerenin tamamı 1M). Sunucu başına dağılım temsili; MCP toplamı Anthropic’in 58 araç ≈ 55K → ≈ 8,7K örneğine göre ölçeklendi. Maliyetler Opus 5.5’in Kasım 2026 fiyatlarıyla.</p>
+      <div class="l4-opts l4-bud-ctrls"></div>
+      <div class="l4-stack" role="img" aria-label="Sabit context yükü"></div>
+      <div class="legend-row l4-bud-leg"></div>
+      <div class="stats l4-bud-stats" aria-live="polite"></div>
+    </div>
+
+    <h3>Programmatic tool calling: ara sonuçları context’e sokma</h3>
+    <p>Tool search tanımların yükünü çözer; sonuçların yükü ayrı bir sorun. Example Co’nun Ekim’de geciken 120 siparişinden hangilerinin TST-2 hub’ından geçtiğini bulmak istediğini düşün. Klasik akışta model önce siparişleri getirir, sonra her biri için sevkiyat aracını çağırır; 120 sonucun hepsi context’e girer, model onları “kafasında” süzer. Hem pahalı hem hataya açık: uzun bir listede bir satırı gözden kaçırmak, bir LLM için bir döngüde <code>if</code> yazmaktan çok daha kolay.</p>
+    <p><span class="g" data-g="Programmatic tool calling">Programmatic tool calling</span>’de aracı tanımlarken <code>allowed_callers: ["code_execution_20250825"]</code> dersin. Model bu araçları doğrudan değil, kod çalıştırma ortamında yazdığı bir programın içinden çağırır. Döngü, filtre ve birleştirme kodda olur; context’e yalnızca programın yazdırdığı sonuç döner. Anthropic’in ölçümünde (üretici verisi) görev başına ortalama token 43.588’den 27.297’ye indi (yaklaşık %37).</p>
+
+    <div class="fig" data-widget="l4-ptc">
+      <p class="fig-title">120 sipariş: klasik ve programatik</p>
+      <p class="fig-cap">Aynı soruyu iki akışla çöz. Model çağrısı sayısını ve context’e giren ara sonuç miktarını karşılaştır. Rakamlar bu senaryo için temsili; yön, Anthropic’in bildirdiği ortalamalarla (43.588 → 27.297 token) ve aşağıdaki MCP örneğiyle (≈150K → ≈2K) uyumlu.</p>
+      <div class="seg" role="group" aria-label="Akış">
+        <button type="button" data-v="classic" aria-pressed="true">Klasik tool calling</button>
+        <button type="button" data-v="prog">Programmatic tool calling</button>
+      </div>
+      <div class="l4-ptcout" aria-live="polite"></div>
+    </div>
+
+    <h3>MCP’yi kod API’si olarak sunmak</h3>
+    <p>Anthropic, 4 Kasım 2025’te aynı fikri bir adım ileri taşıyan bir yazı yayımladı: MCP sunucularını araç listesi olarak değil, bir dosya sisteminde duran kod modülleri olarak sun (<code>./servers/google-drive/getDocument.ts</code> gibi). Agent ihtiyacı olan dosyayı okur, kodu yazar, veriyi sandbox içinde süzer. Yazıdaki Google Drive’dan bir CRM’e veri taşıma örneğinde token kullanımı yaklaşık 150K’dan yaklaşık 2K’ya düştü (%98,7). Yan faydalar: kişisel veriler modelin göreceği yere varmadan sandbox’ta maskelenebilir; işe yarayan kod parçası bir skill olarak saklanıp tekrar kullanılabilir. Cloudflare aynı fikre “Code Mode” diyor.</p>
+
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>“Hesaplamayı veriye götür, veriyi hesaplamaya getirme.” 120 bin satırı uygulamaya çekip C#’ta filtrelemek yerine WHERE’i veritabanında çalıştırırsın. Programmatic tool calling, aynı kararın LLM versiyonu: süzme işini context’te değil, kodda yap.</div>
+
+    <h3>Hangisi ne zaman?</h3>
+    <p>Bu üç teknik farklı darboğazları çözer; birini diğerinin yerine koyma. Sorun “konuşma başlamadan context’in onda biri araç tanımlarıyla dolu” ise tool search. Sorun “araç sonuçları büyük ve model onları yalnızca süzmek için okuyor” ise programmatic tool calling. Sorun “düzinelerce servisi tek tek araç olarak sunmak yönetilemez hale geldi” ise MCP’yi kod API’si olarak sunmak. Beş araçlı, sonuçları küçük bir agent için hiçbirine gerek yok; ekstra katman ekstra hata yüzeyidir.</p>
+    <p>Bedelleri de var. Tool search’te model aracı <em>bulmak</em> zorunda: adı ve açıklaması kötü bir araç artık yalnızca yanlış kullanılmakla kalmaz, hiç bulunmaz. Bu yüzden 2. ve 3. konudaki tasarım ilkeleri ölçek büyüdükçe daha da önemli hale geliyor. Her turda kullanılan birkaç temel aracı ertelemenin de anlamı yok; onlar zaten her istekte gerekiyor. Programatik çağrıda ise ara sonuçlar modelin gözünden çıktığı gibi senin gözünden de çıkabilir: kodun içinde 120 çağrıdan biri sessizce hata verirse model bunu ancak program yazdırırsa görür. Sandbox içindeki çağrıları da logla ve programın hataları açıkça raporlamasını iste.</p>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Bu yaklaşımların hepsi, modelin yazdığı kodun bir yerde çalışması demek. Anthropic de yazısında bunun güvenli bir sandbox gerektirdiğini açıkça belirtiyor: kaynak sınırları, ağ yalıtımı, izlenebilirlik. Anthropic’in sunucu tarafı kod çalıştırma aracı bu ortamı sağlar; kendi harness’ında kuruyorsan sorumluluk sende. 10. seviye.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Araç tanımları her istekte giden context’tir. 58 araç ≈ 55K token; seçim kalitesi de araç sayısıyla düşer.</li>
+        <li><code>defer_loading</code> + tool search: tanımları ihtiyaçta yükle. Anthropic’in örneğinde yaklaşık %85 daha az token ve daha yüksek doğruluk.</li>
+        <li>Programmatic tool calling ve MCP’nin kod API’si olarak sunulması: ara sonuçlar sandbox’ta kalır, context’e yalnızca özet döner.</li>
+        <li>Kod çalıştıran her çözüm bir sandbox gerektirir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/advanced-tool-use">Anthropic: Introducing advanced tool use (24 Kasım 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/code-execution-with-mcp">Anthropic: Code execution with MCP (4 Kasım 2025)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (ertelenmiş MCP araçları)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (araç sayısı, tool search)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Pricing</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. MCP ============ -->
+  <div class="lesson" data-tab="MCP">
+    <h2>Neden bir protokol?</h2>
+    <p class="lead">Her AI uygulaması her servisle kendi entegrasyonunu yazarsa N uygulama × M servis kadar entegrasyon gerekir. <span class="g" data-g="MCP">Model Context Protocol</span> (MCP) bunu N + M’ye indirmek için var: servis bir kez MCP sunucusu yazar, her MCP destekli uygulama onu kullanır.</p>
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Language Server Protocol. Eskiden her editör her dil için ayrı eklenti isterdi; LSP ile dil bir kez sunucu yazar, VS Code da Vim de onu konuşur. MCP aynı hareketi araçlar ve veri kaynakları için yapıyor; altında da LSP gibi JSON-RPC 2.0 var.</div>
+
+    <h3>Üç rol: host, client, server</h3>
+    <p><span class="g" data-g="MCP host">Host</span>, kullanıcının çalıştığı AI uygulamasıdır: Claude Code, bir IDE, bir masaüstü uygulaması. LLM API’siyle konuşan, kullanıcı onayını yöneten ve güvenlik kararlarını veren odur. Host, bağlandığı her sunucu için ayrı bir <b>client</b> oluşturur; her client tek bir <span class="g" data-g="MCP sunucusu">sunucuyla</span> birebir bağlantı tutar. Spesifikasyonun bilinçli tasarım kararı şu: sunucular konuşmanın tamamını okuyamamalı ve birbirlerinin içini görememeli. Bağlamı birleştiren yalnızca host.</p>
+    <p>Bu, MCP’nin modelle doğrudan konuşmadığı anlamına da gelir. Model yine 1. konudaki gibi bir <code>tool_use</code> bloğu yazar; host bunun bir MCP aracına ait olduğunu bilir, ilgili client üzerinden sunucuya bir <code>tools/call</code> gönderir, cevabı <code>tool_result</code> olarak modele geri verir. MCP, harness ile dış dünya arasındaki kablodur; model ile harness arasındaki sözleşme değişmez.</p>
+
+    <div class="fig" data-widget="l4-mcpmap">
+      <p class="fig-title">Bir host, üç client, üç sunucu</p>
+      <p class="fig-cap">Kutulara tıkla. Her parçanın neyi bildiğini, neyi bilmediğini ve hangi taşıma katmanıyla bağlandığını gör.</p>
+      <div class="l4-map"></div>
+      <div class="panel l4-mapout" aria-live="polite"><span class="muted">Bir kutuya tıkla.</span></div>
+    </div>
+
+    <h3>Primitifler: kim neyi kontrol eder?</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Primitif</th><th>Taraf</th><th>Kontrol eden</th><th>Örnek</th></tr></thead>
+      <tbody>
+        <tr><td><b>Tools</b></td><td>Sunucu</td><td>Model (çağırıp çağırmamaya o karar verir)</td><td><code>example_orders_cancel</code></td></tr>
+        <tr><td><b><span class="g" data-g="Resource (MCP)">Resources</span></b></td><td>Sunucu</td><td>Uygulama (host neyi context’e koyacağını seçer)</td><td>URI ile adreslenen bir şema dökümü</td></tr>
+        <tr><td><b>Prompts</b></td><td>Sunucu</td><td>Kullanıcı (çoğu zaman slash komutu olarak seçer)</td><td>“Sipariş gecikmesi raporu” şablonu</td></tr>
+        <tr><td>Sampling, Roots</td><td>Client</td><td>Sunucu ister, host karşılar</td><td>Güncel sürümde kullanımdan kaldırıldı (aşağıda)</td></tr>
+        <tr><td><b><span class="g" data-g="Elicitation">Elicitation</span></b></td><td>Client</td><td>Sunucu kullanıcıdan bilgi/onay ister</td><td>“1042 iptal edilsin mi?”</td></tr>
+      </tbody>
+    </table></div>
+    <p>Bu “kim kontrol eder” sütunu, MCP’nin en az okunan ama en önemli kısmı. Bir tool’u model kendi başına çağırabilir; bu yüzden yan etkili işlemler tool olarak sunulduğunda onay katmanı host’ta olmalı. Bir resource ise ancak uygulama ya da kullanıcı seçtiğinde context’e girer.</p>
+
+    <h3>Taşıma: stdio ve Streamable HTTP</h3>
+    <p><span class="g" data-g="stdio">stdio</span>’da host sunucuyu bir alt süreç olarak başlatır ve satır satır JSON-RPC mesajlarını standart girdi/çıktı üzerinden yollar. Yerel araçlar için basit ve hızlı; kimlik bilgileri ortam değişkenlerinden gelir ve süreç senin kullanıcı yetkilerinle çalışır. <span class="g" data-g="Streamable HTTP">Streamable HTTP</span>’de her mesaj tek bir uç noktaya POST edilir; yanıt düz JSON ya da isteğe özel bir SSE akışı olarak döner. Güncel sürümde istekler <code>MCP-Protocol-Version</code>, <code>Mcp-Method</code> ve <code>Mcp-Name</code> başlıklarını taşır; böylece bir ağ geçidi gövdeyi açmadan hangi aracın çağrıldığını görebilir.</p>
+
+    <h3>2026-07-28: protokol durumsuzlaşıyor</h3>
+    <p>Kasım 2026 itibarıyla güncel spesifikasyon sürümü <b>2026-07-28</b>. Bir önceki sürüme (2025-11-25) göre büyük bir mimari değişiklik getiriyor; eski bir rehberden MCP öğrendiysen aşağıdakilerin çoğu sana yeni gelecek.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Konu</th><th>2025-11-25</th><th>2026-07-28</th></tr></thead>
+      <tbody>
+        <tr><td>Bağlantı kurulumu</td><td><code>initialize</code> el sıkışması, oturum</td><td>El sıkışma yok. Her istek protokol sürümünü ve client yeteneklerini <code>_meta</code> içinde taşır; yeni ve zorunlu <code>server/discover</code></td></tr>
+        <tr><td>Oturum</td><td><code>Mcp-Session-Id</code> başlığı</td><td>Kaldırıldı. Durum gereken sunucu, açık bir tanıtıcı (handle) üretip araç argümanı olarak dolaştırır</td></tr>
+        <tr><td>Sunucunun client’a sorması</td><td>Sunucu kendi isteğini yollar (<code>elicitation/create</code>, <code>sampling/createMessage</code>, <code>roots/list</code>)</td><td><span class="g" data-g="MRTR">MRTR</span>: sunucu <code>resultType: "input_required"</code> döner, client isteği <code>inputResponses</code> ile yeniden gönderir</td></tr>
+        <tr><td>Kullanımdan kalkanlar</td><td></td><td>Roots, Sampling, Logging (araç parametresi kullan, LLM API’sini doğrudan çağır, stderr/OTel’e logla), eski HTTP+SSE taşıması, Dynamic Client Registration</td></tr>
+        <tr><td>Uzun işler</td><td>Deneysel tasks</td><td><code>io.modelcontextprotocol/tasks</code> uzantısına taşındı</td></tr>
+        <tr><td>Önbellek dostluğu</td><td></td><td><code>tools/list</code> deterministik OLMALI (SHOULD); liste sonuçlarında <code>ttlMs</code>, <code>cacheScope</code></td></tr>
+      </tbody>
+    </table></div>
+    <p>Neden durumsuzluk? Oturumlu bir protokolde aynı client’ın istekleri aynı sunucu örneğine gitmek zorundadır; yük dengeleyicinin arkasında yatay ölçeklemek zorlaşır. Durumsuz modelde her istek kendi bağlamını taşır, herhangi bir örnek cevap verebilir. MRTR da aynı mantığın sonucu: sunucu artık açık bir kanal üzerinden client’a soru soramaz; “bu işi yapmak için şu bilgiye ihtiyacım var” diyen bir sonuç döner, client cevabı ekleyip isteği tekrarlar. HTTP’de 401 alıp token’la yeniden denemeye benziyor.</p>
+
+    <div class="fig" data-widget="l4-mcpseq">
+      <p class="fig-title">2026-07-28 ile bir araç çağrısı: kullanıcı onaylı iptal</p>
+      <p class="fig-cap">Model 1042 numaralı siparişi iptal etmek istiyor; sunucu önce kullanıcının onayını istiyor. Her adımda HTTP başlıklarını ve JSON-RPC gövdesini gör. Metot adları, <code>resultType</code>, <code>inputResponses</code>, <code>ttlMs</code> ve başlıklar spesifikasyondan; <code>_meta</code> içindeki ve onay isteğindeki bazı alan adları sadeleştirilmiş, temsili. Kesin şema için spesifikasyona bak.</p>
+      <div class="l4-mcpstage"></div>
+    </div>
+
+    <h3>Yetkilendirme</h3>
+    <p>stdio sunucuları kimlik bilgisini ortamdan alır. HTTP üzerinden çalışan sunucular için spesifikasyon OAuth 2.1 tanımlıyor ve oldukça sıkı:</p>
+    <ul>
+      <li>MCP sunucusu bir <b>resource server</b>’dır ve Protected Resource Metadata (RFC 9728) yayımlamak ZORUNDADIR; client hangi yetkilendirme sunucusuna gideceğini buradan öğrenir.</li>
+      <li>Client token isterken <code>resource</code> göstergesini (RFC 8707) göndermek ZORUNDADIR; sunucu da token’ın kendisi için (audience) kesildiğini doğrulamak ZORUNDADIR.</li>
+      <li><b>Token passthrough yasak:</b> sunucu başka hiçbir token’ı kabul edemez ve aldığı token’ı arkadaki bir API’ye aktaramaz. Aksi halde bir sunucuya verdiğin yetki, onun konuştuğu her şeye sızar.</li>
+      <li>PKCE ve <code>iss</code> doğrulaması (RFC 9207) zorunlu. Yetersiz kapsamda sunucu 403 döner ve kapsam yükseltme (step-up) akışı başlar.</li>
+      <li>Dynamic Client Registration kullanımdan kalktı; yerini Client ID Metadata Documents aldı.</li>
+    </ul>
+
+    <div class="callout warn"><span class="ct">Dikkat</span>Bir MCP sunucusu eklemek, bir bağımlılık eklemektir; hem de context’ine doğrudan metin yazabilen bir bağımlılık. Araç açıklamaları ve araç sonuçları modelin okuduğu metindir; kötü niyetli ya da ele geçirilmiş bir sunucu oraya talimat koyabilir. stdio sunucusu senin kullanıcı yetkilerinle çalışır; uzak sunucu araç argümanlarında gönderdiğin her veriyi görür. Kim yazdı, hangi araçları sunuyor, hangi yetkilerle çalışıyor; bunları bir NuGet ya da npm paketine bakar gibi incele. Ayrıntısı 10. seviyede.</div>
+    <div class="callout tip"><span class="ct">Pratikte</span>Yeni bir MCP sunucusu bağladıktan sonra Claude Code’da <code>/context</code> ile ne kadar yer kapladığına bak; yan etkili araçları izin kurallarıyla onaya bağla (8. seviye). Kendi sunucunu yazıyorsan bu seviyedeki araç tasarımı ilkeleri aynen geçerli: ad alanı, kısa yanıt biçimi, eyleme dönük hata, deterministik <code>tools/list</code>.</div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>MCP, araç ve veri kaynakları için LSP’dir: host her sunucuya ayrı bir client açar, bağlamı yalnızca host birleştirir.</li>
+        <li>Tools modelin, resources uygulamanın, prompts kullanıcının kontrolünde. Yan etkili tool’ların onayı host’ta.</li>
+        <li>2026-07-28 ile protokol durumsuz: el sıkışma ve oturum yok, <code>server/discover</code> var; sunucu soru sormak için <code>input_required</code> döner.</li>
+        <li>HTTP sunucuları OAuth 2.1 ile korunur; token passthrough yasak. Her MCP sunucusu bir bağımlılık ve bir saldırı yüzeyidir.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Kaynaklar</b><ol>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/architecture">MCP: Architecture</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/versioning">MCP: Versioning (güncel sürüm)</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">MCP 2026-07-28 changelog</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/transports">MCP 2026-07-28: Transports</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP 2026-07-28: Authorization</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/changelog">MCP 2025-11-25 changelog</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){ const s=document.createElement("style"); s.textContent=`
+.l4-actors{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin:.8rem 0 .4rem}
+.l4-actor{border:2px solid var(--line);border-radius:10px;padding:.4rem .5rem;font-size:.76rem;line-height:1.3;background:var(--paper);color:var(--muted);transition:border-color .25s,background .25s,transform .25s}
+.l4-actor b{display:block;font-family:var(--sans);font-size:.84rem;color:var(--ink)}
+.l4-actor.on.h{border-color:var(--harness);background:var(--harness-bg);transform:translateY(-2px)}
+.l4-actor.on.m{border-color:var(--model);background:var(--model-bg);transform:translateY(-2px)}
+.l4-actor.on.t{border-color:var(--tool);background:var(--tool-bg);transform:translateY(-2px)}
+.l4-dir{font-family:var(--mono);font-size:.76rem;color:var(--muted);margin:.1rem 0 .4rem}
+.l4-split{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:.8rem;align-items:start}
+@media (max-width:760px){.l4-split{grid-template-columns:1fr}}
+.l4-note{background:var(--soft);border-radius:10px;padding:.75rem .9rem;font-size:.88rem;line-height:1.5}
+.l4-note h4{margin:0 0 .3rem;font-size:.98rem;font-family:var(--sans)}
+.l4-note.err{background:var(--risk-bg);border-left:4px solid var(--risk)}
+.l4-note.fin{background:var(--ok-bg);border-left:4px solid var(--ok)}
+.l4-msgs{display:flex;flex-wrap:wrap;gap:4px;margin-top:.6rem}
+.l4-msgs span{font-family:var(--mono);font-size:.7rem;padding:.1rem .45rem;border-radius:6px;border:1px solid var(--line);background:var(--surface)}
+.l4-msgs span.u{border-color:var(--tool);color:var(--tool)}
+.l4-msgs span.a{border-color:var(--model);color:var(--model)}
+.l4-msgs span.x{border-color:var(--risk);color:var(--risk)}
+.l4-msgs small{width:100%;font-size:.72rem;color:var(--muted)}
+.l4-opts{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.35rem 0}
+.l4-opts .lab{font-size:.78rem;color:var(--muted);font-weight:700;font-family:var(--sans);min-width:5.5rem}
+.l4-opts label{font-size:.85rem;display:inline-flex;gap:.35rem;align-items:center;cursor:pointer}
+.l4-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:.55rem .9rem}
+.l4-row{display:flex;flex-direction:column;gap:.25rem;font-size:.8rem}
+.l4-row > span{color:var(--muted);font-weight:700;font-family:var(--sans)}
+.l4-lint{list-style:none;padding:0;margin:0;display:grid;gap:.35rem}
+.l4-lint li{border-radius:8px;padding:.45rem .6rem;font-size:.84rem;line-height:1.45;border:1px solid var(--line);border-left:4px solid var(--line);background:var(--paper);margin:0}
+.l4-lint li.bad{border-left-color:var(--risk)} .l4-lint li.ok{border-left-color:var(--ok)} .l4-lint li.info{border-left-color:var(--tool)}
+.l4-lint li b{font-family:var(--sans)}
+.l4-tl{display:grid;gap:.55rem;margin-top:.9rem}
+.l4-lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:.5rem;align-items:center;font-size:.78rem;font-family:var(--sans);font-weight:700}
+.l4-track{position:relative;height:40px;background:var(--soft);border-radius:6px;overflow:hidden}
+.l4-blk{position:absolute;border-radius:4px;font-size:.62rem;font-family:var(--mono);color:var(--surface);display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap;transition:left .35s,width .35s}
+.l4-blk.m{background:var(--model)} .l4-blk.t{background:var(--tool)}
+.l4-axis{font-family:var(--mono);font-size:.68rem;color:var(--muted);text-align:right}
+.l4-stack{display:flex;height:28px;border-radius:7px;overflow:hidden;background:var(--soft);margin-top:.8rem}
+.l4-stack i{display:block;height:100%;transition:width .4s cubic-bezier(.2,.7,.2,1)}
+.l4-flow{display:flex;flex-wrap:wrap;gap:.4rem;align-items:stretch;margin:.7rem 0}
+.l4-flow > div{flex:1 1 130px;border:2px solid var(--line);border-radius:10px;padding:.5rem .6rem;font-size:.8rem;line-height:1.35;background:var(--paper)}
+.l4-flow > div b{display:block;font-family:var(--sans);font-size:.86rem}
+.l4-flow > div.m{border-color:var(--model);background:var(--model-bg)}
+.l4-flow > div.t{border-color:var(--tool);background:var(--tool-bg)}
+.l4-flow > div.h{border-color:var(--harness);background:var(--harness-bg)}
+.l4-flow > span{align-self:center;color:var(--faint);font-weight:800}
+.l4-map{display:grid;grid-template-columns:minmax(0,1fr) 58px minmax(0,1fr);grid-template-rows:repeat(4,auto);gap:.5rem .3rem;align-items:center;position:relative;padding:.3rem}
+.l4-hostframe{grid-column:1;grid-row:1 / 5;border:2px dashed var(--harness);border-radius:12px;align-self:stretch;margin:-.3rem}
+.l4-node{position:relative;font:inherit;font-size:.78rem;line-height:1.3;text-align:left;border:2px solid var(--line);border-radius:10px;padding:.45rem .55rem;background:var(--surface);color:var(--ink);cursor:pointer;min-width:0}
+.l4-node b{display:block;font-family:var(--sans);font-size:.84rem}
+.l4-node small{color:var(--muted)}
+.l4-node.h{border-color:color-mix(in srgb,var(--harness) 55%,var(--line))}
+.l4-node.t{border-color:color-mix(in srgb,var(--tool) 55%,var(--line))}
+.l4-node[aria-pressed="true"]{background:var(--acc-bg);border-color:var(--acc);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc) 30%,transparent)}
+.l4-wire{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-align:center;border-top:2px solid var(--line);padding-top:.15rem;overflow-wrap:anywhere}
+.l4-hdr{font-family:var(--mono);font-size:.72rem;background:var(--code-bg);border:1px dashed var(--line);border-radius:8px;padding:.45rem .6rem;white-space:pre-wrap;word-break:break-word;color:var(--muted);margin:.4rem 0 0}
+.l4-out{border-radius:10px;padding:.6rem .75rem;font-family:var(--mono);font-size:.74rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;background:var(--harness-bg);border:1px solid color-mix(in srgb,var(--harness) 30%,var(--line));max-height:260px;overflow:auto;margin:.6rem 0}
+.l4-out .e{color:var(--risk)} .l4-out .d{color:var(--muted)}
+`; document.head.append(s); })();
+
+Edu.glossary({
+  "Tool use": "Modelin düz metin yerine, bir aracın adını ve argümanlarını içeren yapılandırılmış bir istek üretmesi. Aracı model değil, harness ya da senin kodun çalıştırır ve sonucu modele geri verir.",
+  "tool_use bloğu": "Anthropic API’sinde modelin yanıtındaki araç isteği: id, name ve input alanları. Yanıt stop_reason: tool_use ile biter. OpenAI karşılığı function_call öğesidir.",
+  "tool_result": "Aracın sonucunu modele taşıyan blok. tool_use_id ile hangi çağrıya cevap olduğunu söyler, user mesajının content dizisinde en başta durur; hata için is_error: true alır.",
+  "JSON Schema": "Bir JSON verisinin yapısını (tipler, zorunlu alanlar, enum’lar) tanımlayan standart. Araçların input_schema alanı bir JSON Schema nesnesidir.",
+  "strict mode": "Araç tanımında strict: true. API, modelin ürettiği girdinin şemaya uyacağını garanti eder; geçersiz çağrı sınıfını ortadan kaldırır. OpenAI’da her alan required olmalı, isteğe bağlılık null tipiyle ifade edilir.",
+  "tool_choice": "Araç kullanımını sınırlayan istek parametresi: auto (model karar verir), any (bir araç zorunlu), tool (belirli araç zorunlu), none. OpenAI’da required ve allowed_tools da var.",
+  "Paralel tool call": "Modelin aynı yanıtta birden çok tool_use bloğu üretmesi. Bütün sonuçlar tek bir user mesajında geri gider. Model turu sayısını ve yeniden gönderilen geçmişi azaltır.",
+  "Tool search": "Araç tanımlarını baştan context’e koymak yerine, modelin bir arama aracıyla ihtiyaç duyduğu tanımları bulup yüklemesi. Anthropic’in örneğinde 58 araçlık yükü yaklaşık %85 azalttı.",
+  "defer_loading": "Bir araç tanımında true olduğunda tanım baştan context’e girmez; yalnızca tool search ile bulunduğunda yüklenir.",
+  "Programmatic tool calling": "Modelin araçları doğrudan değil, kod çalıştırma ortamında yazdığı programın içinden çağırması (allowed_callers). Ara sonuçlar sandbox’ta kalır, context’e yalnızca programın çıktısı döner.",
+  "MCP": "Model Context Protocol. AI uygulamalarının (host) araç ve veri sunucularına standart biçimde bağlanmasını sağlayan JSON-RPC 2.0 tabanlı protokol. Kasım 2026 itibarıyla güncel sürüm 2026-07-28.",
+  "MCP host": "Kullanıcının çalıştığı AI uygulaması (Claude Code, IDE). Her sunucu için ayrı bir client açar, LLM ile konuşur, onay ve güvenlik kararlarını verir; bağlamı yalnızca o birleştirir.",
+  "MCP sunucusu": "Tools, resources ve prompts sunan program ya da servis. Yerelde stdio alt süreci veya uzakta Streamable HTTP uç noktası olarak çalışır; konuşmanın tamamını göremez.",
+  "Resource (MCP)": "MCP sunucusunun URI ile adreslenen veri kaynağı (dosya, şema dökümü, kayıt). Ne zaman context’e gireceğine model değil uygulama karar verir.",
+  "Elicitation": "MCP sunucusunun, host aracılığıyla kullanıcıdan bilgi ya da onay istemesi. 2026-07-28 sürümünde MRTR üzerinden, input_required sonucu ile yapılır.",
+  "MRTR": "Multi Round-Trip Requests. MCP 2026-07-28’de sunucunun client’a kendi isteğini yollaması yerine input_required sonucu dönmesi; client gerekli bilgiyi inputResponses ile ekleyip isteği yeniden gönderir.",
+  "stdio": "MCP taşıması: host sunucuyu alt süreç olarak başlatır, JSON-RPC mesajları satır satır standart girdi/çıktıdan akar. Kimlik bilgileri ortam değişkenlerinden gelir.",
+  "Streamable HTTP": "MCP’nin uzak taşıması: her mesaj tek bir uç noktaya POST edilir, yanıt JSON ya da isteğe özel SSE akışıdır. Yetkilendirme OAuth 2.1 ile yapılır.",
+  "Poka-yoke": "Yanlış kullanımı tasarım gereği imkânsız kılmak. Araçlarda: mutlak yol istemek, enum ile biçim sınırlamak, kimliği tamsayı tipinde almak.",
+  "Namespacing": "Araç adlarını servis ve kaynakla öneklemek (example_orders_search, example_shipments_search). Birden çok sunucu aynı listeye araç getirdiğinde seçimi ve okunabilirliği korur."
+});
+
+/* ---------- 1. Tool call stepper ---------- */
+Edu.widget("l4-cycle", el => {
+  const { h, $, json, stepper, seg } = Edu;
+  const Q = "1042 numaralı Example Co siparişi neden geç teslim edildi?";
+  const TOOLS = [
+    { name:"example_orders_get", description:"Tek bir siparişi order_id ile getirir. Müşteri adı, status_code ve söz verilen teslim tarihini döner.",
+      input_schema:{ type:"object", properties:{ order_id:{ type:"integer" } }, required:["order_id"] } },
+    { name:"example_shipments_search", description:"Bir siparişin sevkiyat olaylarını eskiden yeniye arar. Varsayılan olarak response_format=summary kullan.",
+      input_schema:{ type:"object", properties:{ order_id:{ type:"integer" }, response_format:{ type:"string", enum:["summary","full"] } }, required:["order_id"] } }
+  ];
+  const T1 = { type:"tool_use", id:"toolu_01", name:"example_orders_get", input:{ order_id:1042 } };
+  const T2 = { type:"tool_use", id:"toolu_02", name:"example_shipments_search", input:{ order_id:1042, response_format:"concise" } };
+  const R1 = { type:"tool_result", tool_use_id:"toolu_01", content:"{\"order_id\":1042,\"customer\":\"Example Co\",\"status_code\":\"DELIVERED\",\"created_at\":\"2026-10-01T09:12:00Z\",\"promised_at\":\"2026-10-03\"}" };
+  const ERR = "Error: 'response_format' must be one of [\"summary\",\"full\"]. Example: {\"order_id\":1042,\"response_format\":\"summary\"}";
+  const EV = "2 olay: 2026-10-02 PICKED; 2026-10-06 DELIVERED (event_name=CARRIER_DELAY, hub=TST-2)";
+  const MODEL = "claude-opus-5-5";
+  const H1 = "(1) user: soru", H2 = "(2) assistant: Yanıt 1’in content dizisi, aynen";
+
+  const actors = h("div", { class:"l4-actors" },
+    h("div", { class:"l4-actor h", "data-a":"h" }, h("b", null, "Senin kodun"), "harness, döngü, izinler"),
+    h("div", { class:"l4-actor m", "data-a":"m" }, h("b", null, "Messages API"), "model karar verir"),
+    h("div", { class:"l4-actor t", "data-a":"t" }, h("b", null, "Araçlar"), "example_app, veritabanı"));
+  const stage = $(".l4-stage", el);
+  let sp = null;
+
+  function build(mode){
+    const S = [];
+    S.push({ on:["h","m"], dir:"senin kodun → API", t:"İstek 1: soru + araç tanımları",
+      obj:{ model:MODEL, max_tokens:1024, tools:TOOLS, messages:[{ role:"user", content:Q }] }, hl:["tools"],
+      msgs:[["u","user"]],
+      note:"Kodun soruyu ve iki aracın tanımını gönderir. Model bu araçlar hakkında yalnızca buradaki ad, açıklama ve şemayı bilir. Bu tanımlar sonraki her istekte de aynen tekrar gidecek." });
+    S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt 1: iki araç isteği",
+      obj:{ id:"msg_01", role:"assistant", stop_reason:"tool_use", content:[{ type:"text", text:"Siparişe ve sevkiyat olaylarına aynı anda bakıyorum." }, T1, T2] }, hl:["stop_reason","id"],
+      msgs:[["u","user"]],
+      note:"Model hiçbir şey çalıştırmadı; yalnızca iki tool_use bloğu yazdı (paralel çağrı). stop_reason: tool_use, senin kodunun sıranın kendisinde olduğunu anlamasını sağlar. Dikkat: model response_format için enum’da olmayan “concise” yazdı. Bu tanımda strict kapalı; açık olsaydı bu değer üretilemezdi." });
+    const r2 = mode === "failed" ? { type:"tool_result", tool_use_id:"toolu_02", is_error:true, content:"failed" }
+             : mode === "noid" ? { type:"tool_result", is_error:true, content:ERR }
+             : { type:"tool_result", tool_use_id:"toolu_02", is_error:true, content:ERR };
+    S.push({ on:["h","t"], dir:"senin kodun → araçlar", t:"Yürütme: doğrula, çalıştır",
+      obj:{ toolu_01:{ handler:"OrdersRepository.Get(1042)", sonuc:"ok", sure_ms:38 },
+            toolu_02:{ handler:"ShipmentsRepository.Search", sonuc:"girdi doğrulaması başarısız", neden:"response_format = 'concise' enum’da yok" } },
+      hl:[], msgs:[["u","user"],["a","assistant"]],
+      note:"Kodun modelin yanıtını geçmişe ekler, iki çağrıyı eşzamanlı çalıştırır. İlki başarılı. İkincisi şema doğrulamasından geçmiyor. Döngüyü çökertmek yerine bu hatayı modele bir tool_result olarak döneceğiz." + (mode === "failed" ? " Bu senaryoda hata mesajı olarak yalnızca “failed” yazılıyor." : "") });
+    const content = mode === "textfirst" ? [{ type:"text", text:"Sonuçlar aşağıda:" }, R1, r2] : [R1, r2];
+    S.push({ on:["h","m"], dir:"senin kodun → API", t:"İstek 2: geçmiş + iki sonuç",
+      obj:{ model:MODEL, tools:"(aynı iki araç, değişmeden)", messages:[H1, H2, { role:"user", content }] },
+      hl:["tool_use_id","is_error","text"],
+      msgs:[["u","user"],["a","assistant"],[mode === "textfirst" || mode === "noid" ? "x" : "u","user: tool_result ×2"]],
+      note: mode === "textfirst" ? "Sonuçlardan önce bir metin bloğu konmuş. Kural: tool_result blokları content dizisinin başında durur."
+          : mode === "noid" ? "İkinci sonuçta tool_use_id yok. Model hangi çağrının sonucunu gördüğünü bilemez; API de toolu_02’nin cevapsız kaldığını görür."
+          : "İki sonuç tek user mesajında, her biri kendi tool_use_id’siyle. Geçmişin tamamı yeniden gidiyor: model kendi önceki yanıtını ancak böyle “hatırlar”." });
+
+    if (mode === "textfirst" || mode === "noid"){
+      S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt: HTTP 400", err:true,
+        obj:{ type:"error", error:{ type:"invalid_request_error", message: mode === "textfirst" ? "(temsili) tool_result blokları content dizisinin başında olmalı" : "(temsili) toolu_02 için eşleşen tool_result bulunamadı" } },
+        hl:["message"], msgs:[["u","user"],["a","assistant"],["x","user: geçersiz"]],
+        note:"Model hiç çalışmadı. Sözleşme ihlali API kapısında yakalandı; mesaj metni temsili, 400 ve hata türü gerçek davranışı yansıtıyor. Bu bir model hatası değil, senin kodunun hatası: “model saçmaladı” diye değil, istek gövdesine bakarak ayıklanır." });
+      S.push({ on:["h"], dir:"senin kodun", t:"Düzeltme", fin:true, obj:null,
+        msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+        note: mode === "textfirst" ? "Metin bloğunu sonuçların arkasına taşı (ya da hiç ekleme), aynı isteği yeniden gönder. Bunu bir kez, mesajları kuran yardımcı fonksiyonda düzeltirsin; her araç için ayrı ayrı değil." : "Her tool_result’a karşılık geldiği tool_use.id’yi yaz. Yürütücün sonuçları çağrı listesinden üretiyorsa id’yi taşımak doğal olur; elle kurulan sonuçlarda unutulur." });
+      return S;
+    }
+    if (mode === "failed"){
+      S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt 2: aynı çağrı, yeniden",
+        obj:{ stop_reason:"tool_use", content:[{ type:"text", text:"Sevkiyat araması başarısız oldu, bir kez daha deniyorum." }, { type:"tool_use", id:"toolu_03", name:"example_shipments_search", input:{ order_id:1042, response_format:"concise" } }] },
+        hl:["stop_reason","id"], msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+        note:"Model neyin yanlış olduğunu bilmiyor. “failed” geçici bir arıza da olabilir, girdi hatası da. Elindeki en makul hamle aynı çağrıyı tekrarlamak. (Simüle)" });
+      S.push({ on:["h","m"], dir:"senin kodun → API", t:"İstek 3: yine “failed”",
+        obj:{ messages:[H1, H2, "(3) user: tool_result ×2", "(4) assistant: toolu_03", { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_03", is_error:true, content:"failed" }] }] },
+        hl:["tool_use_id","is_error"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user: failed"]],
+        note:"Bir model turu ve büyüyen bir geçmiş daha, hiçbir yeni bilgi olmadan." });
+      S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt 3: vazgeçme",
+        obj:{ stop_reason:"end_turn", content:[{ type:"text", text:"Sipariş 1 Ekim’de oluşturulmuş ve 3 Ekim’de teslim sözü verilmiş. Sevkiyat kayıtlarına erişemediğim için gecikmenin nedenini söyleyemiyorum." }] },
+        hl:["stop_reason"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user"],["a","assistant"]],
+        note:"Döngü bitti (end_turn), ama soru cevapsız. Aynı hata, geçerli değerleri ve bir örnek girdiyi söyleyen bir mesajla dönseydi model bir turda düzeltirdi. Fark modelde değil, araç tasarımında (3. konu). (Simüle)" });
+      S.push({ on:["h"], dir:"özet", t:"Bilanço", fin:true, obj:null, msgs:[],
+        note:"3 model çağrısı, 6 mesaj, cevapsız bir soru. Eyleme dönük hata mesajıyla aynı akış da 3 çağrı sürüyor ama doğru cevapla bitiyor. Hata mesajı, modelin bir sonraki turda okuyacağı bir talimattır." });
+      return S;
+    }
+    S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt 2: düzeltilmiş çağrı",
+      obj:{ stop_reason:"tool_use", content:[{ type:"text", text:"response_format için geçerli değer summary; aramayı düzeltip tekrarlıyorum." }, { type:"tool_use", id:"toolu_03", name:"example_shipments_search", input:{ order_id:1042, response_format:"summary" } }] },
+      hl:["stop_reason","id"], msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+      note:"Hata mesajı geçerli değerleri ve bir örnek girdi içerdiği için model tek turda düzeltti. Sipariş sonucunu (toolu_01) tekrar istemedi: o bilgi zaten geçmişte duruyor." });
+    S.push({ on:["h","m"], dir:"senin kodun → araçlar → API", t:"İstek 3: yeni sonuç",
+      obj:{ messages:[H1, H2, "(3) user: tool_result ×2", "(4) assistant: toolu_03", { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_03", content:EV }] }] },
+      hl:["tool_use_id"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user: tool_result"]],
+      note:"Kodun toolu_03’ü çalıştırdı ve sonucu ekledi. Kısa biçim (summary) olay başına tek satır döndürdü; context’e gereğinden fazla şey girmedi." });
+    S.push({ on:["m","h"], dir:"API → senin kodun", t:"Yanıt 3: end_turn",
+      obj:{ stop_reason:"end_turn", content:[{ type:"text", text:"1042 numaralı sipariş 2 Ekim’de toplandı; TST-2 hub’ında yaşanan kargo gecikmesi (CARRIER_DELAY) teslimi 6 Ekim’e itti. Söz verilen tarih 3 Ekim’di, yani teslim üç gün gecikti." }] },
+      hl:["stop_reason"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user"],["a","assistant"]],
+      note:"Model araç istemedi; stop_reason: end_turn. Senin döngün burada biter ve metni kullanıcıya gösterir. Bu döngünün tam koduna 5. seviyede bakacağız." });
+    S.push({ on:["h"], dir:"özet", t:"Bilanço", fin:true, obj:null, msgs:[],
+      note:"3 model çağrısı, 3 araç çalışması (ikisi paralel), 1 düzeltilmiş hata, 6 mesajlık geçmiş. Kullanıcı yalnızca son cümleyi ve belki “3 araç çalıştı” özetini görür; geri kalan her şey harness’ın işiydi." });
+    return S;
+  }
+
+  function mount(mode){
+    if (sp) sp.stop();
+    stage.innerHTML = "";
+    stage.append(actors);
+    const holder = h("div");
+    stage.append(holder);
+    sp = stepper(holder, { steps: build(mode), auto: 3200, render(i, s, { body }){
+      Edu.$$(".l4-actor", actors).forEach(a => a.classList.toggle("on", s.on.includes(a.dataset.a)));
+      body.innerHTML = "";
+      const note = h("div", { class:"l4-note" + (s.err ? " err" : "") + (s.fin ? " fin" : "") },
+        h("h4", null, s.t), h("p", { style:{ margin:0 } }, s.note));
+      if (s.msgs.length){
+        const strip = h("div", { class:"l4-msgs" }, h("small", null, "messages[] bu adımdan sonra:"));
+        s.msgs.forEach(m => strip.append(h("span", { class:m[0] }, m[1])));
+        note.append(strip);
+      }
+      const left = h("div", null, h("p", { class:"l4-dir" }, s.dir));
+      if (s.obj) left.append(h("div", { class:"jsonv", html: json(s.obj, { hl:s.hl }) }));
+      body.append(s.obj ? h("div", { class:"l4-split" }, left, h("div", { "aria-live":"polite" }, note)) : h("div", { "aria-live":"polite" }, left, note));
+    }});
+  }
+  seg($(".l4-mode", el), v => mount(v));
+});
+
+/* ---------- 2. Araç tasarım tezgâhı ---------- */
+Edu.widget("l4-designer", el => {
+  const { h, $, json, tokenize, seg } = Edu;
+  const st = { name:"generic", param:"vague", desc:"short", fmt:"none", path:"rel", prov:"anthropic", strict:false, ex:false };
+  const rows = [
+    ["name", "Araç adı", [["generic","search"],["ns","example_shipments_search"]]],
+    ["param", "Kimlik parametresi", [["vague","order"],["clear","order_id"]]],
+    ["desc", "Açıklama", [["short","Kısa"],["rich","Ne, ne zaman, ne döner"]]],
+    ["fmt", "Yanıt biçimi", [["none","Yok"],["free","Serbest string"],["enum","enum"]]],
+    ["path", "Dışa aktarma yolu", [["rel","Göreli"],["abs","Mutlak"]]],
+    ["prov", "Sağlayıcı biçimi", [["anthropic","Anthropic"],["openai","OpenAI"]]]
+  ];
+  const ctr = $(".l4-ctrls", el), out = $(".l4-def", el), lint = $(".l4-lint", el), tok = $(".l4-tok", el);
+  let ready = false;
+  rows.forEach(([k, lab, opts]) => {
+    const sg = h("div", { class:"seg", role:"group", "aria-label":lab });
+    opts.forEach(([v, t]) => sg.append(h("button", { type:"button", "data-v":v, "aria-pressed": st[k] === v ? "true" : "false" }, t)));
+    ctr.append(h("div", { class:"l4-row" }, h("span", null, lab), sg));
+    seg(sg, v => { st[k] = v; if (ready) render(); });
+  });
+  const cbs = h("div", { class:"l4-row" }, h("span", null, "Ek alanlar"),
+    h("div", { class:"l4-opts", style:{ margin:0 } },
+      h("label", null, h("input", { type:"checkbox", "data-k":"strict" }), "strict: true"),
+      h("label", null, h("input", { type:"checkbox", "data-k":"ex" }), "input_examples")));
+  ctr.append(cbs);
+  Edu.$$("input", cbs).forEach(c => c.addEventListener("change", () => { st[c.dataset.k] = c.checked; render(); }));
+
+  function build(){
+    const idName = st.param === "clear" ? "order_id" : "order";
+    const props = {};
+    props[idName] = st.param === "clear" ? { type:"integer", description:"example.orders.order_id değeri, örn. 1042" } : { type:"string" };
+    if (st.fmt === "free") props.response_format = { type:"string", description:"Yanıtın biçimi" };
+    if (st.fmt === "enum") props.response_format = { type:"string", enum:["summary","full"], description:"summary: olay başına tek satır (varsayılan). full: her tarama kaydı." };
+    props.export_path = st.path === "rel"
+      ? { type:"string", description:"Çıktı dosyası, örn. exports/1042.csv" }
+      : { type:"string", description:"Mutlak yol, örn. /srv/example_app/exports/1042.csv. Göreli yol reddedilir." };
+    const name = st.name === "ns" ? "example_shipments_search" : "search";
+    let desc = st.desc === "short" ? "Searches shipments."
+      : "example.shipments tablosunda tek bir siparişin sevkiyat olaylarını arar. Kullanıcı bir siparişin nerede olduğunu ya da neden geciktiğini sorduğunda kullan. Olaylar eskiden yeniye sıralı döner. export_path verilirse sonuç CSV olarak da yazılır.";
+    if (st.desc === "rich" && st.fmt === "enum") desc += " Kullanıcı her taramayı istemedikçe response_format=summary kullan.";
+    const required = [idName];
+    if (st.prov === "anthropic"){
+      const schema = { type:"object", properties:props, required };
+      if (st.strict) schema.additionalProperties = false;
+      const d = { name, description:desc, input_schema:schema };
+      if (st.strict) d.strict = true;
+      if (st.ex){
+        const ex = {}; ex[idName] = st.param === "clear" ? 1042 : "1042";
+        if (st.fmt !== "none") ex.response_format = "summary";
+        d.input_examples = [ex];
+      }
+      return d;
+    }
+    const p2 = JSON.parse(JSON.stringify(props));
+    let req = required.slice();
+    if (st.strict){
+      Object.keys(p2).forEach(k => {
+        if (!required.includes(k)){
+          p2[k].type = [p2[k].type, "null"];
+          if (p2[k].enum) p2[k].enum = p2[k].enum.concat([null]);
+        }
+      });
+      req = Object.keys(p2);
+    }
+    const params = { type:"object", properties:p2, required:req };
+    if (st.strict) params.additionalProperties = false;
+    return { type:"function", name, description:desc, parameters:params, strict:st.strict };
+  }
+  function render(){
+    const d = build();
+    out.innerHTML = json(d, { hl:["strict","additionalProperties","input_examples","enum","required"] });
+    const n = tokenize(JSON.stringify(d)).length;
+    tok.textContent = "Bu tanım ≈ " + n + " token (yaklaşık sayım). Anthropic’te buna, araç kullanımı açıkken bir kez eklenen ≈ 286 token’lık araç sistem prompt’u (5.5 modelleri) biner; hepsi her istekte yeniden gider.";
+    const L = [];
+    const add = (c, t, x) => L.push([c, t, x]);
+    if (st.name === "generic") add("bad", "Ad çok genel.", "Üç MCP sunucusu “search” getirirse model hangisinin sevkiyat, hangisinin wiki olduğunu adından anlayamaz. Servis ve kaynakla ad alanı ver.");
+    else add("ok", "Ad alanlı ad.", "Servis (example) ve kaynak (shipments) adın içinde; listede başka bir “search” olsa bile karışmaz.");
+    if (st.param === "vague") add("bad", "“order” belirsiz.", "Bir kimlik mi, nesne mi, sıralama yönü mü? Tipi string olduğu için model “#1042”, “1042” ya da “ORD-1042” yazabilir. order_id ve integer kullan.");
+    else add("ok", "Parametre adı ve tipi net.", "order_id, integer ve hangi tablodaki değer olduğu açıklamada yazıyor.");
+    if (st.desc === "short") add("bad", "Açıklama ne zaman kullanılacağını söylemiyor.", "Model bu aracı benzer araçlardan ayıramaz; ne döndüğünü ve sınırlarını da bilmez. Yeni işe başlayan birine anlatır gibi yaz.");
+    else add("ok", "Açıklama dört soruyu cevaplıyor.", "Ne yapar, ne zaman kullanılır, ne döner, yan etkisi ne (CSV yazımı).");
+    if (st.fmt === "none") add("bad", "Yanıt boyutunu kontrol eden bir parametre yok.", "Yüzlerce taramalı bir sevkiyat geçmişi context’e olduğu gibi girer. response_format gibi bir ayrıntı seçeneği sun.");
+    else if (st.fmt === "free") add("bad", "Biçim serbest string.", "Model “concise”, “short”, “brief” deneyecek ve sen her birini ayrıştırmaya çalışacaksın. enum ile sınırla.");
+    else add("ok", "Biçim enum ile sınırlı.", "Geçerli değerler şemada; açıklama da (zengin seçiliyse) varsayılanı söylüyor.");
+    if (st.path === "rel") add("bad", "Göreli yol.", "Agent çalışma dizinini değiştirdiğinde dosya yanlış yere yazılır. Mutlak yol iste: poka-yoke (3. konu).");
+    else add("ok", "Mutlak yol isteniyor.", "Anthropic’in SWE-bench agent’ında mutlak yol şartı bir hata sınıfını ortadan kaldırdı.");
+    if (!st.strict) add("bad", "strict kapalı.", "Model şemaya uymayan bir girdi üretebilir; sen doğrular, hata döner, model düzeltir. strict: true bu sınıf hatayı kapatır.");
+    else if (st.prov === "openai") add("info", "OpenAI strict dönüşümü.", "additionalProperties: false eklendi, bütün alanlar required oldu; isteğe bağlı alanların tipi null içerecek şekilde genişledi. “Yok olabilir” yerine “null olabilir”.");
+    else add("ok", "strict açık.", "Üretilen girdinin şemaya uyacağı garanti; additionalProperties: false da şemayı kapalı tutuyor.");
+    if (st.ex && st.prov === "anthropic") add("info", "input_examples var.", "Şemanın anlatamadığı kalıpları (biçim, tipik değer) gösterir. Anthropic karmaşık parametrelerde %72 → %90 doğruluk bildiriyor (üretici verisi). Örnekler de token’dır.");
+    if (st.ex && st.prov === "openai") add("info", "input_examples bir Anthropic API alanıdır.", "Bu görünümde gösterilmiyor; OpenAI biçiminde örnekleri açıklamaya yazmak bir seçenek.");
+    lint.innerHTML = "";
+    L.forEach(([c, t, x]) => lint.append(h("li", { class:c }, h("b", null, t), " ", x)));
+  }
+  ready = true;
+  render();
+});
+
+/* ---------- 3a. Log araçları ---------- */
+Edu.widget("l4-logs", el => {
+  const { h, $, json, seg } = Edu;
+  const D = {
+    raw: { tok:40000, ctx:25000, call:{ name:"read_logs", input:{ path:"/var/log/example_app/app.log" } },
+      out:"2026-11-03T00:00:01Z INFO  HealthCheck ok (12 ms)\n2026-11-03T00:00:02Z INFO  GET /api/orders?customerId=17 200 (41 ms)\n2026-11-03T00:00:02Z DEBUG Npgsql pool: 4/50 in use\n2026-11-03T00:00:03Z INFO  GET /api/orders/1031 200 (18 ms)\n… 01:59’a kadar binlerce INFO/DEBUG satırı …\n<span class=\"d\">[harness: çıktı 25.000 token’da kesildi]</span>",
+      note:"Dosyanın tamamı ≈ 40.000 token. Claude Code araç yanıtlarını 25.000 token’da kestiği için model gece yarısından itibaren ilk saatleri görüyor; asıl sorduğun 02:00–03:00 aralığı büyük ihtimalle kesilen kısımda. Model ya yanlış bir sonuca varır ya da dosyayı parça parça okumak için birçok tur harcar. Araç, işi modele yıkıyor." },
+    detailed: { tok:2100, ctx:2100, call:{ name:"example_logs_search", input:{ level:"error", from:"2026-11-03T02:00:00Z", to:"2026-11-03T03:00:00Z", response_format:"detailed" } },
+      out:"49 kayıt (ilk 20 gösteriliyor; devamı için page=2)\n<span class=\"e\">02:04:11 ERROR InvalidCastException at OrderMapper.cs:88</span>\n   status_code NULL, order_id=1031, GET /api/orders?customerId=42\n   at OrderMapper.Map(DbDataReader row) …\n   at OrdersController.List(Int32 customerId) …\n<span class=\"e\">02:04:13 ERROR InvalidCastException at OrderMapper.cs:88</span>\n   status_code NULL, order_id=1033 …\n… 18 kayıt daha (yığın izleriyle)",
+      note:"Filtrelenmiş, zaman aralığı doğru, sayfalı. Model doğru cevaba ulaşır. Ama sorusu “hangi hatalar oldu?” iken her kaydın yığın izini almak gereğinden fazla; 41 kayıt aynı hatanın tekrarı." },
+    concise: { tok:700, ctx:700, call:{ name:"example_logs_search", input:{ level:"error", from:"2026-11-03T02:00:00Z", to:"2026-11-03T03:00:00Z", response_format:"concise" } },
+      out:"49 hata, 3 tür:\n<span class=\"e\">InvalidCastException ×41</span>  OrderMapper.cs:88 (status_code NULL)  ilk 02:04, son 02:57\n<span class=\"e\">Npgsql timeout ×6</span>         db.example.test       02:31–02:33\n<span class=\"e\">HTTP 429 ×2</span>               kargo API             02:40\n<span class=\"d\">Ayrıntı için: response_format=detailed, type=InvalidCastException</span>",
+      note:"Sorunun cevabı tek ekranda ve son satır bir sonraki isteği nasıl daraltacağını söylüyor. Model ayrıntıya ihtiyaç duyarsa ister. Bu, ayrıntılı biçimin yaklaşık üçte biri; aynı oran Anthropic’in Slack örneğinde ölçüldü." }
+  };
+  const box = $(".l4-logout", el), bars = $(".l4-logbars", el), note = $(".l4-lognote", el);
+  const names = { raw:"read_logs", detailed:"detailed", concise:"concise" };
+  function render(k){
+    const d = D[k];
+    box.innerHTML = "";
+    box.append(h("div", { class:"jsonv", html: json({ type:"tool_use", name:d.call.name, input:d.call.input }, { hl:["response_format","level"] }) }),
+      h("div", { class:"l4-out", html: d.out }));
+    bars.innerHTML = "";
+    Object.keys(D).forEach(x => bars.append(h("div", { class:"bar" + (x === k ? " pick" : "") },
+      h("span", { class:"lab" }, names[x]),
+      h("span", { class:"track" }, h("span", { class:"fill", style:{ width: (D[x].ctx / 25000 * 100) + "%", display:"block" } })),
+      h("span", { class:"pct" }, (D[x].ctx / 1000).toFixed(1) + "K"))));
+    note.innerHTML = "";
+    note.append(h("b", null, "Context’e giren: ≈ " + d.ctx.toLocaleString("tr-TR") + " token" + (d.tok !== d.ctx ? " (ham çıktı ≈ " + d.tok.toLocaleString("tr-TR") + ")" : "") + ". "), d.note);
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 3b. Hata mesajları ---------- */
+Edu.widget("l4-errors", el => {
+  const { h, $, json, seg } = Edu;
+  const call = { type:"tool_use", id:"toolu_07", name:"example_orders_search", input:{ customer:"Example Co", created_after:"03.11.2026" } };
+  const D = {
+    tb: { content:"Traceback (most recent call last):\n  File \"/srv/example_app/tools/orders.py\", line 57, in search\n    dt = datetime.fromisoformat(args[\"created_after\"])\nValueError: Invalid isoformat string: '03.11.2026'",
+      turns:[["asst","Tarih ISO biçiminde olmalı gibi görünüyor; 2026-11-03 ile deniyorum."],["tool","tool_result: 12 sipariş"]],
+      sum:"Muhtemelen bir turda düzelir: traceback ipucu içeriyor. Ama iç dosya yolu, satır numarası ve kod satırı context’e girdi (gerçek bir yığında onlarca çerçeve olur, binlerce token). Model bir sonraki hatada iç kodu tahmin etmeye de başlayabilir.", extra:"1 ek tur, gereksiz iç ayrıntı" },
+    failed: { content:"failed",
+      turns:[["asst","Arama başarısız oldu, tekrar deniyorum."],["tool","tool_result: failed"],["asst","created_after alanını çıkarıp deniyorum."],["tool","tool_result: 1.284 sipariş (filtresiz)"],["asst","Example Co’nun tüm siparişleri geldi; 3 Kasım sonrası olanları listeden ayıklıyorum…"]],
+      sum:"Model neyin yanlış olduğunu bilmediği için önce aynı çağrıyı tekrarladı, sonra filtreyi atıp çok büyük bir sonuç aldı ve süzmeyi context’te yapmaya başladı. Bu kez “çalıştı” ama pahalı ve hataya açık; bazen 2–3 denemeden sonra özür dileyip vazgeçer.", extra:"3+ ek tur, büyük sonuç" },
+    act: { content:"Error: created_after must be an ISO 8601 date (YYYY-MM-DD). Got: '03.11.2026'. Example: {\"customer\": \"Example Co\", \"created_after\": \"2026-11-03\"}",
+      turns:[["asst","Tarihi 2026-11-03 olarak düzeltiyorum."],["tool","tool_result: 12 sipariş"]],
+      sum:"Ne yanlış, doğrusu ne, örnek girdi: model bir turda düzeltir, iç ayrıntı sızmaz. Bir adım ileri: tarih biçimini şemada ve açıklamada baştan kesinleştirmek (poka-yoke) bu hatayı hiç oluşturmaz.", extra:"1 ek tur, kısa mesaj" }
+  };
+  const out = $(".l4-errout", el);
+  function render(k){
+    const d = D[k];
+    out.innerHTML = "";
+    out.append(h("div", { class:"jsonv", html: json(call, { hl:["created_after"] }) }),
+      h("div", { class:"jsonv", html: json({ type:"tool_result", tool_use_id:"toolu_07", is_error:true, content:d.content }, { hl:["content"] }) }));
+    const chat = h("div", { class:"chat" });
+    d.turns.forEach(t => chat.append(h("div", { class:"msg " + t[0] }, h("span", { class:"who" }, t[0] === "asst" ? "Model (simüle)" : "Araç"), t[1])));
+    out.append(chat, h("div", { class:"panel" }, h("span", { class:"tag " + (k === "act" ? "ok" : "r") }, d.extra), " ", d.sum));
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 4a. Paralel zaman çizelgesi ---------- */
+Edu.widget("l4-parallel", el => {
+  const { h, $, $$ } = Edu;
+  const TL = [0.3, 0.9, 0.4, 0.6, 1.2, 0.5];
+  const TN = ["orders_get", "shipments", "customers", "invoices", "logs", "status"];
+  const [rm, rn] = $$("input[type=range]", el);
+  const tl = $(".l4-tl", el), stats = $(".l4-plstats", el);
+  function blk(cls, x, w, top, hh, label, scale){
+    return h("div", { class:"l4-blk " + cls, title:label, style:{ left:(x / scale * 100) + "%", width:Math.max(0.6, w / scale * 100) + "%", top:top + "px", height:hh + "px" } }, w / scale > 0.07 ? label : "");
+  }
+  function render(){
+    const m = +rm.value, n = +rn.value;
+    rm.nextElementSibling.textContent = m.toFixed(1);
+    rn.nextElementSibling.textContent = n;
+    const tools = TL.slice(0, n);
+    const seqT = (n + 1) * m + tools.reduce((a, b) => a + b, 0);
+    const parT = 2 * m + Math.max(...tools);
+    const scale = seqT;
+    const seqTrack = h("div", { class:"l4-track" });
+    let x = 0;
+    for (let i = 0; i < n; i++){
+      seqTrack.append(blk("m", x, m, 4, 32, "model", scale)); x += m;
+      seqTrack.append(blk("t", x, tools[i], 4, 32, TN[i], scale)); x += tools[i];
+    }
+    seqTrack.append(blk("m", x, m, 4, 32, "model", scale));
+    const parTrack = h("div", { class:"l4-track" });
+    parTrack.append(blk("m", 0, m, 4, 32, "model", scale));
+    const hh = Math.max(3, Math.floor(32 / n) - 1);
+    tools.forEach((t, i) => parTrack.append(blk("t", m, t, 4 + i * (hh + 1), hh, n <= 2 ? TN[i] : "", scale)));
+    parTrack.append(blk("m", m + Math.max(...tools), m, 4, 32, "model", scale));
+    tl.innerHTML = "";
+    tl.append(h("div", { class:"l4-lane" }, h("span", null, "Sıralı"), seqTrack),
+      h("div", { class:"l4-lane" }, h("span", null, "Paralel"), parTrack),
+      h("div", { class:"l4-axis" }, "0 sn … " + seqT.toFixed(1) + " sn"));
+    const base = 6000, per = 500;
+    let seqIn = 0; for (let k = 0; k <= n; k++) seqIn += base + per * k;
+    const parIn = base + (base + per * n);
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, seqT.toFixed(1) + " sn → " + parT.toFixed(1) + " sn"), "toplam süre"),
+      h("span", null, h("b", null, (n + 1) + " → 2"), "model çağrısı"),
+      h("span", null, h("b", null, (seqIn / 1000).toFixed(1) + "K → " + (parIn / 1000).toFixed(1) + "K"), "toplam girdi token’ı (6K geçmiş, sonuç başına +0,5K)"));
+  }
+  [rm, rn].forEach(r => r.addEventListener("input", render));
+  render();
+});
+
+/* ---------- 4b. tool_choice ---------- */
+Edu.widget("l4-choice", el => {
+  const { h, $, json, seg } = Edu;
+  const st = { tc:"auto", q:"q1", dp:false };
+  const jbox = $(".l4-tcjson", el), out = $(".l4-tcout", el), dp = $(".l4-dp", el);
+  const B = {
+    auto: { q1: d => d ? "Model önce yalnızca example_orders_get(1042) çağırır; sonucu görünce bir sonraki turda example_shipments_search çağırır. Bir tur fazla." : "Model example_orders_get ve example_shipments_search’ü aynı turda, paralel çağırır. Sohbet için doğru varsayılan.",
+            q2: () => "Araç çağrısı yok; model “Rica ederim” der ve döngü end_turn ile biter." },
+    any:  { q1: d => d ? "Bir araç zorunlu ve turda en fazla bir tane: model example_orders_get ile başlar." : "Model zaten araç çağıracaktı; davranış auto’ya benzer, ama araç sistem prompt’u daha büyük.",
+            q2: () => "Kullanıcı yalnızca teşekkür etti, ama model bir araç çağırmak zorunda: muhtemelen example_orders_get(1042)’yi gereksiz yere tekrar çağırır. Sohbette any, anlamsız turlar üretir." },
+    tool: { q1: () => "Model yalnızca example_shipments_search’ü çağırabilir; siparişin söz verilen tarihini bilmeden cevap vermek için bir tur daha gerekir. Zorlama, bir boru hattında “bu adımda tam olarak bu JSON’u üret” demek için mantıklı.",
+            q2: () => "Teşekkür mesajına bile example_shipments_search çağrısı üretilir. Belirli araç zorlaması sohbet için değil, yapılandırılmış veri çıkarma için." },
+    none: { q1: () => "Araç tanımları gitse de model çağıramaz. Sevkiyat verisine erişimi olmadan ya “bakamıyorum” der ya da (en kötü durumda) makul görünen bir şey uydurur.",
+            q2: () => "Araç çağrısı yok; model teşekküre cevap verir. Örneğin son özet turunda araçları kapatmak için kullanışlı." }
+  };
+  const OAI = { auto:"\"auto\"", any:"\"required\"", tool:"{\"type\":\"function\",\"name\":\"example_shipments_search\"}", none:"\"none\"" };
+  let ready = false;
+  function render(){
+    if (!ready) return;
+    const tc = { type: st.tc };
+    if (st.tc === "tool") tc.name = "example_shipments_search";
+    if (st.dp && st.tc !== "none") tc.disable_parallel_tool_use = true;
+    const msg = st.q === "q1" ? "1042 nerede kaldı?" : "Teşekkürler, bu kadar.";
+    jbox.innerHTML = json({ model:"claude-opus-5-5", tools:["example_orders_get", "example_shipments_search"], tool_choice:tc, messages:["…", { role:"user", content:msg }] }, { hl:["tool_choice"] });
+    out.innerHTML = "";
+    out.append(h("p", { style:{ marginTop:0 } }, h("b", null, "Davranış (simüle): "), B[st.tc][st.q](st.dp)),
+      h("p", null, h("b", null, "Araç sistem prompt’u: "), (st.tc === "any" || st.tc === "tool") ? "zorlama modunda daha büyük; Anthropic’in Opus 5 örneğinde 286 yerine 406 token." : (st.tc === "auto" ? "Opus/Sonnet/Haiku 5.5’te ≈ 286 token." : "araç çağrısı kapalı.")),
+      h("p", { class:"mono", style:{ fontSize:".78rem", marginBottom:0 } }, "OpenAI: tool_choice: " + OAI[st.tc] + (st.dp && st.tc !== "none" ? ", parallel_tool_calls: false" : "")));
+  }
+  seg($(".l4-tc", el), v => { st.tc = v; render(); });
+  seg($(".l4-q", el), v => { st.q = v; render(); });
+  dp.addEventListener("change", () => { st.dp = dp.checked; render(); });
+  ready = true;
+  render();
+});
+
+/* ---------- 5a. Araç bütçesi ---------- */
+Edu.widget("l4-budget", el => {
+  const { h, $ } = Edu;
+  const fixed = [
+    { lab:"System prompt", tok:3200, col:"var(--harness)" },
+    { lab:"Araç sistem prompt’u", tok:286, col:"color-mix(in srgb,var(--harness) 55%,var(--surface))" },
+    { lab:"Yerleşik araçlar", tok:12000, col:"var(--tool)" }
+  ];
+  const mcp = [
+    { lab:"MCP: example_db (14 araç)", tok:9800, def:1500, col:"color-mix(in srgb,var(--tool) 60%,var(--surface))", on:true },
+    { lab:"MCP: issue tracker (31 araç)", tok:21000, def:3300, col:"color-mix(in srgb,var(--model) 75%,var(--surface))", on:true },
+    { lab:"MCP: CI (13 araç)", tok:24200, def:3900, col:"color-mix(in srgb,var(--model) 40%,var(--surface))", on:true }
+  ];
+  const mem = { lab:"CLAUDE.md", tok:1800, col:"var(--ctx)" };
+  let defer = false;
+  const ctr = $(".l4-bud-ctrls", el), bar = $(".l4-stack", el), leg = $(".l4-bud-leg", el), stats = $(".l4-bud-stats", el);
+  mcp.forEach(m => {
+    const cb = h("input", { type:"checkbox" }); cb.checked = m.on;
+    cb.addEventListener("change", () => { m.on = cb.checked; render(); });
+    ctr.append(h("label", null, cb, m.lab));
+  });
+  const dcb = h("input", { type:"checkbox" });
+  dcb.addEventListener("change", () => { defer = dcb.checked; render(); });
+  ctr.append(h("label", { style:{ fontWeight:"700" } }, dcb, "defer_loading + tool search"));
+  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : String(n);
+  const usd = x => "$" + x.toFixed(2);
+  function render(){
+    const parts = fixed.concat(mcp.filter(m => m.on).map(m => ({ lab:m.lab + (defer ? " (ertelenmiş)" : ""), tok: defer ? m.def : m.tok, col:m.col })), [mem]);
+    const total = parts.reduce((a, p) => a + p.tok, 0);
+    const mcpTok = mcp.filter(m => m.on).reduce((a, m) => a + (defer ? m.def : m.tok), 0);
+    bar.innerHTML = ""; leg.innerHTML = "";
+    parts.forEach(p => {
+      bar.append(h("i", { title:p.lab + ": " + fmt(p.tok), style:{ width:(p.tok / 100000 * 100) + "%", background:p.col } }));
+      leg.append(h("span", null, h("i", { class:"sw", style:{ background:p.col } }), p.lab + " " + fmt(p.tok)));
+    });
+    const perCall = total / 1e6 * 4, perCached = total / 1e6 * 0.20;
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, fmt(total)), "konuşmadan önce her istekte"),
+      h("span", null, h("b", null, fmt(mcpTok)), "bunun MCP payı"),
+      h("span", null, h("b", null, (total / 1e6 * 100).toFixed(1).replace(".", ",") + "%"), "1M pencerenin"),
+      h("span", null, h("b", null, usd(perCall * 50) + " / " + usd(perCached * 50)), "50 turda yalnızca bu yük: cache’siz / cache okumasıyla"));
+  }
+  render();
+});
+
+/* ---------- 5b. Programatik çağrı ---------- */
+Edu.widget("l4-ptc", el => {
+  const { h, $, seg } = Edu;
+  const out = $(".l4-ptcout", el);
+  const code = "orders = await example_orders_search(month=\"2026-10\", late=True)\nhits = []\nfor o in orders:\n    ev = await example_shipments_search(order_id=o[\"order_id\"],\n                                        response_format=\"summary\")\n    if any(e[\"hub\"] == \"TST-2\" for e in ev[\"events\"]):\n        hits.append(o[\"order_id\"])\nprint({\"count\": len(hits), \"order_ids\": hits})";
+  const D = {
+    classic: {
+      flow:[["m","Model","example_orders_search çağırır"],["t","Araç","120 sipariş döner → context’e ≈ 9K"],["m","Model ×12 tur","her turda 10 paralel example_shipments_search"],["t","Araçlar ×120","her sonuç ≈ 300 token → context’e ≈ 36K"],["m","Model","120 sonucu okuyup “kafasında” süzer"]],
+      st:[["≈ 14","model çağrısı"],["≈ 45K","context’e giren ara sonuç"],["120 sonuç","modelin tek tek okuması gereken"]],
+      note:"Her ara sonuç context’e girer ve sonraki her turda yeniden gönderilir. Süzme işini dikkat mekanizması yapıyor: uzun listede bir satırı kaçırmak kolay." },
+    prog: {
+      flow:[["m","Model","bir Python programı yazar"],["h","Code execution (sandbox)","program 121 araç çağrısını kendi içinde yapar"],["t","Araçlar","sonuçlar programa döner, context’e değil"],["m","Model","yalnızca print çıktısını görür: 14 sipariş"]],
+      st:[["2","model çağrısı"],["≈ 0,4K","context’e giren sonuç"],["0 sonuç","süzme kodda, if ile"]],
+      note:"Araçlar allowed_callers: [\"code_execution_20250825\"] ile işaretlendi; model onları kodun içinden çağırıyor. Ara sonuçlar sandbox’ta kalıyor. Bedeli: modelin yazdığı kod çalışıyor, yani güvenli bir sandbox şart." }
+  };
+  function render(k){
+    const d = D[k];
+    out.innerHTML = "";
+    const fl = h("div", { class:"l4-flow" });
+    d.flow.forEach((f, i) => { if (i) fl.append(h("span", null, "→")); fl.append(h("div", { class:f[0] }, h("b", null, f[1]), f[2])); });
+    out.append(fl);
+    if (k === "prog") out.append(h("pre", { "data-title":"Modelin yazdığı program (sandbox’ta çalışır)" }, h("code", null, code)));
+    const s = h("div", { class:"stats" });
+    d.st.forEach(x => s.append(h("span", null, h("b", null, x[0]), x[1])));
+    out.append(s, h("p", { class:"hint" }, d.note));
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 6a. MCP haritası ---------- */
+Edu.widget("l4-mcpmap", el => {
+  const { h, $, $$ } = Edu;
+  const map = $(".l4-map", el), out = $(".l4-mapout", el);
+  const N = {
+    host: ["h", "Host: Claude Code", "LLM API ile konuşur", "Kullanıcının çalıştığı uygulama. Modelle (LLM API) yalnızca o konuşur; modelin tool_use bloğunu doğru client’a yönlendirir, sonucu tool_result olarak geri verir. Kullanıcı onayı, izin kuralları ve hangi resource’un context’e gireceği burada karar verilir. Konuşmanın tamamını bir tek host görür."],
+    c1: ["h", "Client 1", "→ example_db", "Host’un example_db için açtığı bağlantı. Her sunucuya ayrı bir client: birebir ilişki. Client 1’in taşıdığı mesajları diğer sunucular göremez."],
+    c2: ["h", "Client 2", "→ issue tracker", "Uzak sunucuya Streamable HTTP ile bağlanan client. OAuth 2.1 token’ını bu client tutar ve token yalnızca bu sunucu için (audience) kesilmiştir."],
+    c3: ["h", "Client 3", "→ docs", "Yerel bir dokümantasyon sunucusu için. Client’lar host’un içindeki yalıtım birimleridir; bir sunucunun hatası ya da kötü niyeti diğerlerinin bağlantısına sızmaz."],
+    s1: ["t", "example_db sunucusu", "stdio · yerel süreç", "Host’un başlattığı bir alt süreç; JSON-RPC mesajları stdin/stdout’tan satır satır akar. Bağlantı bilgisini ortam değişkenlerinden alır ve senin kullanıcı yetkilerinle çalışır. Salt okunur bir veritabanı rolüyle çalıştırmak, burada verebileceğin en etkili güvenlik kararıdır."],
+    s2: ["t", "Issue tracker sunucusu", "Streamable HTTP · uzak", "Başka bir ekibin ya da firmanın servisi. Gönderdiğin her araç argümanını görür. Protected Resource Metadata yayımlar, gelen token’ın kendisi için kesildiğini doğrular ve token’ı arkadaki API’lere aktaramaz (passthrough yasak)."],
+    s3: ["t", "Docs sunucusu", "stdio · yerel", "Resource sunan bir sunucu örneği: dokümanlar URI ile adreslenir ve hangisinin context’e gireceğine model değil host ya da kullanıcı karar verir. Sunucu, konuşmanın geri kalanını göremez."]
+  };
+  map.append(h("div", { class:"l4-hostframe", "aria-hidden":"true" }));
+  const pos = { host:[1,1], c1:[1,2], c2:[1,3], c3:[1,4], s1:[3,2], s2:[3,3], s3:[3,4] };
+  const wires = [["stdio",2],["HTTP + OAuth",3],["stdio",4]];
+  Object.keys(N).forEach(k => {
+    const [c, t, sub, txt] = N[k];
+    const b = h("button", { type:"button", class:"l4-node " + c, "aria-pressed":"false", style:{ gridColumn:String(pos[k][0]), gridRow:String(pos[k][1]) } }, h("b", null, t), h("small", null, sub));
+    b.addEventListener("click", () => {
+      $$(".l4-node", map).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = ""; out.append(h("b", null, t + ". "), txt);
+    });
+    map.append(b);
+  });
+  wires.forEach(([t, r]) => map.append(h("div", { class:"l4-wire", style:{ gridColumn:"2", gridRow:String(r) } }, t)));
+  map.append(h("div", { class:"hint", style:{ gridColumn:"3", gridRow:"1", margin:0 } }, "Sunucular birbirini ve konuşmayı görmez."));
+});
+
+/* ---------- 6b. MCP mesaj sırası ---------- */
+Edu.widget("l4-mcpseq", el => {
+  const { h, $, json, stepper } = Edu;
+  const META = { protocolVersion:"2026-07-28", clientCapabilities:{ elicitation:{} } };
+  const hdr = (m, n) => "POST /mcp  HTTP/1.1\nHost: mcp.example.test\nMCP-Protocol-Version: 2026-07-28\nMcp-Method: " + m + (n ? "\nMcp-Name: " + n : "") + "\nAuthorization: Bearer …";
+  const steps = [
+    { a:"Host", t:"Bağlantı: el sıkışma yok", hdr:null, obj:null,
+      note:"2025-11-25’te ilk iş initialize / initialized el sıkışması ve bir Mcp-Session-Id olurdu. 2026-07-28’de bu adım yok: her istek ihtiyaç duyduğu bağlamı (_meta) kendisi taşır. Bu sunucu bir yük dengeleyicinin arkasında üç örnekle çalışıyor olabilir; hangisinin cevap verdiği fark etmez." },
+    { a:"Client → Server", t:"server/discover", hdr:hdr("server/discover"),
+      obj:{ jsonrpc:"2.0", id:1, method:"server/discover", params:{ _meta:META } }, hl:["method","_meta"],
+      note:"Yeni ve zorunlu keşif çağrısı. Protokol sürümü ve client yetenekleri, ayrı bir oturum kurulmadan isteğin içinde gidiyor." },
+    { a:"Server → Client", t:"Keşif yanıtı", hdr:null,
+      obj:{ jsonrpc:"2.0", id:1, result:{ resultType:"complete", serverInfo:{ name:"example-orders", version:"1.4.0" }, capabilities:{ tools:{}, resources:{} }, instructions:"Sipariş ve sevkiyat sorguları. Yazma işlemleri kullanıcı onayı ister." } }, hl:["resultType","instructions"],
+      note:"Güncel sürümde her sonuç bir resultType taşır. instructions metni host tarafından modelin context’ine konabilir: yani bu da modelin okuduğu bir metin." },
+    { a:"Client → Server", t:"tools/list", hdr:hdr("tools/list"),
+      obj:{ jsonrpc:"2.0", id:2, method:"tools/list", params:{ _meta:META } }, hl:["method"],
+      note:"Host araç listesini ister. Claude Code bu tanımları varsayılan olarak erteler (5. konu): context’e yalnızca adlar girer." },
+    { a:"Server → Client", t:"Araç listesi + ttlMs", hdr:null,
+      obj:{ jsonrpc:"2.0", id:2, result:{ resultType:"complete", tools:[{ name:"example_orders_cancel", description:"Bir siparişi iptal eder. Kullanıcı onayı alınmadan işlem yapılmaz.", inputSchema:{ type:"object", properties:{ order_id:{ type:"integer" }, reason:{ type:"string", enum:["duplicate","customer_request","fraud"] } }, required:["order_id","reason"] } }], ttlMs:600000 } }, hl:["ttlMs","inputSchema"],
+      note:"ttlMs: liste 10 dakika boyunca önbellekte tutulabilir. Spesifikasyon tools/list’in deterministik olmasını öneriyor; aynı liste aynı sırayla gelirse LLM tarafındaki prompt cache bozulmaz (2. konu). MCP’de şema alanının adı inputSchema." },
+    { a:"Model → Host", t:"Model tool_use yazar", hdr:null,
+      obj:{ type:"tool_use", id:"toolu_11", name:"example_orders_cancel", input:{ order_id:1042, reason:"duplicate" } }, hl:["name"],
+      note:"Bu adım MCP değil, LLM API’si: model 1. konudaki gibi bir tool_use bloğu üretti. Host adın example-orders sunucusuna ait olduğunu bilir ve isteği o client’a yönlendirir. İzin kuralları da tam burada, sunucuya gitmeden önce devreye girer (8. seviye)." },
+    { a:"Client → Server", t:"tools/call", hdr:hdr("tools/call", "example_orders_cancel"),
+      obj:{ jsonrpc:"2.0", id:3, method:"tools/call", params:{ name:"example_orders_cancel", arguments:{ order_id:1042, reason:"duplicate" }, _meta:META } }, hl:["arguments"],
+      note:"Mcp-Method ve Mcp-Name başlıkları sayesinde bir ağ geçidi, gövdeyi açmadan hangi aracın çağrıldığını görüp politika uygulayabilir." },
+    { a:"Server → Client", t:"input_required (MRTR)", hdr:null,
+      obj:{ jsonrpc:"2.0", id:3, result:{ resultType:"input_required", inputRequests:{ confirm:{ method:"elicitation/create", params:{ message:"1042 numaralı Example Co siparişi iptal edilsin mi?", requestedSchema:{ type:"object", properties:{ confirm:{ type:"boolean" } }, required:["confirm"] } } } } } }, hl:["resultType"],
+      note:"Sunucu işi yapmadan önce kullanıcının onayını istiyor. Eskiden bunu ayrı bir sunucu→client isteğiyle yapardı; şimdi “devam etmek için şu girdiye ihtiyacım var” diyen bir sonuç dönüyor. (inputRequests ve iç alan adları temsili.)" },
+    { a:"Host ↔ Kullanıcı", t:"Onay penceresi", hdr:null, obj:null,
+      note:"Host soruyu modele değil kullanıcıya gösterir: “1042 numaralı Example Co siparişi iptal edilsin mi?” Kullanıcı onaylar. Onay modelden geçmediği için model onu taklit edemez; yan etkili işlemler için önemli bir güvenlik özelliği." },
+    { a:"Client → Server", t:"Aynı çağrı + inputResponses", hdr:hdr("tools/call", "example_orders_cancel"),
+      obj:{ jsonrpc:"2.0", id:4, method:"tools/call", params:{ name:"example_orders_cancel", arguments:{ order_id:1042, reason:"duplicate" }, inputResponses:{ confirm:{ action:"accept", content:{ confirm:true } } }, _meta:META } }, hl:["inputResponses"],
+      note:"Client isteği, cevabı ekleyerek baştan gönderir. Sunucu önceki adımı hatırlamak zorunda değil: gereken her şey bu istekte. Bu yüzden ikinci istek başka bir sunucu örneğine de gidebilir." },
+    { a:"Server → Client", t:"Sonuç: complete", hdr:null,
+      obj:{ jsonrpc:"2.0", id:4, result:{ resultType:"complete", content:[{ type:"text", text:"Sipariş 1042 iptal edildi. status_code=CANCELLED" }], isError:false } }, hl:["resultType","isError"],
+      note:"İş tamam. Bir girdi doğrulama hatası olsaydı, 2025-11-25’ten beri kural gereği protokol hatası olarak değil isError: true içeren bir araç sonucu olarak dönerdi; model görüp düzeltebilsin diye." },
+    { a:"Host → Model", t:"tool_result", hdr:null,
+      obj:{ type:"tool_result", tool_use_id:"toolu_11", content:"Sipariş 1042 iptal edildi. status_code=CANCELLED" }, hl:["tool_use_id"],
+      note:"Host MCP sonucunu LLM API’sinin diline çevirir ve döngü devam eder. Model, MCP diye bir şeyin varlığını bilmek zorunda değil; gördüğü yine bir tool_result." }
+  ];
+  stepper($(".l4-mcpstage", el), { steps, auto:3400, render(i, s, { body }){
+    body.innerHTML = "";
+    const left = h("div", null, h("p", { class:"l4-dir" }, s.a));
+    if (s.hdr) left.append(h("div", { class:"l4-hdr" }, s.hdr));
+    if (s.obj) left.append(h("div", { class:"jsonv", html: json(s.obj, { hl:s.hl || [] }) }));
+    const note = h("div", { class:"l4-note" }, h("h4", null, s.t), h("p", { style:{ margin:0 } }, s.note));
+    body.append(h("div", { class:"l4-split" }, left, h("div", { "aria-live":"polite" }, note)));
+  }});
+});
+</script>

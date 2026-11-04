@@ -1,0 +1,130 @@
+<section class="level" data-no="G" data-short="Başlarken" data-title="Başlarken" data-accent="tool">
+  <header class="lvl-hero" data-no="">
+    <p class="lvl-kicker">Başlarken</p>
+    <div class="eq"><span>Agent</span><span class="op">=</span><span class="w-model">Model</span><span class="op">+</span><span class="w-harness">Harness</span></div>
+    <p class="lede">Bu setin tamamı bu denklemi açmak için var. Sonunda Claude Code ya da Codex ile çalışırken bir davranışın modelden mi, harness’tan mı, yoksa context’ten mi geldiğini ayırt edebileceksin. Hata ayıklamanın, iyi talimat yazmanın ve güvenli sistem kurmanın anahtarı bu ayrım.</p>
+    <div class="lvl-meta"><span>11 seviye</span><span>Yazılımcılar için</span><span>Her konuda en az bir etkileşimli şema</span></div>
+  </header>
+
+  <div class="lesson" data-tab="Neden bu set?">
+    <h2>Bildiğin şeylerin ortasına yeni bir parça oturdu</h2>
+    <p>Yıllardır yazılım geliştiren biri için bu setteki kavramların çoğu tanıdık: istemci-sunucu, durumsuz API, sandbox, en az yetki ilkesi, olay tabanlı hook’lar, CI. Yeni olan, bunların ortasına <span class="m">olasılıksal</span> bir bileşenin oturması. Deterministik bir fonksiyon çağırdığında aynı girdiye aynı çıktıyı beklersin; burada beklemezsin. Bu fark, bütün mühendislik alışkanlıklarını biraz kaydırıyor.</p>
+    <p>Set bu yüzden her seviyede aynı hareketi yapıyor: önce mekanizmayı gösteriyor, sonra “bunu zaten biliyorsun, şurası farklı” diye bildiğin bir kavrama bağlıyor. Bu köprüleri mavi kutularda göreceksin.</p>
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>LLM API’si, durumsuz bir HTTP servisidir. Her istekte bütün konuşma geçmişini yeniden gönderirsin; sunucu senin için oturum tutmaz. 2. seviyede bunun context, maliyet ve “unutma” üzerindeki etkisini adım adım izleyeceğiz.</div>
+
+    <h2>Fasa fisoyu ayıklamak</h2>
+    <p>“Prompt engineering” başlığı altında satılan numaraların bir kısmı gerçekten işe yarıyor, büyük kısmı ise eski modellerden kalma folklor. Bu set hangisinin hangisi olduğunu mekanizmadan yola çıkarak anlatıyor. Folklor dediğimiz iddiaları sarı kutularda, kanıtıyla birlikte göreceksin.</p>
+    <div class="callout myth"><span class="ct">Folklor</span>“Modele ‘sen dünyanın en iyi yazılımcısısın’ dersen daha iyi kod yazar.” Güncel modellerde etkisi ya yok ya da tutarsız. İşe yarayan şey rol değil, bağlam: hangi repo, hangi kısıt, başarı neye benziyor. 3. seviyede ayrıntısıyla.</div>
+
+    <h2>Üç katman, bir renk kodu</h2>
+    <p>Set boyunca renkler hiç değişmiyor. Bir şemada mor görüyorsan model, teal görüyorsan harness konuşuyor.</p>
+    <div class="cols">
+      <div class="card m"><h4 class="m">Model</h4>Eğitimi bitmiş, donmuş ağırlıklar. Tek yaptığı, kendisine verilen metne bakıp sonraki token için olasılık üretmek.</div>
+      <div class="card h"><h4 class="h">Harness</h4>Modelin etrafındaki yazılım: döngü, araçlar, izinler, sandbox, hook’lar, context yönetimi, arayüz.</div>
+      <div class="card c"><h4 class="c">Context ve token</h4>Modelin o an gördüğü her şey. Modelin dünyası bundan ibaret; görmediğini bilmez.</div>
+      <div class="card t"><h4 class="t">Pratik</h4>Komutlar, ayar dosyaları, gerçek iş akışları. Yarın sabah kullanacağın şeyler.</div>
+      <div class="card r"><h4 class="r">Risk</h4>Güvenlik açıkları, başarısızlık modları, para ve veri kaybettiren hatalar.</div>
+    </div>
+
+    <div class="fig" data-widget="giris-who">
+      <p class="fig-title">Bu davranış kimden geliyor?</p>
+      <p class="fig-cap">Bir agent’la çalışırken karşılaşacağın gerçek durumlar. Bir karta tıkla; sorumlu katmanı ve nedenini gör. Bu ayrımı yapabilmek setin asıl hedefi.</p>
+      <div class="who-grid"></div>
+      <div class="panel live who-out" aria-live="polite"><span class="muted">Bir karta tıkla.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Akılda kalsın</h3>
+      <ul>
+        <li>Agent, bir model ile onu döngüye sokan yazılımın (harness) toplamıdır.</li>
+        <li>Bir sorunu çözmek için önce hangi katmandan geldiğini bulmak gerekir: model, harness ya da context.</li>
+        <li>Bu alan aylar içinde değişiyor. Kavramlar kalıcı; komut adları ve ayarlar için resmi dokümantasyon esastır.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="lesson" data-tab="Harita ve yol">
+    <h2>Seviyelerin mantığı</h2>
+    <p>0–2 arası modelin kendisini anlatır: ne olduğunu, nasıl yetiştirildiğini ve neyi gördüğünü. 3–5 arası modelle konuşmayı ve onu döngüye sokmayı anlatır. 6–7 harness kavramını ve iki büyük ekosistemi, Claude ile Codex’i, hem model hem araç olarak karşılaştırır. 8–10 pratik ve ileri seviyedir: Claude Code’u gerçekten kullanmak, context’i yönetmek, otomasyon ve kendi harness’ını güvenli şekilde tasarlamak.</p>
+    <div class="map" id="levelMap"></div>
+
+    <h2>Nereden başlamalı?</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Sen kimsin?</th><th>Önerilen yol</th><th>Özellikle dikkat</th></tr></thead>
+      <tbody>
+        <tr><td>Yeni katılan junior</td><td>0’dan başla, sırayla git</td><td>6. seviyeye kadar her şey temel</td></tr>
+        <tr><td>Agent’la yeni tanışan</td><td>0–5 hızlı, 6 ve 8 dikkatli</td><td>8’deki izinler ve hook’lar</td></tr>
+        <tr><td>Her gün kullanan</td><td>2, 3, 5’e göz at; 7’den itibaren asıl içerik</td><td>9’daki context bütçesi</td></tr>
+        <tr><td>Kendi aracını kuran</td><td>4, 5, 6, 9 ve 10</td><td>10’daki ölümcül üçlü</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="lesson" data-tab="Seti nasıl kullanmalı">
+    <h2>Okuma değil, kurcalama</h2>
+    <p>Her seviye birkaç konu sekmesine bölünmüş. Üstteki şeritten seviyeyi, onun altındaki şeritten konuyu seçiyorsun. Sayfanın sonundaki düğmeler seni bir sonraki konuya, son konudaysan bir sonraki seviyeye götürür. Konu şeridinde odak varken <kbd>←</kbd> ve <kbd>→</kbd> tuşları da çalışır.</p>
+    <p>Her konuda en az bir etkileşimli şema var. Onları oynat, adım adım ilerlet, kaydırıcıları oynat. Bunlar süs değil: okuduğun metnin akılda kalan kısmı genellikle onlar oluyor. Şemalar tamamen tarayıcında çalışır, hiçbir yere veri göndermez.</p>
+    <div class="cols">
+      <div class="card"><h4>Noktalı altı çizili terimler</h4>Üzerine gel ya da sekmeyle odakla: kısa tanımı çıkar. Üstteki <b>Sözlük</b> düğmesi tüm terimleri aranabilir şekilde açar.</div>
+      <div class="card"><h4>İlerleme halkası</h4>Açtığın konular tarayıcında hatırlanır. Kaldığın yere dönersin; bir seviyenin bütün konularını açınca sekmesinde ✓ çıkar.</div>
+      <div class="card"><h4>Bağlantı paylaşma</h4>Adres çubuğundaki <code>#L5/3</code> gibi bağlantı, doğrudan o seviyenin o konusunu açar. Ekip arkadaşına belirli bir yeri göstermek için kullan.</div>
+    </div>
+    <h2>Kutuların anlamı</h2>
+    <div class="callout bridge"><span class="ct">Bunu zaten biliyorsun</span>Yeni kavramı, yazılım mühendisliğinden bildiğin bir şeye bağlar.</div>
+    <div class="callout myth"><span class="ct">Folklor</span>Yaygın ama yanlış ya da eskimiş bir inanç ve onun yerine geçen gerçek.</div>
+    <div class="callout deep"><span class="ct">Derine in</span>Atlanabilir ama merak edene mekanizmanın altını gösteren kısım.</div>
+    <div class="callout tip"><span class="ct">Pratikte</span>Hemen uygulanabilir bir alışkanlık ya da ayar.</div>
+    <div class="callout warn"><span class="ct">Dikkat</span>Veri, para ya da güvenlik kaybettirebilecek bir durum.</div>
+    <div class="callout"><span class="ct">Bir uyarı</span>Bu alan hızlı değişiyor. Bu set Kasım 2026 itibarıyla güncel bilgiyle hazırlandı. Komut adları, hook olayları, model sürümleri ve fiyatlar değişebilir; her konunun sonundaki kaynaklar ve resmi dokümantasyon esastır.</div>
+  </div>
+</section>
+
+<script>
+Edu.glossary({
+  "Agent": "Bir modelin, araç çağırıp sonuçlarını görerek bir hedefe ulaşana kadar döngüde çalıştırıldığı sistem. Agent = model + harness.",
+  "Harness": "Modelin etrafındaki yazılım: agent döngüsü, araç tanımları ve yürütücüleri, izinler, sandbox, hook’lar, context yönetimi ve arayüz.",
+  "Model": "Eğitimi bitmiş, donmuş ağırlıklardan oluşan fonksiyon. Girdi metne bakıp sonraki token için olasılık dağılımı üretir."
+});
+
+Edu.widget("giris-who", el => {
+  const { h, $ } = Edu;
+  const items = [
+    { t:"Agent, projede olmayan bir kütüphane fonksiyonunu kendinden emin şekilde çağırdı.", k:"m", why:"Model katmanı. Model, eğitim verisinde gördüğü kalıplardan makul görünen bir ad üretti. Bunu engelleyen şey daha iyi bir prompt değil; derleyici, testler ve tip denetimi gibi doğrulayıcılar. Doğrulayıcıyı döngüye sokmak da harness’ın işi (5. seviye)." },
+    { t:"Agent ‘rm -rf build/’ çalıştırmak istedi ama bir onay penceresi çıktı.", k:"h", why:"Harness katmanı. Modelin bir şeyi ‘istemesi’ sadece JSON üretmesidir. Komutu çalıştırıp çalıştırmamaya izin kuralları, sandbox ve hook’lar karar verir (4. ve 8. seviye)." },
+    { t:"Uzun bir oturumun sonunda, en başta söylediğin ‘testleri silme’ kuralını unuttu.", k:"c", why:"Context katmanı. Ya konuşma sıkıştırıldı (compaction) ve kural özetten düştü, ya da kural çok uzun bir context’in ortasında kaldı. Kalıcı kurallar CLAUDE.md / AGENTS.md gibi her istekte yüklenen dosyalara yazılır (2. ve 9. seviye)." },
+    { t:"Aynı soruyu iki kez sordun, iki farklı ama ikisi de makul cevap aldın.", k:"m", why:"Model katmanı. Üretim örnekleme ile yapılır; her token bir olasılık dağılımından seçilir. Sıcaklık sıfıra yakın olsa bile pratikte tam belirlenimcilik garanti değil (0. seviye)." },
+    { t:"Agent bir dosyayı düzenlemeden önce mutlaka okudu.", k:"h", why:"Çoğunlukla harness. Birçok coding harness, okunmamış bir dosyanın düzenlenmesini araç düzeyinde reddeder. Model bu kuralı ‘bildiği’ için değil, araç hata döndürdüğü için uyar." },
+    { t:"Bir web sayfasını özetlerken, sayfadaki gizli metnin söylediği komutu çalıştırmaya kalktı.", k:"r", why:"Risk: prompt injection. Model, veri ile talimatı güvenilir biçimde ayıramaz. Çözüm modelde değil, harness’ta: yetki kısıtlama, ağ yalıtımı, insan onayı (10. seviye)." },
+    { t:"Codex’te aynı görev Claude Code’dakinden farklı bir yoldan çözüldü.", k:"h", why:"Hem model hem harness. Farklı modeller farklı eğitilir; ama aynı model bile farklı araç setiyle, farklı sistem prompt’uyla ve farklı sandbox’la farklı davranır. 7. seviye bu iki katmanı ayrı ayrı karşılaştırıyor." },
+    { t:"Proje kurallarını yazdığın dosyayı agent hiç okumamış gibi davrandı.", k:"c", why:"Context. Dosya yanlış yerde, yanlış adla ya da harness’ın yüklemediği bir konumda olabilir. Önce harness’a ‘context’te ne var?’ diye sor (Claude Code’da /context, 8. seviye)." }
+  ];
+  const names = { m:["Model","m"], h:["Harness","h"], c:["Context","c"], r:["Risk","r"] };
+  const grid = $(".who-grid", el), out = $(".who-out", el);
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.55rem";
+  items.forEach(it => {
+    const b = h("button", { type:"button", class:"btn ghost", style:{ textAlign:"left", fontWeight:"500", fontFamily:"var(--body)", lineHeight:"1.4", padding:".7rem .8rem", whiteSpace:"normal" } }, it.t);
+    b.addEventListener("click", () => {
+      Edu.$$("button", grid).forEach(x => { x.style.borderColor = ""; x.style.background = ""; });
+      b.style.borderColor = "var(--" + ({m:"model",h:"harness",c:"ctx",r:"risk"})[it.k] + ")";
+      b.style.background = "var(--" + ({m:"model",h:"harness",c:"ctx",r:"risk"})[it.k] + "-bg)";
+      out.innerHTML = "";
+      out.append(h("span", { class:"tag " + names[it.k][1] }, names[it.k][0]), " ", it.why);
+    });
+    grid.append(b);
+  });
+});
+
+/* Seviye haritası: diğer seviyelerin data-* özniteliklerinden kurulur. */
+document.addEventListener("DOMContentLoaded", () => {
+  const map = document.getElementById("levelMap");
+  if (!map) return;
+  const ACC = { model:"var(--model)", harness:"var(--harness)", ctx:"var(--ctx)", tool:"var(--tool)", risk:"var(--risk)" };
+  Edu.$$(".level").forEach(lv => {
+    if (lv.dataset.no === "G") return;
+    map.append(Edu.h("button", { type:"button", "data-goto": lv.dataset.no, style:{ "--mc": ACC[lv.dataset.accent] || "var(--ink)" } },
+      Edu.h("span", { class:"no" }, "Seviye " + lv.dataset.no),
+      Edu.h("b", null, lv.dataset.title),
+      lv.dataset.lede || ""));
+  });
+});
+</script>
