@@ -8,6 +8,8 @@
     <p class="lead">Agent kelimesi son iki yılda o kadar çok şeye yapıştırıldı ki anlamı bulanıklaştı. Mühendis için işe yarayan tanım kısa: <span class="g" data-g="Agent loop">agent</span>, bir hedefe ulaşana kadar araçları döngü içinde çalıştıran bir modeldir.</p>
     <p>Simon Willison Eylül 2025’te bu tanımı tek cümleye indirdi: “An LLM agent runs tools in a loop to achieve a goal.” Anthropic’in context engineering yazısı da aynı şeyi söylüyor: agent, araçları bir döngü içinde özerk biçimde kullanan LLM’dir. İki tanımda da üç parça var: <b>araçlar</b> (4. seviyede gördük), <b>döngü</b> (bu seviyenin konusu) ve <b>hedef</b>, yani döngünün ne zaman biteceğini belirleyen şey. Bu üçünden hangisi eksikse elinde agent yoktur: araçsız döngü sadece kendi kendine konuşan bir sohbet, döngüsüz araç tek seferlik bir fonksiyon çağrısı, hedefsiz döngü ise para yakan bir sonsuz döngüdür.</p>
 
+    <div class="fig" data-anim="agent-loop"></div>
+
     <h3>Kanonik döngü</h3>
     <p>Anthropic’in tool use dokümantasyonundaki döngü şöyle işler. Harness, mesajları ve araç tanımlarını modele gönderir. Cevabın <code>stop_reason</code> alanı <code>"tool_use"</code> olduğu sürece harness istenen araçları çalıştırır, modelin cevabını (assistant mesajı) geçmişe ekler, ardından araç sonuçlarını taşıyan bir user mesajı ekler ve modeli yeniden çağırır. <code>stop_reason</code> başka bir değer olduğunda döngüden çıkılır. Bütün coding agent’ların kalbinde, üstüne ne kadar katman eklenmiş olursa olsun, bu döngü atar.</p>
 <pre data-title="agent_loop.py (öğretim sürümü)"><code>messages = [user(task)]

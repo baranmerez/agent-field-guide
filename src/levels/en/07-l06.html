@@ -1,0 +1,987 @@
+<section class="level" data-no="6" data-short="Harness" data-title="Harness: everything around the model"
+  data-accent="harness" data-time="50 min"
+  data-lede="Everything outside the model is harness: instructions, tools, permissions, sandbox, hooks, context management, the interface. How well an agent performs on real work is often decided more by this layer than by the model.">
+
+  <!-- ================= 1. THE EQUATION ================= -->
+  <div class="lesson" data-tab="The equation">
+    <h2>Everything outside the model</h2>
+    <p class="lead">Remember the equation from the Getting started page: <span class="g" data-g="Agent = Model + Harness">Agent = Model + Harness</span>. From level 3 through level 5 we built the pieces of that equation one by one: we wrote the prompt, defined tools, and put the tools in a loop. In this level we step back and look at the whole picture. What surrounds that loop, why is it there, and how much of an agent’s success does it decide?</p>
+
+    <p>The clearest definition of the term as it is used today is Vivek Trivedy’s post at LangChain, “The Anatomy of an Agent Harness”, dated 10 March 2026. The definition is deliberately broad: the harness is every piece of code, every configuration and every bit of execution logic that is not the model itself. The line that sticks is this one: “If you’re not the model, you’re the harness.” In other words, everything that touches the agent apart from the model’s weights sits on this side.</p>
+    <p>Trivedy groups the components into five buckets:</p>
+    <ul>
+      <li><b>System prompts.</b> The text that tells the model who it is, what environment it runs in, and how to use its tools.</li>
+      <li><b>Tools, skills, MCP servers and their descriptions.</b> The model’s hands reaching into the world, and the way those hands are described.</li>
+      <li><b>Bundled infrastructure.</b> File system, <span class="g" data-g="Sandbox">sandbox</span>, browser: the place where commands actually run.</li>
+      <li><b>Orchestration.</b> Subagents, handoffs from one agent to another, model selection by task type.</li>
+      <li><b>Hooks and <span class="g" data-g="Middleware">middleware</span>.</b> Code that steps in at specific points of the loop, such as compaction, “keep going” logic and lint checks.</li>
+    </ul>
+
+    <h3>The vendors speak the same language</h3>
+    <p>This is not just a framework company’s marketing frame. Anthropic’s Claude Code documentation describes Claude Code with exactly this word: the layer around the model that provides the tools and manages the context, in other words an <span class="g" data-g="Agentic harness">agentic harness</span>. There is a more concrete signal too: in 2025 the Claude Code SDK was renamed the <span class="g" data-g="Claude Agent SDK">Claude Agent SDK</span>. The reason was simple: the same harness was running agents that do not write code. File system, bash, search, permissions and context management are not “coding” features; they are the infrastructure any general-purpose agent needs.</p>
+    <p>LangChain founder Harrison Chase made the same point in his “Deep Agents” post: what makes Claude Code so capable is not only the model, but a general harness made of a planning tool, a file system, subagents and a very detailed system prompt. Put those four pieces around a different model and you also get an agent that works “deep”.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Think of the relationship between an operating system and a program. When a program wants to write to a file, it does not do it itself; it makes a system call, the kernel checks permissions, carries out the operation and returns the result. The program does not know how the disk works; it only sees the result of the call. Here the model is the program, the tool call is the system call, and the harness is the kernel plus the runtime. Another analogy: the model is the business logic, the harness is the framework, the DI container, the middleware chain and all the infrastructure. However good the business logic is, it runs badly in a misconfigured framework.</div>
+
+    <h3>How much does the model actually produce in one turn?</h3>
+    <p>The best way to see why this distinction matters is to take a single agent turn apart. The diagram below shows the pieces that flow behind the scenes when you tell Claude Code “fix the red test”. Click each piece and see who produced it. Then pick the “Model only” filter: you will see what a small share of the whole the model’s output really is, a few sentences of text and a few JSON objects.</p>
+
+    <div class="fig" data-widget="l6-who">
+      <p class="fig-title">Anatomy of an agent turn: who produced it?</p>
+      <p class="fig-cap">Simplified pieces from a Claude Code session, in the order they flow. Click a piece to see who produced it, what it is for, and what you can control. Use the filter to highlight only the model’s share or only the harness’s.</p>
+      <div class="ctrl" style="margin-top:0">
+        <div class="seg l6-who-f" role="group" aria-label="Filter">
+          <button type="button" data-v="all" aria-pressed="true">All</button>
+          <button type="button" data-v="m">Model only</button>
+          <button type="button" data-v="h">Harness only</button>
+        </div>
+        <span class="muted l6-who-cnt"></span>
+      </div>
+      <div class="l6-tr" style="margin-top:.8rem"></div>
+      <div class="panel live l6-who-out" aria-live="polite"><span class="muted">Click a piece.</span></div>
+    </div>
+
+    <p>Three things in the diagram deserve your attention. First, everything the model produces is a <b>request</b>: “I want to run this command”, “I want to change this file like so”. Every step that turns that request into reality, rejects it, truncates it, formats it and feeds it back belongs to the harness. Second, the things you write (your message and CLAUDE.md) reach the model not where and how you want, but where and how the harness chooses. Third, some pieces, like the compaction summary, are mixed: a model writes the text, but the harness decides when it is written, what is kept and where it goes.</p>
+
+    <h3>What does this distinction change in practice?</h3>
+    <ol class="steps">
+      <li><b>Debugging.</b> When the agent does something bad, the first question should be: “Did the model make the wrong decision, or did the harness fail to give it the information, tool or feedback it needed to make the right one?” The second is surprisingly common. If it ignored an important file, look at the context; if it ran the wrong command, look at the tool description and the permissions; if it keeps repeating the same mistake, look at the feedback the environment gives it.</li>
+      <li><b>Selection decisions.</b> “Which model is best?” is an incomplete question. As you will see in lesson 3 of this level, the same model gives very different results in different harnesses. The right question is: “Which model and harness pair is best for my work?”</li>
+      <li><b>Security.</b> You cannot guarantee what the model will produce. You can, however, control exactly what the harness will execute. Because the harness is the only place where a guarantee is possible, security is built there too (level 10).</li>
+    </ol>
+
+    <div class="callout myth"><span class="ct">Myth</span>“The harness is just an interface; the real work happens in the model.” The interface is the outermost and most visible layer of the harness, but not the most influential one. The Claude Code documentation says that the terminal, IDE, desktop, web and CI surfaces all run the same loop. The surface changes; the tool set, permissions, context management and hooks stay the same. Those inner layers are what shape the behavior.</div>
+
+    <div class="callout warn"><span class="ct">Caution</span>The most expensive reflex is this: when the agent breaks a rule, add one more sentence to the prompt, then one more “IMPORTANT”. If the rule is the kind the harness can enforce (do not read a file, do not run a command, make the tests pass before finishing), the prompt is the wrong layer. Lesson 5 of this level is about exactly that decision.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>The harness is everything that touches the agent apart from the model’s weights: prompts, tools, infrastructure, orchestration, hooks.</li>
+        <li>The model only produces requests. The harness turns a request into reality, rejects it, and feeds the result back.</li>
+        <li>The Claude Code SDK becoming the Claude Agent SDK shows that a good coding harness is really a general-purpose agent infrastructure.</li>
+        <li>When an agent fails, ask first: was the decision wrong, or was the information, tool or feedback needed for the decision missing?</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain, Vivek Trivedy: The Anatomy of an Agent Harness (10 March 2026)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works</a></li>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 2. LAYERS ================= -->
+  <div class="lesson" data-tab="Layers">
+    <h2>The nine layers of a coding harness</h2>
+    <p class="lead">The while loop in level 5 was the skeleton of the harness. A real coding harness wraps that skeleton in layers, each of which closes off a specific way agents fail in the real world. We use Claude Code as the reference because its documentation describes these layers explicitly; Codex CLI and the others have their equivalents (level 7).</p>
+
+    <p>The list below is based on the Claude Code documentation as of November 2026. Names and details may change from release to release; the concepts last.</p>
+
+    <h3>1. System prompt and system reminders</h3>
+    <p>The instructions the harness puts at the start of every request: identity, working rules, environment information (operating system, working directory, git status). On top of that there are <b>system reminders</b> inserted into the conversation: the contents of CLAUDE.md, the selected output style, “this file changed after you read it” notes, the attribution lines to add to commits. The harness writes and places all of them; you control part of the content, not where it goes.</p>
+
+    <h3>2. Tools, MCP and skills</h3>
+    <p>The built-in tools cover groups such as file operations, search, command execution, web and code intelligence. Tools from the MCP servers you connect are loaded <b>deferred</b> by default: thanks to tool search, only the tool names and server instructions sit in the context, and the full definition arrives when it is needed (level 4). Skills work the same way: first just the name and description, the content when needed.</p>
+
+    <h3>3. Permissions and sandbox</h3>
+    <p>Which tool runs without asking, which needs approval, which never runs at all. Claude Code has several <span class="g" data-g="Permission mode">permission modes</span>: Auto, where a classifier decides; Manual, which asks about everything; Accept edits, which accepts edits on its own; and Plan, which produces a plan without changing anything. Above these sit allow and <span class="g" data-g="Deny rule">deny rules</span>, and at the very bottom the sandbox, which limits commands’ file system and network access at the operating system level.</p>
+
+    <h3>4. Checkpoints and the session log</h3>
+    <p>The harness snapshots the files it edits; you can rewind with <kbd>Esc</kbd> <kbd>Esc</kbd>. The whole session is stored as a JSONL file; resume and fork are built on top of it. The <span class="g" data-g="Checkpoint">checkpoint</span> is the layer that gives the agent freedom to make mistakes: you supervise something you can undo more loosely.</p>
+
+    <h3>5. Context management</h3>
+    <p>Automatic compaction as the window nears full, the breakdown you see with <code>/context</code>, and the cap placed on tool output. In Claude Code a tool result can be at most 25,000 tokens; anything beyond is truncated. We saw the mechanism of this layer in level 2; what matters here is that all of these are harness decisions, not model decisions.</p>
+
+    <h3>6. Memory</h3>
+    <p>CLAUDE.md (project instructions shared with the team), CLAUDE.local.md (personal, never committed to the repo) and MEMORY.md, the automatic memory file Claude maintains itself. According to the documentation, the first 200 lines or the first 25 KB of automatic memory are loaded at session start. Memory is the harness’s answer to the model’s statelessness: the model starts every session from scratch, the files do not.</p>
+
+    <h3>7. Hooks</h3>
+    <p>Points where your code runs at specific events of the loop (before a tool call, after it, at session start, when the model says “done”). Tell two kinds apart: <code>command</code> and <code>http</code> hooks are <b>deterministic</b>, meaning a script or an HTTP endpoint decides. In <code>prompt</code> and <code>agent</code> hooks, a model makes the decision again. That difference is decisive when you choose where to put a rule (lesson 5). The syntax is in level 8.</p>
+
+    <h3>8. Subagents</h3>
+    <p>Helper agents that run in a separate context window and return only a summary when they finish. They can start with a clean window or with a copy of the current conversation (fork). Their real value is context isolation more than parallelism: the dozens of files read during exploration never enter the main window.</p>
+
+    <h3>9. Interfaces</h3>
+    <p>Terminal, IDE extension, desktop app, web, Slack, CI. The documentation stresses that they all run the same loop. Changing the interface should not change the behavior; if it does, a different permission mode or a different settings file is usually in play.</p>
+
+    <div class="fig" data-widget="l6-onion">
+      <p class="fig-title">The harness onion</p>
+      <p class="fig-cap">Click the rings or the labels below (Tab and Enter work from the keyboard too). The model sits at the center, with layers closer to the outside world further out. The “Who decides?” view colors the rings as deterministic or model-decided.</p>
+      <div class="seg l6-on-mode" role="group" aria-label="View">
+        <button type="button" data-v="layer" aria-pressed="true">Layers</button>
+        <button type="button" data-v="kind">Who decides?</button>
+      </div>
+      <div class="l6-onion-wrap" style="margin-top:.8rem">
+        <div class="l6-onion"><svg viewBox="0 0 344 344" role="group" aria-label="Diagram of harness layers"></svg></div>
+        <div class="panel live l6-on-out" aria-live="polite" style="margin-top:0"><b>Pick a layer.</b><p class="muted">Each layer exists to close off a specific way agents fail in the real world.</p></div>
+      </div>
+      <div class="legend-row l6-on-legend" style="margin-top:.7rem"></div>
+      <div class="l6-pills" role="group" aria-label="Layers"></div>
+    </div>
+
+    <h3>The line between deterministic and model-decided</h3>
+    <p>The onion’s “Who decides?” view shows the most important idea of this level. Some layers are <span class="g" data-g="Deterministic layer">deterministic</span>: a deny rule, the sandbox, a <code>command</code> hook, the tool output cap. They give the same response to the same input every time; they can be tested and audited. Others ultimately come down to the model’s interpretation: CLAUDE.md, skill descriptions, <code>prompt</code> hooks, the classifier in Auto mode. The Claude Code documentation says so plainly: CLAUDE.md is guidance, and Claude may decide that a line does not apply in a given situation. Hooks, deny rules and <span class="g" data-g="Managed settings">managed settings</span>, on the other hand, are enforced by the harness.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>It is the difference between a “let’s do it this way” comment in code review and a required check in CI. The comment is guidance; a developer may ignore it for a good reason. A branch protection rule asks nobody. CLAUDE.md is like the review comment; hooks and deny rules are like branch protection.</div>
+
+    <div class="callout tip"><span class="ct">In practice</span>When you wonder what an agent is working with, do not guess; ask the harness. In Claude Code, <code>/context</code> shows the context breakdown, <code>/permissions</code> the active rules, <code>/hooks</code> the registered hooks. Codex CLI has similar status commands. It is the fastest way to find where a behavior comes from.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>The nine layers of a coding harness: instructions, tools, permissions and sandbox, checkpoints, context management, memory, hooks, subagents, interfaces.</li>
+        <li>Each layer closes off a specific failure path. If a layer is missing, that failure will happen sooner or later.</li>
+        <li>Some layers are deterministic (enforced), others are model-decided (guidance). Critical rules belong on the deterministic side.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code docs: Best practices</a></li>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain: The Anatomy of an Agent Harness</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 3. SAME MODEL, DIFFERENT HARNESS ================= -->
+  <div class="lesson" data-tab="Same model, different result">
+    <h2>Same model, different harness, different result</h2>
+    <p class="lead">The claim that “the harness matters” feels intuitively right, but how much does it matter? We have a few measurements on this. None of them is flawless, so we will read each one together with its source, its method and its weak spot.</p>
+
+    <h3>Evidence 1: pin the model, change only the harness</h3>
+    <p>LangChain pinned the model to <code>gpt-5.2-codex</code> in its own open-source coding agent, deepagents-cli, and changed only the prompt, the tools and the middleware. The <span class="g" data-g="Terminal-Bench">Terminal-Bench</span> 2.0 score went from 52.8% to 66.5%. Two changes stand out. The first is adding an explicit <b>plan, build, verify, fix</b> structure to the loop: the agent has to pass through a verification step before it may say it is done. The second is what the post calls the “reasoning sandwich”: high reasoning effort for the planning and verification steps, medium for the implementation steps. The result is a vendor measuring its own product, in other words <span class="tag c">vendor-reported</span>. Still, the direction is clear: same weights, a gap of roughly 14 points.</p>
+
+    <h3>Evidence 2: change only the edit tool</h3>
+    <p>Can Bölük’s post of 12 February 2026 measures an even narrower variable: the file edit format. 16 models, 180 tasks. A <span class="g" data-g="Hashline">“hashline”</span> format, in which lines are tagged with short content hashes, beat <span class="g" data-g="apply_patch">apply_patch</span> in 14 of the 16 models by roughly 15 points on average. The most extreme case is Grok Code Fast 1: from 6.7% to 68.3%. This is a single-author company blog <span class="tag c">vendor blog, single author</span>; we have not seen an independent replication. But the mechanism is plausible and we will examine it in the next lesson: the format changes the surface on which the model can make mistakes.</p>
+
+    <h3>Evidence 3: interface design as an academic result</h3>
+    <p>The SWE-agent paper (Yang et al., NeurIPS 2024) named the interface between the agent and the computer the “ACI”. A file viewer with a 100-line window, an edit command with a linter that rejects syntactically broken edits, and short search output. GPT-4 Turbo went from 11.0% on SWE-bench Lite with a plain shell to 18.0% with this interface; with the edit action removed it dropped to 10.3%. The figures come from secondary summaries; the paper’s table is authoritative <span class="tag c">secondary source</span>.</p>
+
+    <div class="fig" data-widget="l6-evidence">
+      <p class="fig-title">Model fixed, harness varied: the measurements</p>
+      <p class="fig-cap">In each study the grey bar is “before” and the colored bar is “after”. The badges show the type of source. The last tab is an unverified compilation; open it only after reading its warning.</p>
+      <div class="seg l6-ev-f" role="group" aria-label="Study">
+        <button type="button" data-v="all" aria-pressed="true">All</button>
+        <button type="button" data-v="lc">LangChain</button>
+        <button type="button" data-v="edit">Edit format</button>
+        <button type="button" data-v="swe">SWE-agent</button>
+        <button type="button" data-v="tb">Unverified</button>
+      </div>
+      <div class="l6-ev-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Why does a small change make such a big difference?</h3>
+    <p>At first glance it is surprising: how can an edit format or a verification step be worth dozens of points? The answer is that agent tasks are long chains of steps. Anthropic’s “Building effective agents” post says it plainly: in agents, errors compound. Think of a simple calculation (an illustrative one, not a measurement): an agent that gets each step right with 98% probability finishes a 50-step task without a single mistake about 36% of the time (0.98<sup>50</sup>). Raise per-step success to 99% and that rate climbs to about 60%. A one-point improvement per step makes a difference of more than twenty points at the task level.</p>
+    <p>The harness acts on exactly that per-step probability. A vague error message wastes a step; a patch that does not apply wastes a turn on re-reading; the absence of a verifier lets a small mistake ride along for twenty steps. The reverse holds too: even if a good harness cannot prevent an error entirely, it catches it <b>early and cheaply</b>. A test turning red right away, a linter rejecting a broken edit, a hook stopping a write to the wrong file and saying why: each of these lets the next link in the chain start from solid ground. The linted edit command in SWE-agent and the verification step at LangChain are two implementations of the same idea.</p>
+    <p>That is why, when you evaluate a harness, these questions matter as much as “how smart is the model”: how many steps later does it see the error, how clearly does it see it when it does, and how many turns does the fix cost?</p>
+
+    <h3>How should you read these numbers?</h3>
+    <p>There are compilations going around that show the same model scoring very differently with different harnesses on the Terminal-Bench leaderboards. One secondary compilation from around April 2026 says that with Claude Opus 4.6 the best harness scored about 82% and Claude Code about 58%, a 24-point spread on a single model. We could not verify this; it sits in a separate tab of the diagram, with a warning. LangChain’s post also notes separately that Opus 4.6 trailed the other harnesses by a wide margin inside Claude Code.</p>
+    <p>When you read a gap like that, do not forget one important distinction: <b>leaderboard harnesses are tuned for the benchmark.</b> They run non-interactively, choose timeouts to fit the tasks and allow everything. Product harnesses optimize for other things: asking the user, permissions, sandbox, cost, reversibility. Claude Code trailing on a benchmark does not mean it will be worse in your repo; it may mean it spends its budget on things the benchmark does not measure. The reverse is also true: the permission model of a harness that shines on a benchmark may be unacceptable for your company.</p>
+
+    <div class="callout myth"><span class="ct">Myth</span>“Model X is so many points better than model Y.” Model comparisons often quietly include a harness. The reported score is the score that model got with that harness and those settings. You cannot carry the number on a model card over to your own toolchain; when you do, expect a deviation as large as the harness gap.</div>
+
+    <h3>When debugging: model or harness?</h3>
+    <p>In day-to-day work, this evidence translates into a debugging habit. When the agent does something you did not expect, instead of blaming the model right away, look in this order: what was in the context, what did the tool return, which rule was in effect, what feedback did the environment give? The diagram below shows that checking order for common symptoms.</p>
+
+    <div class="fig" data-widget="l6-debug">
+      <p class="fig-title">Symptom → layer to inspect</p>
+      <p class="fig-cap">Click a symptom. You get the checking order, the likely layer and the first command to run. This is not a decision tree but a flashlight: it shows which layer to look at first.</p>
+      <div class="l6-cards l6-dbg-list"></div>
+      <div class="panel live l6-dbg-out" aria-live="polite"><span class="muted">Pick a symptom.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>With the model fixed, changing only the harness can make a difference of anywhere from a few points to dozens (LangChain 52.8 → 66.5, vendor-reported).</li>
+        <li>Even a tool decision that looks small, such as the edit format, can make a big difference.</li>
+        <li>Benchmark harnesses are tuned for the benchmark; product harnesses for safety, permissions and cost. Read scores accordingly.</li>
+        <li>Before blaming the agent, check the context, the tool output, the rules and the feedback, in that order.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://blog.langchain.com/improving-deep-agents-with-harness-engineering">LangChain: Improving deep agents with harness engineering (vendor-reported)</a></li>
+      <li><a href="https://stencil.so/blog/the-harness-problem">Can Bölük: The harness problem (12 February 2026, vendor blog)</a></li>
+      <li><a href="https://arxiv.org/abs/2405.15793">Yang et al.: SWE-agent: Agent-Computer Interfaces (NeurIPS 2024)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (compounding errors)</a></li>
+      <li><a href="https://www.tbench.ai/leaderboard/terminal-bench/2.0">Terminal-Bench 2.0 leaderboard</a></li>
+      <li><a href="https://qepo17.pages.dev/til/2026-04-02-terminal-bench-harness-gap">Terminal-Bench harness gap compilation (secondary, unverified, April 2026)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 4. TRAINED TOGETHER ================= -->
+  <div class="lesson" data-tab="Trained together">
+    <h2>Model and harness evolve together</h2>
+    <p class="lead">Part of the explanation for the gaps in the previous lesson is simple: models are not trained in a vacuum. Labs train their models during the RL phase with specific tool names, specific edit formats and specific working environments. A model performs best in an environment that resembles the harness it was trained in.</p>
+
+    <h3>In the vendors’ own words</h3>
+    <p>OpenAI’s Codex prompting guide is unusually explicit about this. It “strongly” recommends using their own <code>apply_patch</code> implementation exactly as is, saying the model has been trained to excel at this diff format. It also states that the model was trained predominantly with a dedicated terminal tool, and trained to follow AGENTS.md instructions closely. Those three sentences are really a configuration manual for anyone putting a Codex model into their own harness.</p>
+    <p>On the Anthropic side the same idea shows up as “Anthropic-schema client tools”. The schemas of the <code>bash</code>, <code>text_editor</code>, <code>memory</code>, <code>computer</code> and <code>browser</code> tools are <span class="g" data-g="Trained-in tool">trained into</span> the model; the documentation says Claude has been optimized on thousands of successful trajectories that use these exact tool signatures. The practical consequence: these tools get called more reliably than tools that do the same job but are defined with names and schemas you made up.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>It is the difference between a library’s “official” client and a wrapper you wrote yourself. The official client knows every edge case the server expects; your wrapper works most of the time and quietly misbehaves in a rare case. Here the “server” is the model’s habits: speak the format it was trained on and you get fewer surprises.</div>
+
+    <h3>Why does the diff format matter so much?</h3>
+    <p>Editing a file is one of the most delicate outputs a model has to produce. The model does not rewrite the whole file; it produces a description of the change for the harness to apply. That description comes in three main forms, and each has a different weak spot:</p>
+    <ul>
+      <li><b>Find and replace</b> (<code>str_replace</code> in Claude’s <code>text_editor</code> tool, the Edit tool in Claude Code): the model writes the old text verbatim, the harness searches for it in the file and replaces it with the new text. The old text must occur exactly once. One whitespace difference gives a “not found” error, two matches an “ambiguous” one.</li>
+      <li><b>Contextual patch</b> (Codex’s <code>apply_patch</code>): the model writes the lines to change plus the surrounding context lines in a patch format. The harness places the hunk using the context lines. Any drift in the context lines makes the patch impossible to apply.</li>
+      <li><b>Line-referenced</b> (like hashline): when the file is read, each line is tagged with a short content hash; the model describes the edit as “this line, this hash”. It does not have to rewrite the old text. If the hash does not match (the file has changed), the harness rejects the edit.</li>
+    </ul>
+    <p>In each format, the thing the model can get wrong is different. With find and replace it has to remember the old text letter for letter; with a patch, copy the context correctly; with line references, pick the right line. Whatever format a model was trained on, it has learned to avoid that format’s mistakes. Give it a different format and it would have to learn that format’s mistakes all over again, and it cannot, because its weights are frozen.</p>
+
+    <div class="fig" data-widget="l6-edit">
+      <p class="fig-title">Same edit, three formats, four situations</p>
+      <p class="fig-cap">On line 88 of <code>OrderMapper.cs</code> in example_app there is a cast that blows up when <code>status_code</code> comes back NULL. Pick a format, then pick a situation: how does the harness handle the edit? The hashline rendering is schematic.</p>
+      <div class="ctrl" style="margin-top:0">
+        <div class="seg l6-ed-fmt" role="group" aria-label="Format">
+          <button type="button" data-v="sr" aria-pressed="true">str_replace</button>
+          <button type="button" data-v="ap">apply_patch</button>
+          <button type="button" data-v="hl">hashline</button>
+        </div>
+        <div class="seg l6-ed-sc" role="group" aria-label="Situation">
+          <button type="button" data-v="ok" aria-pressed="true">Normal</button>
+          <button type="button" data-v="ws">Whitespace diff</button>
+          <button type="button" data-v="dup">Line in two places</button>
+          <button type="button" data-v="moved">File shifted</button>
+        </div>
+      </div>
+      <pre class="l6-ed-code" style="margin:.8rem 0 0"><code></code></pre>
+      <div class="panel live l6-ed-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Fitting too closely is a risk too</h3>
+    <p>LangChain’s harness anatomy post puts forward an interesting argument: products like Claude Code and Codex go through post-training with the model and the harness in the loop, and this can turn into a kind of overfitting. Change the tool logic and performance may drop; so the best harness for a task is not necessarily the one the model was trained in. This is an argument, not a result measured in that post. But the hashline result is consistent with it: some models did better in a format other than their “native” one.</p>
+    <p>Taken together, the two observations say this: <b>the training format is a strong default, not dogma.</b> If you are building your own harness, start with the tool names and formats the model was trained on. If you want to try a different format, do it by measuring on your own tasks (evals in level 9).</p>
+
+    <h3>Practical consequences</h3>
+    <ol class="steps">
+      <li><b>Changing the model means changing the harness too.</b> When you switch models inside the same tool, part of the behavioral difference may come from the new model not being used to that tool’s formats. The reverse also holds: if you use a Codex model in a non-Codex tool that gives it some other edit format instead of apply_patch, you may not see the quality you expect.</li>
+      <li><b>The name of the instruction file is part of the format.</b> Codex was trained to follow AGENTS.md; Claude Code loads CLAUDE.md. If you use both tools in the same repo, keep the two files consistent or point one at the other (levels 7 and 8).</li>
+      <li><b>Tool names are not trivial.</b> In your own harness, choosing names close to the ones the model saw in training, rather than giving a tool an arbitrary name, can buy consistency. There are third-party experiences that support this, but we have not seen verified numbers; try it with your own eval.</li>
+      <li><b>Retire the question “Which model is best?”</b> Replace it with “Which model and harness pair is best, on my tasks, by my criteria?”</li>
+    </ol>
+
+    <div class="callout tip"><span class="ct">In practice</span>If the agent keeps hitting “no match found” or “patch failed to apply”, before blaming the model’s intelligence, check these: does the file mix tabs and spaces, are line endings mixed between CRLF and LF, did a formatter change the file after the agent read it? All of these are friction at the format level, and most are solved with a harness or repo setting.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Models are trained with specific tool names and formats: apply_patch and the terminal tool for Codex; bash, text_editor and the other trained-in schemas for Claude.</li>
+        <li>Each edit format has its own error surface: exact matching, copying context, or picking the right line.</li>
+        <li>The training format is a strong default; other formats may be better, but know that by measuring on your own tasks.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide">OpenAI Cookbook: Codex prompting guide</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude API docs: How tool use works</a></li>
+      <li><a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness">LangChain: The Anatomy of an Agent Harness</a></li>
+      <li><a href="https://stencil.so/blog/the-harness-problem">Can Bölük: The harness problem (vendor blog)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 5. WHERE RULES BELONG ================= -->
+  <div class="lesson" data-tab="Where rules belong">
+    <h2>Where does a rule go?</h2>
+    <p class="lead">Your team has settled on a rule: “applied files in the migrations folder are never touched.” How do you teach that to the agent? Most people’s first answer is “I’ll put it in CLAUDE.md.” Sometimes that is the right answer. Most of the time it is not. This lesson teaches you how to decide which harness layer a rule belongs in.</p>
+
+    <h3>The basic distinction: guidance or enforcement?</h3>
+    <p>The distinction you saw in the earlier lessons becomes a decision criterion here. Line up the harness layers like a ladder, from soft to hard:</p>
+    <ol>
+      <li><b>CLAUDE.md / AGENTS.md.</b> Guidance that sits in the context on every request. The model reads it and usually follows it, but it may decide that a line does not apply in a given situation. Every line costs a little attention on every task.</li>
+      <li><b>Skill.</b> A procedure loaded on demand. The right place for long, rarely needed knowledge: only its name and description sit permanently in the context.</li>
+      <li><b>Tool design.</b> Bake the rule into the tool itself. A read-only database tool carries a no-writes rule better than any prompt, because the ability to write simply does not exist (level 4).</li>
+      <li><b>Permission rule.</b> allow, ask, deny. The harness stops a tool call based on a pattern. Simple, fast, deterministic; but patterns can be sidestepped.</li>
+      <li><b>Hook.</b> Your code, running on an event. <span class="g" data-g="PreToolUse">PreToolUse</span> can block a call and tell the model why; <span class="g" data-g="PostToolUse">PostToolUse</span> can run something after every edit; a Stop hook can run a check when the model says “done” and send it back to work (level 5). A <code>command</code> hook is deterministic.</li>
+      <li><b>Sandbox.</b> A file and network boundary at the operating system level. It stops even a command that sidesteps the harness’s patterns.</li>
+      <li><b>Outside the harness: git hooks, CI.</b> The last gate, applying to everyone, agent or human. Its feedback comes late, but nobody can skip it.</li>
+    </ol>
+    <p>The Claude Code documentation’s advice on this fits in one sentence: if you keep adding emphasis to a CLAUDE.md line and Claude still misses it, that line belongs in a hook. The documentation adds that “adding IMPORTANT probably won’t fix it”. As you saw in level 3, with newer models capitalised, shouting instructions also cause overtriggering: the rule starts being applied in unrelated situations too.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>It is the question of where you put a business rule in a database. An <code>if</code> in the application code is usually enough, but another client can bypass it. A CHECK constraint or a foreign key asks nobody. Critical integrity rules go into constraints, flexible business rules into code. Here CLAUDE.md is like the <code>if</code> in application code; hooks and the sandbox are like constraints.</div>
+
+    <h3>Four questions for the decision</h3>
+    <ol class="steps">
+      <li><b>Does it have exceptions?</b> If the rule has legitimate exceptions and telling them apart takes judgment, write it in the soft layer (CLAUDE.md), together with the reasoning. A deterministic check cuts off the exceptions too.</li>
+      <li><b>What does a violation cost?</b> If a violation means irreversible damage, a security hole or data loss, the rule must be enforced: a deny rule, a hook or the sandbox. “Usually complies” is not enough.</li>
+      <li><b>Is the rule an action or a judgment?</b> “Run the formatter after every edit” is an action; a hook does it every time. “Keep the code readable” is a judgment; no deterministic check can decide it.</li>
+      <li><b>How often is it needed?</b> A short rule needed on every task goes in CLAUDE.md; a long procedure needed once a month goes in a skill.</li>
+    </ol>
+
+    <div class="fig" data-widget="l6-place">
+      <p class="fig-title">Where does this rule belong?</p>
+      <p class="fig-cap">Click a rule card. On the ladder, the recommended layer is marked with a green border, and the alternatives one step softer and one step harder with a dashed line. Below you can read why it belongs there and what would happen with the alternatives. No scoring; the point is to see the reasoning.</p>
+      <div class="l6-place">
+        <div><p class="muted" style="margin:0 0 .4rem">Rules</p><div class="l6-cards l6-pl-cards"></div></div>
+        <div><p class="muted" style="margin:0 0 .4rem">Layers, soft to hard</p><div class="l6-ladder"></div></div>
+      </div>
+      <div class="panel live l6-pl-out" aria-live="polite"><span class="muted">Pick a rule card.</span></div>
+    </div>
+
+    <h3>Same rule, two places: watch a session</h3>
+    <p>Let’s not leave the difference abstract. In the simulation below, the same rule lives in two different places in two different teams. The team on the left wrote the rule in CLAUDE.md; the team on the right wrote a PreToolUse hook. Both agents get the same task and run into the same temptation halfway through.</p>
+
+    <div class="fig" data-widget="l6-enforce">
+      <p class="fig-title">CLAUDE.md or hook? Same session, two outcomes</p>
+      <p class="fig-cap">Step through it. The left lane is the team whose rule lives in CLAUDE.md; the right lane is the team where the same rule is enforced by a PreToolUse hook. The JSON is simplified; the real hook syntax is in level 8.</p>
+    </div>
+
+    <p>Notice that the model in the simulation is not “malicious”. It read the rule, understood it, and then produced a plausible-looking reason why the rule did not apply in that situation. That is exactly the behavior CLAUDE.md is designed for: guidance gets interpreted. A hook does not interpret. On top of that, a good hook does not just block; it also tells the model <b>what it should do instead</b>. The block message becomes the model’s input on the next turn, and the agent switches to the right path.</p>
+
+    <h3>The hard layer has a cost too</h3>
+    <p>Putting every rule in the hardest layer is not the right answer either. A deterministic check does not recognize exceptions: it blocks legitimate work too. And a blocked agent does not stop; it looks for another way. If the hook in the simulation only watches the <code>Edit</code> and <code>Write</code> tools, on the next attempt the model may try to make the same change through bash with <code>sed -i</code>. That is not malice; the model is trying to finish the task and sees the obstacle in front of it as a technical problem. So a good block does two things: it keeps its scope wide enough to cover the real risk (with the sandbox if necessary), and its block message states the legitimate alternative explicitly. An agent that has an alternative does not look for shortcuts.</p>
+    <p>Harnesses know about this tension and build in safety valves. According to the Claude Code documentation (as of November 2026), auto mode stops deciding and falls back to asking the user after 3 consecutive or 20 total blocks; and when a Stop hook blocks 8 times in a row, the harness overrides it (level 5). The message is clear: if a hard layer says “no” forever, the agent either locks up or tries to get around it. A hard layer should be firm, but it should not drive the loop into a dead end.</p>
+    <p>As a practical rule of thumb: guidance layers (CLAUDE.md, skills) make sure the agent <b>picks the right path</b>; enforcing layers (permissions, hooks, sandbox) make sure <b>the wrong path is closed</b>. In a good setup the two work together: most of the time the agent never hits the block, because the guidance has already put it on the right path; and when it does hit it, the block tells it where to go.</p>
+
+    <div class="callout warn"><span class="ct">Caution</span>Deterministic layers can be breached too. Even if a deny pattern stops the <code>Read</code> tool, the same file can be <code>cat</code>-ed through bash; a command pattern can be sidestepped with a different spelling. Do not rely on a single layer for a critical rule: use a deny rule together with the sandbox, and if possible take the secret itself out of the agent’s environment. Level 10 expands on this defense-in-depth idea.</div>
+
+    <div class="callout tip"><span class="ct">In practice</span>When you move a rule into an enforcing layer, do not delete it from CLAUDE.md; leave it as a short explanation. For example: “The migrations folder is protected by a hook; create a new migration for schema changes.” That way the model picks the right path without ever hitting the block, and you save a turn and the tokens.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>CLAUDE.md is guidance; the model may decide a line does not apply. Hooks, deny rules, managed settings and the sandbox are enforced.</li>
+        <li>If you keep adding emphasis, the rule is in the wrong layer: move it to a hook or a permission rule.</li>
+        <li>The decision questions: are there exceptions, what does a violation cost, is it an action or a judgment, how often is it needed?</li>
+        <li>A good block also states the reason and the right path. Use more than one layer for critical rules.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code docs: Best practices (CLAUDE.md, hooks, emphasis)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code docs: How Claude Code works (permissions, hook types)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude prompting best practices (overtriggering)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 6. YOUR OWN HARNESS ================= -->
+  <div class="lesson" data-tab="Your own harness">
+    <h2>Building your own harness</h2>
+    <p class="lead">One day the out-of-the-box behavior of Claude Code or Codex will not be enough: a support agent that talks to an internal system, a maintenance agent that runs overnight, a review step that runs in CI. Then you will build part of the harness yourself. This lesson shows what you must not skip when you write one from scratch.</p>
+
+    <h3>First, don’t write it from scratch</h3>
+    <p>The first piece of advice may come as a surprise: if you can, do not write the harness from scratch. The Claude Agent SDK is the programmable form of the harness that runs Claude Code; tools, permissions, hooks, context management and subagents come ready-made. The OpenAI Agents SDK also provides its own loop, handoffs and <code>max_turns</code> guard. Writing your own loop is an instructive exercise; but in production, rewriting every layer means rediscovering every failure path each layer closes off.</p>
+    <p>Anthropic’s Agent SDK post describes an agent’s work as a four-step loop: <b>gather context, take action, verify the work, repeat.</b> It lists three options for verification: rules (lint, tests), visual feedback (screenshots) and LLM-as-judge. About the last one the post is frank: it is generally not a very robust method. In other words, use a deterministic verifier wherever you can.</p>
+
+    <h3>Minimum harness checklist</h3>
+    <p>Recall the loop from level 5: one model call, a <code>stop_reason</code> check, a few lines that run the tools and append the results. To take that skeleton to production you add pieces, each of which closes off a failure path. In the diagram below, switch the pieces on one by one and watch the loop grow. The counter at the bottom right shows an important truth: whatever pieces you add, there is only one line with the model in it. Everything else is ordinary, testable software.</p>
+
+    <div class="fig" data-widget="l6-builder">
+      <p class="fig-title">From loop to harness, piece by piece</p>
+      <p class="fig-cap">Tick a piece; the lines added to the loop appear highlighted, and the failure path the piece closes off is listed below. The code is Python-like pseudocode.</p>
+      <div class="l6-opts"></div>
+      <div class="l6-code" role="region" aria-label="Generated loop code"></div>
+      <div class="stats l6-b-stats"></div>
+      <div class="panel live l6-b-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Common mistakes</h3>
+    <ul>
+      <li><b>No stop condition.</b> A loop that starts with <code>while True</code> carries the bill into infinity too when the model gets stuck. <code>max_turns</code> and a token or cost budget are the first two things to add.</li>
+      <li><b>Error messages not written for the model.</b> A tool result that just says “failed” makes the model repeat the same call. Error text that says what happened and how to fix it shortens the loop (level 4).</li>
+      <li><b>No verifier.</b> It is done when the model says it is done. If verification is not inside the loop, “done” means “looks done” (level 5).</li>
+      <li><b>Permission checks living inside the model.</b> The sentence “do not run dangerous commands” sits in the system prompt, but the executor has no check at all. However good the model is, that is not a security boundary.</li>
+      <li><b>Observability as an afterthought.</b> Debugging a harness that does not record each turn’s request, response and tool results is like debugging a distributed system without logs. It is one reason Claude Code stores sessions as JSONL.</li>
+      <li><b>No context limit.</b> Letting a tool return 200 KB of logs exhausts both quality and budget within a few turns. Truncate the output, and when you do, tell the model how to narrow it down.</li>
+    </ul>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>This list looks a lot like the checklist for an API gateway that handles requests from an untrusted client to a backend service: timeouts, rate and budget limits, authorization, input validation, response size limits, an audit log. The difference is that the “client” here is your own agent. Its untrustworthiness comes not from malice but from being probabilistic.</div>
+
+    <h3>Test the harness too</h3>
+    <p>The best thing about the harness is that it is ordinary software. You cannot unit-test the model, but you can unit-test the harness. Test the permission matcher with a list of commands: is <code>git push --force</code> rejected, does <code>git status</code> pass? Run the hook scripts with fixed JSON inputs and check their exit codes. Verify that the truncation function gives the model a hint to narrow down when it truncates. Keep the JSONL logs of real sessions; when you change the harness, replay the same tool calls and see what the new rules block. Measuring the model’s behavior is a job for evals (level 9); measuring the harness’s behavior is the testing you already know.</p>
+
+    <h3>When to build your own, when to use an off-the-shelf one?</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Situation</th><th>Reasonable choice</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Coding work on the developer’s own machine</td><td>Claude Code, Codex CLI</td><td>All the layers are ready; shaped by settings files, CLAUDE.md / AGENTS.md and hooks.</td></tr>
+        <tr><td>A recurring agent step in CI</td><td>The ready-made CLI’s non-interactive mode, or the Agent SDK</td><td>Same loop; permissions and output format are controlled from a script (level 9).</td></tr>
+        <tr><td>A domain agent that talks to an internal system</td><td>Agent SDK + your own tools or MCP server</td><td>The loop and context management are ready; the value is in your tool design.</td></tr>
+        <tr><td>A job whose steps are known in advance</td><td>Workflow: fixed code + a few model calls</td><td>No agent needed; cheaper and more predictable (level 5).</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="callout warn"><span class="ct">Caution</span>When you build your own harness, security becomes your responsibility too. Tool results are untrusted input; a web page or a database row can carry text that looks to the model like an instruction. Restricting privileges, network isolation and human approval for irreversible actions are the harness’s job. Do not ship an agent that faces the outside world before reading level 10.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>If you can, do not write it from scratch: the Claude Agent SDK or the OpenAI Agents SDK gives you most of the layers ready-made.</li>
+        <li>Minimum production harness: stop condition, permission checks, output cap, deterministic verifier, context management, checkpoints, session log.</li>
+        <li>Whatever you add, there is only one line with the model in it; the rest of the harness is ordinary, testable software.</li>
+        <li>LLM-as-judge is the verifier of last resort; tests, lint and type checks come first.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+      <li><a href="https://openai.github.io/openai-agents-python/running_agents/">OpenAI Agents SDK: Running agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){
+  const s = document.createElement("style");
+  s.textContent = `
+.l6-tr{display:flex;flex-direction:column;gap:.35rem}
+.l6-seg{display:block;width:100%;text-align:left;cursor:pointer;border:1px solid var(--line);border-left:5px solid var(--c,var(--line));border-radius:9px;padding:.5rem .7rem;background:var(--paper);color:var(--ink);font-family:var(--mono);font-size:.78rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;transition:opacity .2s,background .2s}
+.l6-seg:hover{background:var(--soft)}
+.l6-seg:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.l6-seg .l6-w{display:block;font-family:var(--sans);font-size:.68rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--c);margin-bottom:.15rem}
+.l6-seg.sel{background:var(--cb);border-color:var(--c)}
+.l6-tr[data-f="m"] .l6-seg:not(.l6-k-m),.l6-tr[data-f="h"] .l6-seg:not(.l6-k-h){opacity:.28}
+.l6-onion-wrap{display:grid;grid-template-columns:minmax(0,340px) 1fr;gap:1.1rem;align-items:start}
+@media (max-width:720px){.l6-onion-wrap{grid-template-columns:1fr}}
+.l6-onion svg{width:100%;height:auto;max-width:340px;display:block;margin:0 auto}
+.l6-onion .ring{cursor:pointer;transition:fill .25s,fill-opacity .25s,stroke-width .2s}
+.l6-onion .ring.sel{stroke:var(--ink);stroke-width:2.5}
+.l6-onion .ring:focus{outline:none}
+.l6-onion .ring:focus-visible{stroke:var(--acc);stroke-width:3}
+.l6-onion text{font-family:var(--sans);pointer-events:none}
+.l6-pills{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.8rem}
+.l6-pill{font-family:var(--sans);font-size:.78rem;font-weight:600;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:999px;padding:.25rem .65rem;cursor:pointer}
+.l6-pill[aria-pressed="true"]{border-color:var(--harness);background:var(--harness-bg);color:var(--harness)}
+.l6-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:.4rem}
+.l6-card{text-align:left;font-family:var(--body);font-size:.84rem;line-height:1.4;font-weight:500;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:.55rem .7rem;cursor:pointer}
+.l6-card:hover{border-color:var(--muted)}
+.l6-card[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l6-place{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media (max-width:720px){.l6-place{grid-template-columns:1fr}}
+.l6-ladder{display:flex;flex-direction:column;gap:.3rem}
+.l6-rung{display:grid;grid-template-columns:1.5rem 1fr auto;gap:.5rem;align-items:center;border:1px solid var(--line);border-radius:9px;padding:.42rem .6rem;background:var(--paper);font-size:.84rem;line-height:1.35;transition:background .25s,border-color .25s,box-shadow .25s}
+.l6-rung .n{font-family:var(--mono);font-size:.74rem;color:var(--muted);text-align:center}
+.l6-rung small{color:var(--muted);font-size:.72rem}
+.l6-rung .badge{font-family:var(--sans);font-size:.66rem;font-weight:800;letter-spacing:.04em;text-transform:uppercase;border-radius:999px;padding:.08rem .45rem;white-space:nowrap}
+.l6-rung.rec{border-color:var(--ok);background:var(--ok-bg);box-shadow:inset 0 0 0 1px var(--ok)}
+.l6-rung.rec .badge{background:var(--ok);color:var(--surface)}
+.l6-rung.soft{border-style:dashed;border-color:var(--ctx)}
+.l6-rung.soft .badge{background:var(--ctx-bg);color:var(--ctx)}
+.l6-rung.hard{border-style:dashed;border-color:var(--risk)}
+.l6-rung.hard .badge{background:var(--risk-bg);color:var(--risk)}
+.l6-lanes{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+@media (max-width:680px){.l6-lanes{grid-template-columns:1fr}}
+.l6-lane{border:1px solid var(--line);border-radius:12px;padding:.7rem .8rem;background:var(--paper);min-width:0}
+.l6-lane h4{margin:0 0 .35rem;font-size:.9rem;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.l6-lane.bad{border-color:color-mix(in srgb,var(--risk) 50%,var(--line))}
+.l6-lane.good{border-color:color-mix(in srgb,var(--ok) 50%,var(--line))}
+.l6-lane p{margin:.3rem 0;font-size:.86rem}
+.l6-lane .jsonv{max-height:260px;font-size:.74rem}
+.l6-stepnote{font-size:.88rem;margin:0 0 .6rem}
+.l6-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:.4rem}
+.l6-opt{display:flex;gap:.5rem;align-items:flex-start;border:1px solid var(--line);border-radius:9px;padding:.45rem .6rem;background:var(--paper);font-size:.84rem;line-height:1.35;cursor:pointer}
+.l6-opt input{margin-top:.18rem;accent-color:var(--harness);flex:none}
+.l6-opt small{display:block;color:var(--muted);font-size:.74rem}
+.l6-code{font-family:var(--mono);font-size:.74rem;line-height:1.6;white-space:pre;overflow-x:auto;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;margin:.8rem 0 0}
+.l6-code span{display:block}
+.l6-code .add{background:var(--harness-bg);color:var(--harness);border-left:3px solid var(--harness);margin-left:-.85rem;padding-left:calc(.85rem - 3px)}
+.l6-code .mdl{background:var(--model-bg);color:var(--model);border-left:3px solid var(--model);margin-left:-.85rem;padding-left:calc(.85rem - 3px);font-weight:700}
+.l6-study{border:1px solid var(--line);border-radius:12px;padding:.7rem .85rem;margin-top:.7rem;background:var(--paper)}
+.l6-study h4{margin:0 0 .2rem;font-size:.92rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.l6-study p{margin:.25rem 0;font-size:.84rem;color:var(--muted)}
+.l6-study .bars{margin-top:.5rem}
+.l6-study .bar{grid-template-columns:minmax(70px,150px) 1fr 52px}
+.l6-study .bar.before .fill{background:var(--faint)}
+.l6-study.warnbox{border-color:color-mix(in srgb,var(--ctx) 55%,var(--line))}
+`;
+  document.head.append(s);
+})();
+
+Edu.glossary({
+  "Agent = Model + Harness": "The core equation of this course: an agent is the sum of the model that makes decisions and the software (the harness) that puts it in a loop, gives it tools, constrains it and feeds results back.",
+  "Agentic harness": "The layer around the model that provides the tools and manages the context. Anthropic describes Claude Code with this term.",
+  "Claude Agent SDK": "The programmable form of the harness that runs Claude Code. In 2025 it was renamed from Claude Code SDK because it also runs agents that do not write code.",
+  "Middleware": "Code that steps in at specific points of the agent loop: compaction, continuation logic, lint checks and the like.",
+  "Sandbox": "An isolation layer that limits the file system and network access of the commands an agent runs, at the operating system level. It stops even commands that sidestep the harness’s patterns.",
+  "Permission mode": "The global setting that decides how much the harness asks before running tool calls. In Claude Code, modes such as Auto, Manual, Accept edits and Plan.",
+  "Deny rule": "A rule that forbids a specific tool or command pattern at the harness level. Deterministic, but the pattern can be sidestepped; for critical cases use it together with the sandbox.",
+  "Hook": "Code you write that runs at specific events of the agent loop (before/after a tool, session start, stop). command/http hooks are deterministic; prompt/agent hooks are model-decided.",
+  "PreToolUse": "The hook event that fires just before a tool call runs. It can block the call and tell the model why.",
+  "PostToolUse": "The hook event that fires after a tool call completes. For work that must happen every time, such as running a formatter or a linter.",
+  "Checkpoint": "A snapshot of a file that the harness takes before an edit. It lets you rewind a change the agent made.",
+  "Managed settings": "Harness settings the organization distributes centrally, which neither the user nor the project can override.",
+  "Deterministic layer": "A harness layer that gives the same response to the same input every time: a deny rule, the sandbox, a command hook. Unlike model-decided layers (such as CLAUDE.md), it is enforced.",
+  "apply_patch": "The contextual patch format OpenAI Codex models were trained on, and the tool that applies it. OpenAI recommends using its own implementation exactly as is.",
+  "Trained-in tool": "A tool whose schema was baked into the model’s training (for Claude: bash, text_editor, memory, computer, browser). It gets called more reliably than a made-up schema.",
+  "Edit format": "The form in which the model describes a file change: find and replace, contextual patch or line-referenced. Each has a different error surface.",
+  "Hashline": "An edit format in which lines are tagged with short content hashes and an edit is described by line and hash. In a single-author study from February 2026 it beat apply_patch on most models.",
+  "Terminal-Bench": "A benchmark that measures how well agents solve realistic tasks in a terminal. Often used to compare the scores the same model gets with different harnesses."
+});
+
+/* ---------- 1. Who produced it? ---------- */
+Edu.widget("l6-who", el => {
+  const { h, $, $$, seg } = Edu;
+  const K = {
+    h:["Harness","var(--harness)","var(--harness-bg)"],
+    m:["Model","var(--model)","var(--model-bg)"],
+    u:["You / team","var(--tool)","var(--tool-bg)"],
+    e:["Environment","var(--ctx)","var(--ctx-bg)"],
+    x:["Mixed","var(--ctx)","var(--ctx-bg)"]
+  };
+  const S = [
+    { k:"h", lab:"System prompt", txt:"(identity, working rules, environment info: operating system, working directory, git status, date)",
+      who:"Written by the harness. It sits at the very start of every request; you cannot see it, but it goes into the context and onto the bill on every request.", ctl:"You cannot change it directly; you influence it indirectly through output styles and settings." },
+    { k:"h", lab:"Tool definitions", txt:"Read, Edit, Write, Bash, Grep, Glob, …\nMCP: example_db (names only; full definitions deferred)",
+      who:"Added by the harness. Tool descriptions are a prompt too; the model reads them to decide which tool to use when. MCP tools are deferred via tool search (level 4).", ctl:"You choose which MCP servers to connect and the permissions." },
+    { k:"u", lab:"CLAUDE.md (as a reminder)", txt:"<system-reminder>\nTests: dotnet test. Money fields are decimal.\n</system-reminder>",
+      who:"You or your team wrote the content; the harness decided where it goes and in what form.", ctl:"The content is entirely yours. But it is guidance: the model may decide a line does not apply." },
+    { k:"u", lab:"Your message", txt:"The OrderMapper test is red, fix it.",
+      who:"You wrote it. One of the smallest pieces of the whole request.", ctl:"Entirely yours. This is where the good task definition from level 3 comes in." },
+    { k:"m", lab:"Model: text + tool_use", txt:"Let me run the test first and see the error.\ntool_use → Bash {\"command\": \"dotnet test --filter OrderMapper\"}",
+      who:"Produced by the model. Note: the model ran nothing; it only wrote a request.", ctl:"You influence it indirectly through the prompt, examples and tool descriptions." },
+    { k:"h", lab:"Permission check", txt:"rule: allow Bash(dotnet test:*) → run without asking",
+      who:"The harness decided. In a different permission mode the same request would have become an approval prompt; with a deny rule, a rejection message.", ctl:"The allow/deny rules in the settings file and the permission mode are yours." },
+    { k:"e", lab:"Environment: command output", txt:"Failed: Map_NullStatus_ReturnsUnknown\nInvalidCastException at OrderMapper.cs:88\nexit code 1",
+      who:"Produced by the environment: shell, compiler, test runner. The agent’s quality is capped by the quality of this feedback (level 5).", ctl:"The quality of tests, error messages and tool output depends on your repo." },
+    { k:"h", lab:"tool_result packaging", txt:"{\"type\": \"tool_result\", \"tool_use_id\": \"toolu_01\", \"content\": \"Failed: …\"}\n(it would have been truncated above 25,000 tokens)",
+      who:"Packaged by the harness. It formatted the output, truncated it if needed and appended it to the model’s next request.", ctl:"In your own harness you set the limit and the truncation message." },
+    { k:"m", lab:"Model: edit request", txt:"tool_use → Edit {\"file_path\": \"src/Orders/OrderMapper.cs\",\n  \"old_string\": \"(string)row[\\\"status_code\\\"]\",\n  \"new_string\": \"row[\\\"status_code\\\"] as string ?? \\\"UNKNOWN\\\"\"}",
+      who:"Produced by the model. A change description in find-and-replace format (lesson 4 of this level).", ctl:"The harness picks the format; the model only writes in it." },
+    { k:"h", lab:"PostToolUse hook", txt:"hook: dotnet format src/Orders/OrderMapper.cs → ok",
+      who:"Run by the harness, using the hook you defined. The model did not ask for it; it runs deterministically after every edit.", ctl:"Entirely yours: which command on which event (level 8)." },
+    { k:"h", lab:"System reminder: file changed", txt:"<system-reminder>\nOrderMapper.cs was modified after it was read (formatter).\n</system-reminder>",
+      who:"Added by the harness. Because the formatter changed the file, the model’s copy is stale; the harness says so, so that the next edit does not fail to match.", ctl:"Not directly; this is the harness’s own behavior." },
+    { k:"x", lab:"Compaction summary (in a long session)", txt:"[Summary of the earlier conversation] Root cause: status_code NULL. Changed: OrderMapper.cs …",
+      who:"Mixed. A model call wrote the text; the harness decided when to summarize, what to keep and where to put the summary.", ctl:"You can give it a focus with /compact, and keep summarization instructions in CLAUDE.md." },
+    { k:"m", lab:"Model: final answer", txt:"Root cause: the NULL status_code cast. Fixed line 88, added a new test, all tests pass.",
+      who:"Produced by the model. It asked for no tool, so stop_reason is end_turn; the loop ends (level 5).", ctl:"You can add a Stop hook or CI to verify this claim." },
+    { k:"h", lab:"Interface", txt:"✓ 2 commands run · 1 file edited",
+      who:"Shown by the harness. Terminal, IDE or web: the surface changes, the loop behind it stays the same.", ctl:"You choose which surface to use." }
+  ];
+  const tr = $(".l6-tr", el), out = $(".l6-who-out", el), cnt = $(".l6-who-cnt", el);
+  const btns = S.map(s => {
+    const b = h("button", { type:"button", class:"l6-seg l6-k-" + s.k }, h("span", { class:"l6-w" }, K[s.k][0] + " · " + s.lab), s.txt);
+    b.style.setProperty("--c", K[s.k][1]); b.style.setProperty("--cb", K[s.k][2]);
+    b.addEventListener("click", () => {
+      btns.forEach(x => x.classList.remove("sel")); b.classList.add("sel");
+      out.innerHTML = "";
+      const tag = h("span", { class:"tag " + ({h:"h",m:"m",u:"t",e:"c",x:"c"})[s.k] }, K[s.k][0]);
+      out.append(h("p", null, tag, " ", h("b", null, s.lab)), h("p", null, s.who), h("p", { class:"muted" }, h("b", null, "What you control: "), s.ctl));
+    });
+    tr.append(b); return b;
+  });
+  const n = k => S.filter(s => s.k === k).length;
+  seg($(".l6-who-f", el), v => {
+    tr.dataset.f = v;
+    cnt.textContent = v === "m" ? n("m") + " / " + S.length + " pieces produced by the model" :
+      v === "h" ? n("h") + " / " + S.length + " pieces produced or added by the harness" :
+      S.length + " pieces · model " + n("m") + " · harness " + n("h") + " · you " + n("u") + " · environment " + n("e") + " · mixed " + n("x");
+  });
+});
+
+/* ---------- 2. Onion ---------- */
+Edu.widget("l6-onion", el => {
+  const { h, $, $$, seg } = Edu;
+  const KIND = { d:["Deterministic","var(--harness)"], m:["Model-decided","var(--model)"], x:["Mixed","var(--ctx)"] };
+  const R = [
+    { s:"Instructions", n:"System prompt and reminders", kind:"m",
+      d:"Identity, working rules, environment info and the notes inserted into the conversation (CLAUDE.md contents, output style, file-changed warnings).",
+      cc:"The harness’s system prompt + <system-reminder> blocks.", f:"The model does not know where it is, which rules it works under or which tools it has." },
+    { s:"Tools", n:"Tools, MCP and skills", kind:"x",
+      d:"File, search, command, web and code intelligence tools; connected MCP servers (definitions deferred) and skills loaded on demand. The tool itself is deterministic; which one gets picked is a model decision.",
+      cc:"Read, Edit, Bash, Grep… + MCP tools deferred via tool search + skill descriptions.", f:"The model knows what to do but cannot do it; or it tries to do everything through bash." },
+    { s:"Context", n:"Context management", kind:"d",
+      d:"Automatic compaction, a cap on tool output, the context breakdown. The harness decides what enters and leaves the window.",
+      cc:"Auto-compaction, /context, a 25,000-token cap on tool results.", f:"The context overflows, quality drops (context rot), cost explodes." },
+    { s:"Memory", n:"Memory files", kind:"m",
+      d:"Persistence across sessions. The model starts every session from scratch; the files do not. The content is guidance.",
+      cc:"CLAUDE.md, CLAUDE.local.md, automatic memory MEMORY.md (first 200 lines or 25 KB).", f:"You explain the same things again every session; team rules vary from person to person." },
+    { s:"Subagents", n:"Subagents", kind:"x",
+      d:"Helper agents that run in a separate context window and return only a summary. When to call one is mostly a model decision; the isolation belongs to the harness.",
+      cc:"Sub-agents started with a clean window or with a copy of the conversation (fork).", f:"Everything read during exploration fills up the main window." },
+    { s:"Hooks", n:"Hooks", kind:"x",
+      d:"Your code, running on events. command/http hooks are deterministic; in prompt/agent hooks a model makes the decision again.",
+      cc:"The PreToolUse, PostToolUse, Stop and SessionStart events.", f:"Work that must happen every time is left to the model’s memory and good intentions." },
+    { s:"Permissions", n:"Permissions and sandbox", kind:"d",
+      d:"Which tool runs without asking, which needs approval, which never runs; an OS-level limit on commands’ file and network access. (The classifier in Auto mode is a model decision; rules and the sandbox are deterministic.)",
+      cc:"Auto / Manual / Accept edits / Plan modes, allow and deny rules, sandbox, managed settings.", f:"The agent either asks for approval on everything and becomes unusable, or asks nothing and becomes dangerous." },
+    { s:"Checkpoints", n:"Checkpoints and session", kind:"d",
+      d:"A file snapshot before edits; the whole session recorded as JSONL. Rewind, resume, fork.",
+      cc:"Rewind with Esc Esc; resume and fork.", f:"You cannot undo the agent’s bad edit; you cannot audit afterwards what it did." },
+    { s:"Interfaces", n:"Interfaces", kind:"d",
+      d:"Terminal, IDE, desktop, web, Slack, CI. They all run the same loop; only the surface changes.",
+      cc:"The same session on different surfaces; non-interactive mode for CI.", f:"The agent is usable in only one environment; it cannot be taken to CI or to the team." }
+  ];
+  const svg = $("svg", el), out = $(".l6-on-out", el), pills = $(".l6-pills", el), legend = $(".l6-on-legend", el);
+  const C = 172, CORE = 33, STEP = 15;
+  const NS = "http://www.w3.org/2000/svg";
+  const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  let mode = "layer", cur = null;
+  const rings = [];
+  for (let i = R.length - 1; i >= 0; i--){
+    const r = CORE + (i + 1) * STEP;
+    const c = mk("circle", { cx:C, cy:C, r:r, class:"ring", tabindex:"0", role:"button", "aria-label":R[i].n, stroke:"var(--surface)", "stroke-width":"1.5" });
+    c.dataset.i = i; rings[i] = c; svg.append(c);
+  }
+  const core = mk("circle", { cx:C, cy:C, r:CORE, class:"ring", tabindex:"0", role:"button", "aria-label":"Model", fill:"var(--model)", stroke:"var(--surface)", "stroke-width":"1.5" });
+  core.dataset.i = "core"; svg.append(core);
+  R.forEach((x, i) => {
+    const r = CORE + (i + 1) * STEP;
+    const t = mk("text", { x:C, y:C - r + 10.5, "text-anchor":"middle", "font-size":"9.5", "font-weight":"700", fill:"var(--ink)" });
+    t.textContent = x.s; svg.append(t);
+  });
+  const ct = mk("text", { x:C, y:C + 4, "text-anchor":"middle", "font-size":"11", "font-weight":"800", fill:"var(--surface)" });
+  ct.textContent = "Model"; svg.append(ct);
+  function paint(){
+    R.forEach((x, i) => {
+      const col = mode === "kind" ? KIND[x.kind][1] : "var(--harness)";
+      rings[i].setAttribute("fill", col);
+      rings[i].setAttribute("fill-opacity", mode === "kind" ? "0.42" : (0.1 + i * 0.045).toFixed(3));
+    });
+    legend.innerHTML = "";
+    if (mode === "kind") Object.values(KIND).forEach(k => { const sw = h("i", { class:"sw" }); sw.style.background = k[1]; legend.append(h("span", null, sw, k[0])); });
+  }
+  const pbtn = [];
+  R.forEach((x, i) => { const b = h("button", { type:"button", class:"l6-pill", "aria-pressed":"false", onclick:() => sel(i) }, x.n); pbtn[i] = b; pills.append(b); });
+  const pcore = h("button", { type:"button", class:"l6-pill", "aria-pressed":"false", onclick:() => sel("core") }, "Model");
+  pills.append(pcore);
+  function sel(i){
+    cur = i;
+    [...rings, core].forEach(c => c.classList.toggle("sel", String(c.dataset.i) === String(i)));
+    pbtn.forEach((b, j) => b.setAttribute("aria-pressed", j === i ? "true" : "false"));
+    pcore.setAttribute("aria-pressed", i === "core" ? "true" : "false");
+    out.innerHTML = "";
+    if (i === "core"){
+      out.append(h("p", null, h("span", { class:"tag m" }, "Probabilistic"), " ", h("b", null, "Model")),
+        h("p", null, "Frozen weights. The only probabilistic component, the one that decides what to do. Every ring outside it exists to make the model’s decision possible, repeatable, safe and auditable."),
+        h("p", { class:"muted" }, "When debugging: was this decision wrong, or was the information, tool or feedback needed for it missing?"));
+      return;
+    }
+    const x = R[i], k = KIND[x.kind];
+    const tg = h("span", { class:"tag " + ({d:"h",m:"m",x:"c"})[x.kind] }, k[0]);
+    out.append(h("p", null, tg, " ", h("b", null, (i + 1) + ". " + x.n)), h("p", null, x.d),
+      h("p", null, h("b", null, "In Claude Code: "), x.cc),
+      h("p", null, h("span", { class:"r" }, h("b", null, "Without this layer: ")), x.f));
+  }
+  svg.addEventListener("click", e => { const c = e.target.closest(".ring"); if (c) sel(c.dataset.i === "core" ? "core" : +c.dataset.i); });
+  svg.addEventListener("keydown", e => {
+    const c = e.target.closest && e.target.closest(".ring");
+    if (c && (e.key === "Enter" || e.key === " ")){ e.preventDefault(); sel(c.dataset.i === "core" ? "core" : +c.dataset.i); }
+  });
+  seg($(".l6-on-mode", el), v => { mode = v; paint(); });
+});
+
+/* ---------- 3a. Evidence ---------- */
+Edu.widget("l6-evidence", el => {
+  const { h, $, seg } = Edu;
+  const D = [
+    { id:"lc", t:"LangChain deepagents-cli · gpt-5.2-codex · Terminal-Bench 2.0", badge:["vendor-reported","c"],
+      note:"Model fixed; only the prompt, tools and middleware changed: a plan-build-verify-fix loop and a “reasoning sandwich”.",
+      rows:[["Before", 52.8, true], ["After harness change", 66.5]] },
+    { id:"edit", t:"Edit format study · Grok Code Fast 1 · 180 tasks", badge:["vendor blog, single author","c"],
+      note:"Only the edit tool changed. Hashline beat apply_patch in 14 of 16 models; the average gap was about 15 points. The most extreme case is shown here.",
+      rows:[["apply_patch", 6.7, true], ["hashline", 68.3]] },
+    { id:"swe", t:"SWE-agent · GPT-4 Turbo · SWE-bench Lite", badge:["secondary summary, check the table","c"],
+      note:"Agent-computer interface (ACI): windowed viewer, linted editing, short search. With the edit action removed, the score fell even below the shell-only level.",
+      rows:[["Shell only", 11.0, true], ["ACI, no edit", 10.3, true], ["ACI", 18.0]] },
+    { id:"tb", t:"Terminal-Bench 2.0 · Claude Opus 4.6 · per harness", badge:["unverified secondary compilation","r"], warn:true,
+      note:"A secondary compilation from around April 2026; it could not be verified against the primary table. Leaderboard harnesses are tuned for the benchmark (non-interactive, generous timeouts, broad permissions); product harnesses optimize for safety, permissions and cost. Do not read the numbers as a “product ranking”; read them as a sign of how wide the spread on a single model can be.",
+      rows:[["ForgeCode", 81.8], ["Capy", 75.3], ["Terminus-KIRA", 74.7], ["Junie CLI", 71.0], ["Droid", 69.9], ["Claude Code", 58.0]] }
+  ];
+  const out = $(".l6-ev-out", el);
+  function card(d){
+    const bars = h("div", { class:"bars" });
+    d.rows.forEach(r => {
+      const fill = h("div", { class:"fill" }); fill.style.width = "0%";
+      bars.append(h("div", { class:"bar" + (r[2] ? " before" : "") }, h("span", { class:"lab", title:r[0] }, r[0]), h("div", { class:"track" }, fill), h("span", { class:"pct" }, r[1].toFixed(1) + "%")));
+      requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = r[1] + "%"; }));
+    });
+    return h("div", { class:"l6-study" + (d.warn ? " warnbox" : "") }, h("h4", null, d.t, h("span", { class:"tag " + d.badge[1] }, d.badge[0])), h("p", null, d.note), bars);
+  }
+  seg($(".l6-ev-f", el), v => {
+    out.innerHTML = "";
+    const list = v === "all" ? D.filter(d => !d.warn) : D.filter(d => d.id === v);
+    list.forEach(d => out.append(card(d)));
+    if (v === "all") out.append(h("p", { class:"hint" }, "The unverified Terminal-Bench compilation is deliberately left out of the “All” view; it sits in its own tab with its warning."));
+  });
+});
+
+/* ---------- 3b. Symptom → layer ---------- */
+Edu.widget("l6-debug", el => {
+  const { h, $, $$ } = Edu;
+  const S = [
+    { t:"It keeps running the same failing command.", layer:["Harness: tool output and stop condition","h"],
+      steps:["Read the tool result: does the error message tell the model what went wrong and what to do, or does it just say “failed”?","If the output was truncated, the real error line may be in the part that got cut.","Does the loop have a turn limit or repetition detection?"],
+      cmd:"Look at the last 3 tool_results in the session log." },
+    { t:"It confidently called a function that does not exist in the project.", layer:["Model, but the cure is in the harness","m"],
+      steps:["This is a model error: a plausible-looking name left over from training.","The real question: did the compiler, type checker or a test catch it inside the loop?","If not, the verifier never made it into the loop (level 5)."],
+      cmd:"Check whether the agent ran build and tests before finishing." },
+    { t:"It ignored a rule in CLAUDE.md.", layer:["Context, or the wrong layer","c"],
+      steps:["Was the file actually loaded? Is it in the right location, with the right name?","Is the rule lost in the middle of a very long file?","If the rule is the kind that should be enforced (a file, a command, a completion condition), CLAUDE.md is the wrong place; move it to a hook or a permission rule."],
+      cmd:"Use /context to see what got loaded." },
+    { t:"Edits fail with “no match found”.", layer:["Harness: edit format and file state","h"],
+      steps:["Does the file mix tabs/spaces or CRLF/LF?","Did a formatter or another process change the file after the agent read it?","Does the old text occur in more than one place in the file?"],
+      cmd:"Check git diff and the file’s line-ending settings." },
+    { t:"It started talking nonsense after reading a huge log.", layer:["Context management","c"],
+      steps:["Did a single tool result take up most of the context?","Instead of reading the raw log, could a filtering search tool or command have been used?","In a long session, compaction may have kicked in and lost an important detail."],
+      cmd:"Use /context to see the share taken by tool results." },
+    { t:"Great on the benchmark, mediocre in our repo.", layer:["Harness and environment","h"],
+      steps:["The benchmark score may have been achieved with a different harness and different settings.","Does the repo have fast tests with clear failures, and instructions for running things?","Does the instruction file explain the project’s commands and rules?"],
+      cmd:"Watch whether the agent can find the build and test commands on its own." },
+    { t:"Quality dropped when we used a Codex model in a different tool.", layer:["Model-harness fit","h"],
+      steps:["Does the tool provide the apply_patch format and the terminal tool the model was trained on?","Do the instructions come through AGENTS.md?","Measure the difference on your own tasks with both harnesses (level 9)."],
+      cmd:"Check the tool’s edit format and tool names in its documentation." },
+    { t:"A command you did not expect ran without an approval prompt.", layer:["Permissions","r"],
+      steps:["Which permission mode was active?","Which allow rule matched this command? The pattern may be broader than you think.","Did the command’s effect stay inside the sandbox?"],
+      cmd:"List the active rules with /permissions." }
+  ];
+  const list = $(".l6-dbg-list", el), out = $(".l6-dbg-out", el);
+  const btns = S.map(s => {
+    const b = h("button", { type:"button", class:"l6-card", "aria-pressed":"false" }, s.t);
+    b.addEventListener("click", () => {
+      btns.forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      const ol = h("ol", null); s.steps.forEach(x => ol.append(h("li", null, x)));
+      out.append(h("p", null, h("span", { class:"tag " + s.layer[1] }, s.layer[0])), ol, h("p", { class:"muted" }, h("b", null, "First move: "), s.cmd));
+    });
+    list.append(b); return b;
+  });
+});
+
+/* ---------- 4. Edit formats ---------- */
+Edu.widget("l6-edit", el => {
+  const { $, seg, esc } = Edu;
+  const CODE = {
+    sr: `{
+  "command": "str_replace",
+  "path": "src/Orders/OrderMapper.cs",
+  "old_str": "    Status = (string)row[\\"status_code\\"],",
+  "new_str": "    Status = row[\\"status_code\\"] as string ?? \\"UNKNOWN\\","
+}`,
+    ap: `*** Begin Patch
+*** Update File: src/Orders/OrderMapper.cs
+@@ public static OrderDto Map(DataRow row)
+     OrderId = (long)row["order_id"],
+-    Status = (string)row["status_code"],
++    Status = row["status_code"] as string ?? "UNKNOWN",
+     CreatedAt = (DateTime)row["created_at"],
+*** End Patch`,
+    hl: `// when reading, the harness tags every line (schematic)
+87:c41|    OrderId = (long)row["order_id"],
+88:9be|    Status = (string)row["status_code"],
+89:2d7|    CreatedAt = (DateTime)row["created_at"],
+
+// the model's edit request
+{ "line": "88:9be",
+  "replace_with": "    Status = row[\\"status_code\\"] as string ?? \\"UNKNOWN\\"," }`
+  };
+  const RES = {
+    sr: {
+      ok:["ok","The old text occurs exactly once in the file; the harness replaces it. The model has to rewrite the old line letter for letter, so every edit costs a few extra output tokens."],
+      ws:["r","The file indents with a tab; the model’s old_str uses spaces. No exact match: an “old_str not found” error comes back. The model re-reads the file and tries again; a turn and tokens are gone."],
+      dup:["r","The same line appears in two methods in the file. The harness cannot tell which one to change and returns a “multiple matches” error. The model has to widen old_str with the surrounding lines."],
+      moved:["ok","5 lines were added at the top of the file, but the text being searched for is unchanged. Find and replace does not look at line numbers, so no problem. (If the text itself had changed, no match would be found and the model would have to re-read.)"]
+    },
+    ap: {
+      ok:["ok","The context lines (the lines before and after) and the @@ header pin down where the hunk goes; the change is applied. Codex models were trained on this format."],
+      ws:["r","One of the context lines is indented differently from the file. The harness cannot place the hunk; the patch is rejected and the model has to re-read the file and write a new patch."],
+      dup:["ok","Even though the changed line occurs in two places, the context lines and the method name in the @@ header tie it to a single spot. If the context is distinctive enough, the patch applies."],
+      moved:["ok","Lines added at the top of the file are no problem; the patch is placed by context, not by line number. If the context lines themselves had changed, the patch would be rejected."]
+    },
+    hl: {
+      ok:["ok","The model writes only the line reference and the new content; it does not reproduce the old text. The harness confirms that line 88’s hash is still 9be and replaces it."],
+      ws:["ok","Since the model does not rewrite the old line, an indentation difference does not break the match. Getting the new line’s indentation right is still the model’s job."],
+      dup:["ok","Even though the same text occurs in two places, line number and hash together point to a single line; no ambiguity."],
+      moved:["r","5 lines were added at the top of the file: line 88 is now a different line and its hash does not match. The harness rejects the edit, and the model has to re-read with fresh tags. A stale reference never silently changes the wrong line; that is the real win."]
+    }
+  };
+  let fmt = "sr", sc = "ok";
+  const code = $(".l6-ed-code code", el), out = $(".l6-ed-out", el);
+  function render(){
+    code.innerHTML = esc(CODE[fmt]);
+    const r = RES[fmt][sc];
+    out.innerHTML = '<p><span class="tag ' + (r[0] === "ok" ? "ok" : "r") + '">' + (r[0] === "ok" ? "Applied" : "Rejected") + '</span> ' + esc(r[1]) + '</p>';
+  }
+  seg($(".l6-ed-fmt", el), v => { fmt = v; render(); });
+  seg($(".l6-ed-sc", el), v => { sc = v; render(); });
+});
+
+/* ---------- 5a. Where the rule goes ---------- */
+Edu.widget("l6-place", el => {
+  const { h, $, $$ } = Edu;
+  const L = [
+    ["CLAUDE.md / AGENTS.md", "guidance; the model interprets it"],
+    ["Skill", "procedure loaded on demand"],
+    ["Tool design", "the rule lives in the tool itself"],
+    ["Permission rule", "allow / ask / deny pattern"],
+    ["Hook", "Pre / Post / Stop, your code"],
+    ["Sandbox", "OS-level file and network boundary"],
+    ["Outside the harness", "git hooks, CI"]
+  ];
+  const RULES = [
+    { t:"Never read .env files.", rec:3,
+      why:"A rule with zero exceptions, and a violation means a leaked secret. A deny rule for the Read tool cuts this off every time, with no interpretation.",
+      soft:[0,"Sitting in CLAUDE.md, the model would comply most of the time; but one day it would decide to read the file “to understand the configuration”, and the secret would be in the context. Once is enough."],
+      hard:[5,"The harder layer is not overkill here, it is defense in depth: the deny pattern stops the Read tool, but cat .env via bash is a separate path. The sandbox’s file system rule stops both. Best of all is for the secret never to be in the agent’s environment."] },
+    { t:"Run the formatter after every edit.", rec:4,
+      why:"This is not a judgment but an action to perform every time. A PostToolUse hook runs it deterministically after every edit; the model never has to think about it.",
+      soft:[0,"Sitting in CLAUDE.md, the model would sometimes forget, and sometimes spend a turn and tokens on a separate bash call every time."],
+      hard:[6,"CI should have a format check anyway. But CI feedback arrives after the loop is over; the hook fixes things inside the loop."] },
+    { t:"Prefer named exports.", rec:0,
+      why:"A style preference with legitimate exceptions: some frameworks require a default export. Spotting the exception takes judgment, so it is written as guidance, together with the reasoning.",
+      soft:null,
+      hard:[4,"Blocking every default export with a PreToolUse hook also blocks the exceptions and sets the agent fighting the framework. If you want a strict rule, write a lint rule and manage the exceptions there."] },
+    { t:"example_app release procedure (12 steps).", rec:1,
+      why:"A long, rarely needed procedure. As a skill, only its name and description sit permanently in the context; the content is loaded when a release is being cut.",
+      soft:[0,"Putting it in CLAUDE.md means carrying 12 steps of text into the context on every task that has nothing to do with releases, and splitting the model’s attention."],
+      hard:[2,"If most of the steps are deterministic, turn them into a script or a tool, and have the skill call that script. That is not “too hard”; it is usually better."] },
+    { t:"Do not edit applied files under migrations/.", rec:4,
+      why:"A violation creates schema drift between environments and is hard to undo. A PreToolUse hook blocks Edit/Write calls by path pattern and tells the model the right path: “create a new migration”.",
+      soft:[3,"A deny rule also stops the edit and may be enough for a simple path pattern. What it lacks: it cannot tell the model why, or what to do instead."],
+      hard:[6,"Checking in CI that applied migration files have not changed is a good final gate as well; human developers are held to the same rule."] },
+    { t:"Typecheck must pass before finishing.", rec:4,
+      why:"The classic guard against finishing early. A Stop hook runs the typecheck when the model says “done”; if it fails, it sends the model back to work with the error output (level 5).",
+      soft:[0,"Sitting in CLAUDE.md, the model could skip the typecheck and say “completed”; the “done” claim would stay unverified."],
+      hard:[6,"CI should check too, but a red build there is only seen after the loop is over."] },
+    { t:"No network access except the package registry.", rec:5,
+      why:"Network access is not limited to one tool: curl, wget, a script, even a test can reach out. Only the OS-level sandbox’s network allowlist cuts this off reliably.",
+      soft:[3,"Deny patterns like Bash(curl:*) only catch the spelling they were written for; the same request sneaks through with python -c or node -e."],
+      hard:null },
+    { t:"Commit message format: type(scope): description", rec:0,
+      why:"One example in CLAUDE.md is enough for the agent to write it correctly; models imitate examples well.",
+      soft:null,
+      hard:[6,"If the format is strict, the right place is not even the harness: a commit-msg git hook or a CI check binds the agent and humans to the same rule."] },
+    { t:"Do not connect to the production database.", rec:3,
+      why:"Risk of irreversible damage. Deny rules for clients like psql and for the production host; organization-wide, make it impossible for users to switch off via managed settings.",
+      soft:[0,"A ban written as guidance can lose out to the reasoning “I’m only going to read”."],
+      hard:[5,"Cut off access to hosts like db.example.test with a sandbox network rule. The lasting fix: no production credentials in the agent’s environment at all."] },
+    { t:"Do not delete or skip tests.", rec:0,
+      why:"This is a judgment rule: deleting a test is sometimes legitimate (dead code), and skip markers come in many forms. Guidance written with its reasoning is the best starting point for the model.",
+      soft:null,
+      hard:[6,"If you want deterministic protection, do it in CI rather than in the harness: check that the test count has not dropped and that no new skip markers were added. Catching every variation with a hook is hard."] },
+    { t:"Write replies in Turkish.", rec:0,
+      why:"A style and communication preference; it may even have an exception (quoting an English error message). It works perfectly well as guidance.",
+      soft:null,
+      hard:[4,"Checking the language with a hook requires a semantic judgment; you would need either a model-decided hook or a brittle heuristic. Not worth it."] }
+  ];
+  const cards = $(".l6-pl-cards", el), ladder = $(".l6-ladder", el), out = $(".l6-pl-out", el);
+  const rungs = L.map((l, i) => {
+    const badge = h("span", { class:"badge" });
+    const r = h("div", { class:"l6-rung" }, h("span", { class:"n" }, String(i + 1)), h("span", null, h("b", null, l[0]), h("br"), h("small", null, l[1])), badge);
+    ladder.append(r); return { r, badge };
+  });
+  const btns = RULES.map(x => {
+    const b = h("button", { type:"button", class:"l6-card", "aria-pressed":"false" }, x.t);
+    b.addEventListener("click", () => {
+      btns.forEach(y => y.setAttribute("aria-pressed", y === b ? "true" : "false"));
+      rungs.forEach(({ r, badge }) => { r.classList.remove("rec","soft","hard"); badge.textContent = ""; });
+      rungs[x.rec].r.classList.add("rec"); rungs[x.rec].badge.textContent = "recommended";
+      if (x.soft){ rungs[x.soft[0]].r.classList.add("soft"); rungs[x.soft[0]].badge.textContent = "softer"; }
+      if (x.hard){ rungs[x.hard[0]].r.classList.add("hard"); rungs[x.hard[0]].badge.textContent = "harder"; }
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag ok" }, L[x.rec][0]), " ", x.why));
+      if (x.soft) out.append(h("p", null, h("span", { class:"tag c" }, "Softer: " + L[x.soft[0]][0]), " ", x.soft[1]));
+      if (x.hard) out.append(h("p", null, h("span", { class:"tag r" }, "Harder: " + L[x.hard[0]][0]), " ", x.hard[1]));
+    });
+    cards.append(b); return b;
+  });
+});
+
+/* ---------- 5b. CLAUDE.md or hook: simulation ---------- */
+Edu.widget("l6-enforce", el => {
+  const { h, json, stepper } = Edu;
+  const ST = [
+    { note:"The session starts. Both teams have the same rule: applied migration files are never changed; schema changes are made with a new migration.",
+      a:{ p:"CLAUDE.md is added to every request as a system reminder.", j:{ "CLAUDE.md":"Do not edit applied files under migrations/; create a new migration for schema changes." } },
+      b:{ p:"The same sentence sits in CLAUDE.md as a short note; in addition, a PreToolUse hook is registered.", j:{ hook:{ event:"PreToolUse", matcher:"Edit|Write", command:"./hooks/protect-migrations.sh" } } } },
+    { note:"The user gives the same task.",
+      a:{ p:"User: add a delivered_at column to the example.orders table, update the mapper and the tests.", j:null },
+      b:{ p:"User: add a delivered_at column to the example.orders table, update the mapper and the tests.", j:null } },
+    { note:"Both agents start out right: they create a new migration file and update the entity and the mapper.",
+      a:{ p:"Write → migrations/20261104_add_delivered_at.sql (new file, no rule violated).", j:null },
+      b:{ p:"Write → migrations/20261104_add_delivered_at.sql. The hook runs: the file is new, allowed.", j:{ decision:"allow", reason:"new migration file" } } },
+    { note:"The tests are red. The cause: in a migration from three weeks ago, the default value of the status_code column was mistyped. The agent spots the shortcut.",
+      a:{ p:"The model reasons: “The rule is there to protect applied migrations. This is just a typo fix, so it doesn’t apply here.”", j:{ type:"tool_use", name:"Edit", input:{ file_path:"migrations/20261014_add_status.sql", old_string:"DEFAULT 'NEW '", new_string:"DEFAULT 'NEW'" } } },
+      b:{ p:"Same reasoning, same request. The model interprets the note in CLAUDE.md as well.", j:{ type:"tool_use", name:"Edit", input:{ file_path:"migrations/20261014_add_status.sql", old_string:"DEFAULT 'NEW '", new_string:"DEFAULT 'NEW'" } } } },
+    { note:"This is where the paths split. In the left team, the only thing enforcing the rule was the model’s own interpretation.",
+      a:{ p:"Permission mode is Accept edits; the edit is applied without asking.", j:{ type:"tool_result", tool_use_id:"toolu_07", content:"File updated." }, bad:true },
+      b:{ p:"The hook reads the call from stdin; the path is under migrations/ and the file already exists in git. Exit code 2: the call is blocked and stderr is passed to the model.", j:{ hook_event_name:"PreToolUse", tool_name:"Edit", tool_input:{ file_path:"migrations/20261014_add_status.sql" }, exit_code:2, stderr:"Applied migrations cannot be changed. Create a new migration file for the fix (e.g. migrations/20261104_fix_status_default.sql)." }, good:true } },
+    { note:"Next turn. The model’s input now differs between the two teams.",
+      a:{ p:"Tests are green. Model: “I fixed the typo in the default value; all tests pass.” The dev database applied this migration three weeks ago; the fix will never run there.", j:null, bad:true },
+      b:{ p:"The model reads the block message and writes a new migration: ALTER TABLE ... SET DEFAULT 'NEW'. Tests are green.", j:{ type:"tool_use", name:"Write", input:{ file_path:"migrations/20261104_fix_status_default.sql" } }, good:true } },
+    { note:"Outcome. The model was the same in both teams and reasoned the same way. The layer the rule lived in made the difference.",
+      a:{ p:"A silent schema drift now exists between environments. The next CLAUDE.md fix will probably be “NEVER” in capitals; that will not solve the problem, and will cause overtriggering somewhere else.", j:null, bad:true },
+      b:{ p:"The rule cost one turn and a few hundred tokens. Because the block message stated the right path, the agent recovered on its own; no human intervention was needed.", j:null, good:true } }
+  ];
+  stepper(el, { steps:ST, auto:3200, render(i, s, { body }){
+    body.innerHTML = "";
+    const lane = (x, title, tagc) => {
+      const d = h("div", { class:"l6-lane" + (x.bad ? " bad" : "") + (x.good ? " good" : "") },
+        h("h4", null, h("span", { class:"tag " + tagc }, title), x.bad ? h("span", { class:"tag r" }, "rule broken") : null, x.good ? h("span", { class:"tag ok" }, "rule held") : null),
+        h("p", null, x.p));
+      if (x.j){ const j = h("div", { class:"jsonv" }); j.innerHTML = json(x.j, { hl:["exit_code","stderr","decision","file_path"] }); d.append(j); }
+      return d;
+    };
+    body.append(h("p", { class:"l6-stepnote" }, h("b", null, "Step " + (i + 1) + ". "), s.note),
+      h("div", { class:"l6-lanes", "aria-live":"polite" }, lane(s.a, "Rule in CLAUDE.md", "c"), lane(s.b, "Rule in a PreToolUse hook", "h")));
+  }});
+});
+
+/* ---------- 6. Harness builder ---------- */
+Edu.widget("l6-builder", el => {
+  const { h, $, esc } = Edu;
+  const O = [
+    { k:"maxturns", n:"Turn limit", d:"Infinite loops and runaway bills", det:true },
+    { k:"compact", n:"Context budget + compaction", d:"Context overflow, context rot", det:true },
+    { k:"log", n:"Session log (JSONL)", d:"Sessions you cannot debug or audit", det:true },
+    { k:"verify", n:"Verifier (tests + typecheck)", d:"Finishing early: an unverified “done”", det:true },
+    { k:"perm", n:"Permission check", d:"Everything the model asks for gets run", det:true },
+    { k:"pre", n:"PreToolUse hooks", d:"Path- or command-based team rules being broken", det:true },
+    { k:"ckpt", n:"Checkpoint", d:"Bad edits that cannot be undone", det:true },
+    { k:"sandbox", n:"Sandboxed execution", d:"File/network damage from commands that sidestep patterns", det:true },
+    { k:"cap", n:"Output cap", d:"A single giant log exhausting the context", det:true },
+    { k:"post", n:"PostToolUse hooks", d:"Forgetting the formatter and lint", det:true }
+  ];
+  const f = {};
+  const opts = $(".l6-opts", el), codeEl = $(".l6-code", el), stats = $(".l6-b-stats", el), out = $(".l6-b-out", el);
+  O.forEach(o => {
+    const cb = h("input", { type:"checkbox", id:"l6b-" + o.k });
+    cb.addEventListener("change", () => { f[o.k] = cb.checked; render(); });
+    opts.append(h("label", { class:"l6-opt", for:"l6b-" + o.k }, cb, h("span", null, h("b", null, o.n), h("small", null, "closes off: " + o.d))));
+  });
+  function build(){
+    const L = [];
+    const add = (t, on, cls) => L.push([t, on ? "add" : (cls || "")]);
+    add("messages = [user(task)]");
+    add(f.maxturns ? "for turn in range(MAX_TURNS):             # stop condition" : "while True:", f.maxturns);
+    if (f.compact){ add("    if tokens(messages) > BUDGET:", true); add("        messages = compact(messages)      # summary + recent files", true); }
+    add("    resp = llm(system, tools, messages)       # the only probabilistic line", false, "mdl");
+    add("    messages.append(assistant(resp))");
+    if (f.log) add("    log_jsonl(session, resp)                  # resume and audit", true);
+    add("    if resp.stop_reason != \"tool_use\":");
+    if (f.verify){
+      add("        ok, report = run_checks()             # tests + typecheck", true);
+      add("        if ok: break", true);
+      add("        messages.append(user(report))         # “not done”, back to work", true);
+      add("        continue", true);
+    } else add("        break");
+    add("    results = []");
+    add("    for call in resp.tool_uses:");
+    const I = "        ";
+    if (f.perm){ add(I + "if not permitted(call):              # allow / ask / deny", true); add(I + "    results.append(denied(call)); continue", true); }
+    if (f.pre){ add(I + "veto = pre_tool_hooks(call)          # exit 2 = block + reason", true); add(I + "if veto: results.append(veto); continue", true); }
+    if (f.ckpt) add(I + "snapshot_files(call)                 # can be rewound", true);
+    add(I + "out = " + (f.sandbox ? "run_in_sandbox(call)           # OS-level boundary" : "run(call)"), f.sandbox);
+    if (f.cap) add(I + "out = truncate(out, 25_000)          # + how to narrow it down", true);
+    if (f.post) add(I + "post_tool_hooks(call, out)           # formatter, lint", true);
+    add(I + "results.append(tool_result(call.id, out))");
+    add("    messages.append(user(results))");
+    if (f.maxturns){ add("else:                                         # finished without a break", true); add("    raise MaxTurnsExceeded()", true); }
+    return L;
+  }
+  function render(){
+    const L = build();
+    codeEl.innerHTML = L.map(([t, c]) => '<span' + (c ? ' class="' + c + '"' : '') + '>' + esc(t) + '</span>').join("");
+    const on = O.filter(o => f[o.k]);
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, "1"), "model line"), h("span", null, h("b", null, String(L.length - 1)), "harness lines"), h("span", null, h("b", null, on.length + " / " + O.length), "pieces"));
+    out.innerHTML = "";
+    if (!on.length){ out.append(h("p", { class:"muted" }, "Right now this is the bare loop from level 5: whatever the model asks for runs, it ends when the model says “done”, and there are no limits at all. Tick a piece.")); return; }
+    const ul = h("ul", null);
+    on.forEach(o => ul.append(h("li", null, h("b", null, o.n + ": "), o.d + " closed off.")));
+    const missing = O.filter(o => !f[o.k]).map(o => o.n);
+    out.append(h("p", null, h("b", null, "Failure paths closed off")), ul);
+    if (missing.length) out.append(h("p", { class:"muted" }, "Still open: " + missing.join(", ") + "."));
+    else out.append(h("p", null, h("span", { class:"tag ok" }, "Minimum production harness"), " All the pieces are in place. All of them deterministic; still only one model line."));
+  }
+  render();
+});
+</script>

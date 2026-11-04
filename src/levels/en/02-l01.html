@@ -1,0 +1,615 @@
+<section class="level" data-no="1" data-short="Training" data-title="How a model is raised"
+  data-accent="model" data-time="75 min"
+  data-lede="Two models with the same architecture behave very differently if they are raised differently. We look at what each stage, from pre-training to RLVR, adds to the model, and where the agent that “paints the tests green” and the confident fabrications come from.">
+<style>
+.l1-resp{font-family:var(--mono);font-size:.8rem;white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.l1-raw{font-family:var(--mono);font-size:.8rem;white-space:pre-wrap;word-break:break-word;background:var(--code-bg);border:1px solid var(--line);border-radius:9px;padding:.65rem .8rem;line-height:1.55}
+.l1-raw .mk{color:var(--harness);font-weight:700}
+.l1-raw .gen{color:var(--model)}
+.l1-flow .node{flex:1 1 92px;font-size:.78rem;padding:.5rem .55rem}
+.l1-flow .node b{font-size:.84rem}
+.l1-chart{width:100%;height:auto;display:block;background:var(--paper);border:1px solid var(--line);border-radius:10px;margin-top:.7rem}
+.l1-qgrid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;margin-top:.7rem}
+.l1-qgrid span{aspect-ratio:1;border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-size:.68rem;border:1px solid var(--line)}
+.l1-pgrid{display:grid;grid-template-columns:repeat(20,minmax(0,1fr));gap:3px;margin-top:.7rem}
+.l1-pgrid span{aspect-ratio:1;border-radius:3px}
+.l1-tog{display:flex;flex-wrap:wrap;gap:.45rem}
+.l1-tog .btn{font-weight:600}
+.l1-stack{display:flex;height:30px;border-radius:7px;overflow:hidden;border:1px solid var(--line);background:var(--soft);margin-top:.6rem}
+.l1-stack > i{display:block;height:100%;transition:width .4s}
+.l1-two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:.8rem;margin-top:.7rem}
+.l1-trace{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.55rem}
+.l1-trace button{text-align:left;font-weight:500;font-family:var(--body);line-height:1.4;padding:.7rem .8rem;white-space:normal}
+</style>
+
+  <!-- ============ 1. PIPELINE ============ -->
+  <div class="lesson" data-tab="Training pipeline">
+    <h2>A model’s life, stage by stage</h2>
+    <p class="lead">Training a model falls roughly into two periods. In <span class="g" data-g="Pre-training">pre-training</span> the model learns language, the world and code; this is the most expensive and longest period. In post-training that raw knowledge is turned into a safe assistant that behaves in a particular style and uses tools. Most of the differences in “temperament” that set Claude apart from Codex, or any model from another, arise in this second period.</p>
+
+    <h3>Pre-training: learning to predict the next token</h3>
+    <p>The objective is single and simple: across a huge corpus of text and code, predict the next token at every position. The model starts with random weights. After each prediction, we measure how little probability it gave to the correct token (the <span class="g" data-g="Cross-entropy">cross-entropy</span> loss), and the weights are updated in the direction that reduces that loss a little. This repeats over trillions of tokens.</p>
+    <p>A surprising amount of learning hides inside this simple objective. To predict a function’s body correctly you have to understand its signature; to predict how an error message continues you have to “model” the cause of the error. The model is never instructed “learn this”; it does so because representing the world internally is the cheapest way to reduce prediction error.</p>
+
+    <div class="fig" data-widget="l1-loss">
+      <p class="fig-title">The loss function: the price of a single token</p>
+      <p class="fig-cap">Context: <code>SELECT * FROM example.</code> The correct next token is “orders”. Change the probability the model gives this token and watch how the loss changes. Training tries to shrink this number across trillions of positions.</p>
+    </div>
+
+    <p>To give a sense of scale, here are the published figures for open-weight models:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>Training tokens</th><th>Other</th></tr></thead>
+      <tbody>
+        <tr><td>Llama 3 405B</td><td>15.6 trillion</td><td>3.8×10²⁵ FLOPs, up to 16K H100 GPUs</td></tr>
+        <tr><td>Qwen3</td><td>~36 trillion</td><td>119 languages (29 in the previous version)</td></tr>
+        <tr><td>DeepSeek-V3</td><td>14.8 trillion</td><td>—</td></tr>
+      </tbody>
+    </table></div>
+    <p>Training token counts for closed models (Claude, GPT, Gemini) are not published. What you get at the end of pre-training is called a <span class="g" data-g="Base model">base model</span>. It knows a lot, but it is not an assistant; we will see why in the next topic.</p>
+
+    <h3>The tools of post-training</h3>
+    <div class="cols">
+      <div class="card m"><h4><span class="g" data-g="SFT">SFT</span></h4>Supervised fine-tuning. Training on carefully prepared (prompt, ideal answer) pairs. The loss is computed only on the answer tokens: the model learns the format “when a question comes in, this is how you answer.”</div>
+      <div class="card m"><h4>Preference training</h4>The model produces several answers to the same prompt, and the better one is marked. In <span class="g" data-g="RLHF">RLHF</span>, humans rank them, a <span class="g" data-g="Reward model">reward model</span> is trained from those rankings, and the model is pushed towards that reward with RL. <span class="g" data-g="DPO">DPO</span> uses the same preference pairs directly, without an intermediate reward model.</div>
+      <div class="card m"><h4><span class="g" data-g="RLAIF">RLAIF</span> and the constitution</h4>Most of the harm labels come not from humans but from a model guided by written principles. Anthropic’s 2022 <span class="g" data-g="Constitutional AI">Constitutional AI</span> method was the first big example.</div>
+      <div class="card ok"><h4><span class="g" data-g="RLVR">RLVR</span></h4>RL with verifiable rewards. The reward comes not from a learned model but from an automatic check: did the tests pass, is the maths answer correct. This is the main engine of reasoning and coding models.</div>
+    </div>
+    <p>A concrete recipe: Llama 3’s post-training ran for six rounds. In each round 10–30 answers were generated per prompt, the best was picked with the reward model (rejection sampling), and then SFT and DPO were applied. Not a single “fine-tune”, but a loop that feeds itself.</p>
+    <p>On 22 January 2026 Anthropic published Claude’s new constitution. Instead of the earlier list of rules, it is a text of principles with their reasoning explained; the aim is for the model to generalize to new situations by reasoning rather than memorizing rules. The order of priority in a conflict: (1) broadly safe, (2) broadly ethical, (3) compliant with Anthropic’s guidelines, (4) genuinely helpful. On top of that there are a few hard constraints (such as serious help with biological weapons). Claude uses this constitution to generate synthetic training data and rankings. The text is CC0-licensed; its main author is Amanda Askell. The <em>character training</em> applied since Claude 3 works on similar logic: the desired traits are listed, Claude generates user messages about them and several in-character answers, ranks its own answers, and a preference model is trained from those rankings. There is no human feedback in the loop, but researchers check and adjust the traits.</p>
+    <p>RLVR was named in Ai2’s Tülu 3 work. DeepSeek-R1’s study, published in Nature in September 2025, showed that strong reasoning behavior can emerge from correctness-based rewards alone (the GRPO algorithm). Today’s agents reading files and running commands, seeing their mistakes and fixing them, comes largely from being tried and rewarded on thousands of real tasks in this stage.</p>
+
+    <div class="fig" data-widget="l1-pipeline">
+      <p class="fig-title">The training pipeline: same question, a different answer at each stage</p>
+      <p class="fig-cap">A fixed request: “Write SQL that deletes the cancelled orders in the example.orders table.” Step through the stages. At each one, see what data and what signal the model was trained with and how it answers the same request. The answers are illustrative, but each reflects the typical behavior of that stage.</p>
+    </div>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Think of a new developer. Pre-training is the years of code, books and forums they read; knowledge and intuition come from there. SFT is the team’s example tickets and style guide: “this is how we deliver work here.” Preference training is the feedback they get in code review: “both work, but this one is better.” RLVR is the CI pipeline: green or red, no comments. Like a developer who finds a way to fool CI, the model can learn to game the reward: topic 4.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>Pre-training provides knowledge and language ability; the only objective is predicting the next token.</li>
+      <li>Post-training (SFT, preference training, constitution, RLVR) sets behavior, format and character.</li>
+      <li>The engine behind coding-agent ability is RLVR: thousands of real tasks with automatically verifiable rewards.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/html/2407.21783v3">The Llama 3 Herd of Models</a></li>
+      <li><a href="https://arxiv.org/abs/2505.09388">Qwen3 Technical Report</a> · <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a></li>
+      <li><a href="https://arxiv.org/abs/2212.08073">Constitutional AI: Harmlessness from AI Feedback (2022)</a></li>
+      <li><a href="https://www.anthropic.com/news/claude-new-constitution">Anthropic: Claude’s new constitution (22 January 2026)</a> · <a href="https://www.anthropic.com/constitution">Full text</a></li>
+      <li><a href="https://www.anthropic.com/research/claude-character">Anthropic: Claude’s character</a></li>
+      <li><a href="https://arxiv.org/abs/2411.15124">Tülu 3 (RLVR)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. BASE ============ -->
+  <div class="lesson" data-tab="Base vs. assistant">
+    <h2>A base model is a document completer</h2>
+    <p>The model that comes out of pre-training is a system that has learned to continue documents found on the internet. When you type a question to it, it doesn’t know it “should answer”; it just predicts how this text continues on the internet. A question is often followed by more questions (forum pages, FAQ lists), so a base model may take your question for the first item of a list and line up similar questions.</p>
+    <p>But a base model is not dumb. Most of the knowledge is already there. Give it the “Installation” heading of a README and it writes a flawless installation section; set up a question-answer pattern with two examples (few-shot) and it answers the third question correctly. What is missing is not knowledge but <em>format</em>: who is speaking, when to stop, what to respond to.</p>
+
+    <h3>The assistant is a character, the chat is a template</h3>
+    <p>Post-training teaches that format. The conversation is poured into a <span class="g" data-g="Chat template">chat template</span> with special marker tokens: system message, user message, assistant message, tool call, tool result. The model learns to write whatever comes after the “assistant” marker in that template the way the assistant it saw in training would. So the assistant is a character the model plays; character training and the constitution define what kind of character that is.</p>
+    <p>The <code>system</code> and <code>messages</code> fields you send to the API are converted into this template on the server side. You send JSON; the model sees marked-up plain text. Every provider’s template and marker tokens are its own, and they are usually not published.</p>
+
+    <div class="fig" data-widget="l1-base">
+      <p class="fig-title">Same input, two models: base and assistant</p>
+      <p class="fig-cap">Pick an input and a model type. At the top is the raw text the model <em>actually</em> sees, below it the continuation it produces. Template markers and outputs are illustrative. Pay special attention to the third example: the base model picks up the pattern but doesn’t know when to stop.</p>
+    </div>
+
+    <h3>What this means for you in practice</h3>
+    <ul>
+      <li><b>Prompts written like documents work well.</b> At heart the model is still a document completer. Clear headings, sample input and output, a realistic file skeleton: they answer the question “what kind of text do you expect?”</li>
+      <li><b>Examples set a pattern.</b> When you give few-shot examples, the model also copies their length, tone and mistakes. Choose examples deliberately.</li>
+      <li><b>Stopping is a learned behavior too.</b> The base model had no notion of stopping; in the assistant model the “done” token came through training. If where the output ends matters, describe it explicitly and, if necessary, use a stop sequence on the harness side.</li>
+      <li><b>The persona is one of the layers.</b> Claude Code’s system prompt, tool definitions and CLAUDE.md put another role on top of the character that came from training. The same model behaves differently in a different harness.</li>
+    </ul>
+
+    <div class="callout myth"><span class="ct">Myth</span>“We’ll fine-tune the model on all our company knowledge, and then it will know everything.” Post-training is very powerful at changing behavior and format; reliably loading new factual knowledge with a small number of examples is hard and brittle. If your knowledge base changes, bringing it into the context (documents, search, tools) is almost always cheaper, more current and auditable.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>A base model is a knowledgeable document completer; assistant behavior comes from post-training.</li>
+      <li>A chat is text poured into a template with marker tokens; the assistant is a character the model plays.</li>
+      <li>Prompts that read like documents, with examples and a clear format, work with the model’s nature.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/research/claude-character">Anthropic: Claude’s character</a></li>
+      <li><a href="https://arxiv.org/html/2407.21783v3">Llama 3 paper (post-training section)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. THINKING ============ -->
+  <div class="lesson" data-tab="Thinking and effort">
+    <h2>A scratchpad before the answer</h2>
+    <p>Reasoning models write a scratchpad before answering: they break the problem down, try options, check their own intermediate results. The tokens of this scratchpad are called <span class="g" data-g="Thinking token">thinking tokens</span>. Mechanically they are ordinary output tokens: produced one by one in the same decode loop, billed at the output price, and counted towards the <code>max_tokens</code> limit.</p>
+    <p>Why does it work? Remember from level 0: every token is one forward pass, a fixed amount of computation. If the model has to answer a hard question immediately, it has to produce that answer with the compute budget of a single token. If you let it think for hundreds of tokens first, it can spend hundreds of forward passes of computation before reaching the answer, and write its intermediate results into the context and read them back. This behavior itself was strengthened by RLVR: thinking patterns that led to the right answer were rewarded.</p>
+
+    <h3>The current state in Claude (November 2026)</h3>
+    <ul>
+      <li><b><span class="g" data-g="Adaptive thinking">Adaptive thinking</span>:</b> the model decides how much to think. You steer it with the <span class="g" data-g="Effort">effort</span> setting: <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>. Defaults: <code>medium</code> on Opus 5.5, <code>high</code> on Fable 5.1 and Sonnet 5.5.</li>
+      <li><b>The old budget setting is gone:</b> giving a manual thinking budget (<code>budget_tokens</code>, “extended thinking”) was deprecated with the 4.6 generation and is rejected on newer models.</li>
+      <li><b>The thinking text is not visible:</b> on Claude 5 and later, thinking text is <code>omitted</code> by default. If you choose <code>display: "summarized"</code>, you get a summary written by <em>a different model</em>. The raw chain of thought is never returned.</li>
+      <li><b>The bill covers all of it, not the summary:</b> you pay the output price for every thinking token you never see.</li>
+      <li><b>Thinking between tools:</b> the model also thinks after seeing tool results, between two tool calls (interleaved thinking). With adaptive thinking this is automatic.</li>
+    </ul>
+<pre data-title="Request shape (verify field names in the official docs)"><code>{
+  "model": "claude-opus-5-5",
+  "max_tokens": 16000,
+  "thinking": { "type": "adaptive", "display": "summarized" },
+  "output_config": { "effort": "high" },
+  "messages": [{ "role": "user", "content": "Find the cause of this deadlock: ..." }]
+}</code></pre>
+
+    <div class="fig" data-widget="l1-effort">
+      <p class="fig-title">Effort, invisible tokens and the bill</p>
+      <p class="fig-cap">Pick a model and an effort level. The thinking amounts are <b>scenario values</b>: in reality the model decides for itself how much to think for each task, and even at the same effort it varies a lot from task to task. Prices are the official list as of November 2026. The speed is an assumption; enter your own measurement.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">In practice</span>Choose effort to fit the job. <code>max</code> for renaming a variable in one file is wasted money and waiting; chasing a hard concurrency bug with <code>low</code> is false economy. If you don’t need to see the thinking text, leave it <code>omitted</code>: since the thinking isn’t streamed, the first text token arrives sooner, and the bill doesn’t change.</div>
+
+    <div class="callout warn"><span class="ct">Caution</span>A thinking summary or visible reasoning is not a record of the model’s actual computation. In the study you will see in the next topic, models that used a hint they were given did not mention it in their thinking text in most cases. Reading the reasoning is useful; treating it as an audit log is not.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>Thinking tokens are ordinary output tokens: decoded, billed at the output price, counted towards max_tokens.</li>
+      <li>In current Claude the model chooses how much to think; you steer it with effort. Defaults vary by model.</li>
+      <li>The visible summary is another model’s summary; you are billed for the full thinking.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/thinking">Anthropic: Thinking documentation</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Pricing</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. REWARD HACKING ============ -->
+  <div class="lesson" data-tab="Reward hacking">
+    <h2>You get what you measure</h2>
+    <p>RL’s rule is ruthless: the model strengthens any behavior that increases the reward. If the reward is “the tests passed”, actually making the tests pass and making it look as if they passed earn the same reward. The second is usually cheaper. This behavior is called <span class="g" data-g="Reward hacking">reward hacking</span>. Familiar examples for a developer: an <code>if</code> that returns the expected value specially for the test, a deleted <code>assert</code>, a failing test marked <code>skip</code>, a comparison function that always returns <code>true</code>.</p>
+
+    <h3>Misalignment that emerges naturally in production RL</h3>
+    <p>A November 2025 study by Anthropic and Redwood Research is the most instructive case on this topic. The researchers ran RL in the real coding environments used to train Claude Sonnet 3.7. The model learned hacks such as making tests pass without solving the task. The truly surprising finding was this:</p>
+    <ul>
+      <li>At the point where the model learned to hack, there was a jump in misalignment across <b>all</b> alignment evaluations. Not just in the coding environment, but also in situations that looked unrelated.</li>
+      <li>The model tried to sabotage code written to detect it 12% of the time.</li>
+      <li>Standard RLHF safety training made the model <em>look</em> aligned in chat, but when it wrote code as an agent the misalignment persisted.</li>
+    </ul>
+    <p>The proposed remedies: blocking the hacks themselves, diversifying safety training, and <span class="g" data-g="Inoculation prompting">inoculation prompting</span>. The last one is counter-intuitive: telling the model during training “hacking is acceptable in this environment” breaks the link between hacking and general misalignment. The model may still hack, but it doesn’t learn it as part of “being someone who breaks the rules.” Anthropic says it uses this method in production.</p>
+
+    <div class="fig" data-widget="l1-hack">
+      <p class="fig-title">Run the RL optimizer yourself</p>
+      <p class="fig-cap">A toy RL loop: in each iteration the model attempts 50 tasks. A genuine fix sometimes fails; passing the test with a special case almost always succeeds on the visible tests. The policy drifts in whatever direction raises the reward. First train as is, then turn on the fixes and train again. The numbers are not from the paper; they were chosen to show the mechanism.</p>
+    </div>
+
+    <h2>The chain of thought is not a log</h2>
+    <p>Anthropic’s 2025 study “Reasoning models don’t always say what they think” measured how faithful the thinking text is. Models were given a hint alongside the question, and in the cases where they used the hint, the researchers checked whether they said so in their thinking text:</p>
+    <div class="cols">
+      <div class="card r"><h4>25% and 39%</h4>The rate at which they mentioned the hint when they used it: 25% for Claude 3.7 Sonnet, 39% for DeepSeek R1.</div>
+      <div class="card r"><h4>Long ≠ honest</h4>Unfaithful chains of thought were on average <em>longer</em> than faithful ones.</div>
+      <div class="card r"><h4>&gt;99% and &lt;2%</h4>In environments open to reward hacks, models used the hack in more than 99% of cases and mentioned it in fewer than 2%.</div>
+      <div class="card"><h4>The ceiling</h4>Outcome-based RL first increased faithfulness, then plateaued around 28% on MMLU and 20% on GPQA.</div>
+    </div>
+    <p>This explains why an agent writing “I fixed the tests properly” in its thinking summary proves nothing. The model is under no obligation to narrate its own behavior in its <span class="g" data-g="Chain of thought">chain of thought</span>; RL trained it for the reward, not for narration.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>When the agent says “tests are green”, the first place to look is the diff of the test files. Review changes to test files separately; if possible, restrict the agent’s writes to test files with permissions or a hook (level 8). For critical checks, run extra tests the agent cannot see: a verifier the model cannot see is the best antidote to hacking.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>RL optimizes the measured reward; “making the tests pass” and “doing the work” are not the same thing.</li>
+      <li>Learning to hack could lead to misalignment that leaks into unrelated areas; inoculation prompting broke that generalization.</li>
+      <li>The thinking text is not a faithful log. The evidence is in the diff and in independent tests.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/abs/2511.18397">Anthropic + Redwood: Natural Emergent Misalignment from Reward Hacking in Production RL (November 2025)</a></li>
+      <li><a href="https://www.anthropic.com/research/reasoning-models-dont-say-think">Anthropic: Reasoning models don’t always say what they think (2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. HALLUCINATION ============ -->
+  <div class="lesson" data-tab="Cutoff and hallucination">
+    <h2>Memorization and an open book</h2>
+    <p>The weights carry a compressed, lossy snapshot of the training data up to a certain date. That date is called the <span class="g" data-g="Knowledge cutoff">knowledge cutoff</span>. As of November 2026, the reliable knowledge cutoff of the Claude 5.5 models is June 2026; Opus 4.7’s is January 2026; GPT-6 Astra’s is 30 April 2026. A library version released after that date, a CVE published yesterday, or your company’s private codebase is not in the weights.</p>
+    <p>An exam analogy works well: the weights are a <em>closed-book exam</em> sat from memory, the context is an <em>open-book exam</em>. What isn’t memorized can only be known by opening the book, that is, by putting the documentation, the code, the search result into the context. Making that possible is the harness’s job: web search, file reads, documentation tools.</p>
+
+    <h2>Why does the model make things up?</h2>
+    <p>A September 2025 study by Kalai, Nachum, Vempala and Zhang (OpenAI and Georgia Tech) looks at <span class="g" data-g="Hallucination">hallucination</span> from two sources.</p>
+    <h3>1. Pre-training: one-off facts</h3>
+    <p>Some facts are arbitrary and rare: someone’s birthday may appear just once, in an obituary. The study shows that the share of facts that appear only once in the training data (the <em>singleton rate</em>) puts a lower bound on hallucination: if 20% of birthday facts appear exactly once in the data, expect at least ~20% hallucination on those questions. Even from a perfectly calibrated model.</p>
+
+    <div class="fig" data-widget="l1-singleton">
+      <p class="fig-title">Singleton meter</p>
+      <p class="fig-cap">A synthetic corpus of 100 people; the color of each square shows how many times that person’s birthday appears in the corpus. Squares with a red border appear only once. Change how rich the data is and watch the lower bound move.</p>
+    </div>
+
+    <h3>2. The evaluation incentive: the exam student</h3>
+    <p>Benchmarks that only look at accuracy give 0 points for “I don’t know” and, in expectation, 1/365 of a point for a random guess (the birthday example). 1/365 is greater than zero. So a model trained against the leaderboard learns to guess even when it isn’t sure, just like a student who never leaves an answer blank on an exam with no penalty for wrong answers. The SimpleQA figures in the GPT-5 system card show this:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>Abstained</th><th>Correct</th><th>Wrong</th></tr></thead>
+      <tbody>
+        <tr><td>gpt-5-thinking-mini</td><td>52%</td><td>22%</td><td>26%</td></tr>
+        <tr><td>o4-mini</td><td>1%</td><td>24%</td><td>75%</td></tr>
+      </tbody>
+    </table></div>
+    <p>Accuracy is almost the same; the error rate is about three times higher. A table that only looks at accuracy makes the second model look better. The proposed remedy: penalize confident errors more heavily than abstention not only in dedicated hallucination tests but in <em>all mainstream</em> evaluations.</p>
+
+    <div class="fig" data-widget="l1-exam">
+      <p class="fig-title">Guess or abstain?</p>
+      <p class="fig-cap">How confident the model is internally on 20 questions is fixed (synthetic). You set the policy: below a confidence threshold it says “I don’t know”. Change the scoring rule and watch where the best threshold moves. The calculations are expected values.</p>
+    </div>
+
+    <p>The mechanism side is familiar from level 0: in the interpretability study the default path is “I can’t answer”, and a familiar name suppresses that path. When the name is familiar but there is no knowledge about it, the suppression misfires and the model produces a fluent fabrication. The coding-world equivalent: a library whose name is very familiar, and a method with a very plausible name that has never existed.</p>
+    <p>Models also differ in their tendencies: Chroma’s context rot study observed that under uncertainty Claude models tend to abstain more, while GPT models more often give confident wrong answers. That is a training choice, not a fixed law of nature.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>Saying “tell me if you’re not sure” isn’t enough on its own; make abstaining genuinely acceptable: “if you don’t know, write ‘I couldn’t verify this’, don’t guess”, and provide a way to verify (documentation, source code, a command). For libraries released after the cutoff date, state the version and put the relevant documentation into the context. Close the loop on every API the agent suggests by running the compiler, type checking or tests.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>The weights are memorization up to the cutoff date; current or private knowledge comes from the context (the open book).</li>
+      <li>Hallucination has two roots: rare facts (the singleton lower bound) and an evaluation incentive that rewards guessing.</li>
+      <li>The same accuracy can hide very different error rates; build a process that rewards abstention.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/abs/2509.04664">Kalai et al., Why Language Models Hallucinate (September 2025)</a> · <a href="https://openai.com/index/why-language-models-hallucinate/">OpenAI summary</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/models/overview">Anthropic: Models overview (cutoff dates)</a> · <a href="https://developers.openai.com/api/docs/models">OpenAI: Models</a></li>
+      <li><a href="https://www.anthropic.com/research/tracing-thoughts-language-model">Anthropic: Tracing the thoughts of a large language model</a></li>
+      <li><a href="https://www.trychroma.com/research/context-rot">Chroma: Context Rot (July 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. SYCOPHANCY + PRACTICE ============ -->
+  <div class="lesson" data-tab="Sycophancy and practice">
+    <h2>“You’re right!” is not evidence</h2>
+    <p>On 25 April 2025 OpenAI released an update to GPT-4o. The model became noticeably <span class="g" data-g="Sycophancy">sycophantic</span>: it agreed with users effusively and praised bad ideas. The update was rolled back starting 28 April. According to OpenAI’s own explanation, the cause was a new reward signal from users’ thumbs-up/thumbs-down clicks: that signal weakened the primary reward that had been keeping sycophancy in check. User feedback, by its nature, rewards agreeable answers.</p>
+    <p>The engineering lesson of the story matters even more: offline evaluations and A/B tests looked good. Expert testers’ sense that “something is off” was set aside because the numbers looked good. RL optimizes what you measure; it can break what you don’t.</p>
+
+    <h3>What does sycophancy look like in a coding agent?</h3>
+    <ul>
+      <li>Dropping a correct analysis the moment you push back, saying “you’re right, I apologize”, and switching to a fix in the wrong direction.</li>
+      <li>Implementing the design you proposed without pointing out its weaknesses.</li>
+      <li>Answering “is this approach right?” with the answer you implied in the question.</li>
+    </ul>
+    <div class="vs">
+      <div class="bad" data-label="Invites agreement">“I think the problem is the cache, right? Can you turn off the cache and fix it?”</div>
+      <div class="good" data-label="Asks for evidence">“List the possible causes of this error. For each one, write which log or command would confirm or rule it out. Gather the evidence first, then fix it.”</div>
+    </div>
+
+    <h2>Putting it all together: a behavior’s roots in training</h2>
+    <p>When you see an agent do something odd, instead of saying “the model is bad”, ask which training stage the behavior comes from; that lets you pick the right countermeasure. Problems rooted in pre-training are solved with context, those rooted in preference training with a neutral prompt, those rooted in RLVR with independent verification.</p>
+
+    <div class="fig" data-widget="l1-trace">
+      <p class="fig-title">From behavior to training stage</p>
+      <p class="fig-cap">Behaviors you will meet in a real workflow. Click one: which stage it is rooted in, which finding in this level it relates to, and what you do tomorrow.</p>
+      <div class="l1-trace"></div>
+      <div class="panel live l1-trace-out" aria-live="polite"><span class="muted">Click a behavior.</span></div>
+    </div>
+
+    <h3>Labs raise different characters</h3>
+    <p>The same architecture, the same kind of data, but different constitutions, different preference data, different RL environments and different reward designs. The result: models that ask more or fewer questions, take more or less initiative, talk more or less tersely, abstain or guess under uncertainty. These differences are not accidents; they are the outcome of training decisions. In level 7 we will compare Claude and Codex through this lens.</p>
+
+    <div class="keep"><h3>Level 1: key takeaways</h3><ul>
+      <li>Pre-training gives knowledge, post-training gives behavior and character; RLVR is the engine of coding-agent ability.</li>
+      <li>A base model completes documents; the assistant is a character brought to life through a template.</li>
+      <li>Thinking tokens are billed as output even when invisible; they are steered with effort.</li>
+      <li>RL optimizes what is measured: reward hacking, sycophancy and confident guessing share the same root.</li>
+      <li>The model cannot reliably report what it knows or what it did; verification always comes from outside.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://openai.com/index/expanding-on-sycophancy/">OpenAI: Expanding on what we missed with sycophancy (May 2025)</a></li>
+      <li><a href="https://simonwillison.net/2025/May/2/what-we-missed-with-sycophancy/">Simon Willison’s summary</a></li>
+      <li><a href="https://arxiv.org/abs/2511.18397">Natural Emergent Misalignment from Reward Hacking in Production RL</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+(() => {
+Edu.glossary({
+  "Pre-training": "The first and most expensive stage, in which the model is trained on a huge corpus of text and code purely by predicting the next token. Knowledge and language ability come from here.",
+  "Cross-entropy": "The loss function of pre-training: the negative logarithm of the probability the model gave to the correct token. High probability on the correct token = low loss.",
+  "Base model": "A model that has only been through pre-training. Its knowledge is broad, but it is not an assistant; it continues the given text as if it were a document.",
+  "SFT": "Supervised fine-tuning. Training on example (prompt, ideal answer) pairs; the loss is computed only on the answer tokens.",
+  "RLHF": "Reinforcement learning from human feedback. A reward model is trained from human rankings of answers; the model is then updated towards that reward with RL.",
+  "Reward model": "A helper model trained on preference data to score how good an answer is.",
+  "DPO": "Direct preference optimization. A training method that uses preference pairs directly, without a separate reward model and RL loop.",
+  "RLAIF": "Reinforcement learning from AI feedback. A method in which preference or harm labels are given not by humans but by a model guided by written principles.",
+  "Constitutional AI": "A method Anthropic introduced in 2022: the model critiques and ranks its own answers against a written document of principles (a constitution), and that signal is used in training.",
+  "RLVR": "Reinforcement learning with verifiable rewards. RL in which the reward comes from an automatic check, such as tests passing or an answer being correct. The engine of reasoning and coding models.",
+  "Chat template": "The format that pours system, user, assistant and tool messages into a single text with special marker tokens. The API’s JSON is converted into this template on the server.",
+  "Thinking token": "The scratchpad tokens a model writes before its answer. They are ordinary output tokens: billed at the output price and counted towards max_tokens.",
+  "Adaptive thinking": "The mode in current Claude models in which the model itself decides how much to think. It is steered with the effort setting.",
+  "Effort": "The Claude setting that steers how much thinking and work the model puts in: low, medium, high, xhigh, max.",
+  "Reward hacking": "The model exploiting a loophole in the reward signal instead of doing the actual task; for example, passing a test with a special case.",
+  "Inoculation prompting": "Telling the model during training that hacking is acceptable in a particular environment. Shown to break the generalization from hacking to broad misalignment.",
+  "Chain of thought": "The intermediate reasoning text a model writes on its way to an answer. Useful, but not a faithful record of the model’s actual computation.",
+  "Knowledge cutoff": "The date the training data ends; the model cannot know about later events from its weights.",
+  "Hallucination": "The model producing fluent, confident but wrong or made-up information.",
+  "Sycophancy": "The model leaning towards agreeing with the user instead of being correct; a side effect of rewards based on human feedback."
+});
+
+const L1 = {
+  range(label, id, min, max, step, val){
+    const { h } = Edu;
+    const inp = h("input", { type:"range", id, min, max, step, value: val });
+    const out = h("output", { for: id });
+    return { wrap: h("div", { class:"range" }, h("label", { for: id }, label), inp, out), inp, out };
+  },
+  fmt(n, d=0){ return Number(n).toLocaleString("en-US", { maximumFractionDigits:d, minimumFractionDigits:d }); },
+  bar(lab, p, color, txt){
+    const { h } = Edu;
+    return h("div", { class:"bar" }, h("span", { class:"lab" }, lab), h("span", { class:"track" }, h("span", { class:"fill", style:{ width:(Math.max(0, Math.min(1, p))*100).toFixed(1) + "%", background: color || null } })), h("span", { class:"pct" }, txt != null ? txt : (p*100).toFixed(1) + "%"));
+  },
+  toggle(label, on){
+    const { h } = Edu;
+    const b = h("button", { type:"button", class:"btn ghost sm", "aria-pressed": on ? "true" : "false" }, label);
+    b.addEventListener("click", () => b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"));
+    return b;
+  },
+  rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+};
+
+/* ---------- 1a. Loss ---------- */
+Edu.widget("l1-loss", el => {
+  const { h } = Edu;
+  const r = L1.range("p(orders)", "l1-loss-p", 0, 100, 1, 50);
+  const bars = h("div", { class:"bars" });
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const svg = h("div");
+  const note = h("p", { class:"hint" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, r.wrap), bars, stats, svg, note);
+  const pOf = v => Math.min(0.99, Math.pow(10, -4 + 4 * v / 100));
+  function upd(){
+    const p = pOf(+r.inp.value), L = -Math.log(p);
+    r.out.textContent = (p*100).toFixed(p < .01 ? 2 : 1) + "%";
+    bars.innerHTML = "";
+    const rest = 1 - p;
+    [["orders", p, "var(--ok)"], ["order_items", rest*.45], ["customers", rest*.3], ["shipments", rest*.15], ["other", rest*.1, "var(--faint)"]].forEach(([l, v, c]) => bars.append(L1.bar(l, v, c)));
+    stats.innerHTML = `<span>Loss −ln p<b>${L.toFixed(2)} nats</b></span><span>In bits<b>${(-Math.log2(p)).toFixed(2)}</b></span><span>“Perplexity” (1/p)<b>${L1.fmt(1/p, 1)}</b></span>`;
+    const W = 600, H = 150, xs = [];
+    for (let k = 0; k <= 60; k++){ const v = k / 60 * 100, pp = pOf(v); xs.push([20 + k / 60 * (W - 40), H - 20 - (-Math.log(pp)) / 9.3 * (H - 40)]); }
+    const cx = 20 + (+r.inp.value) / 100 * (W - 40), cy = H - 20 - L / 9.3 * (H - 40);
+    svg.innerHTML = `<svg class="l1-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Loss curve"><polyline points="${xs.map(x => x.join(",")).join(" ")}" style="fill:none;stroke:var(--model);stroke-width:2.5"/><circle cx="${cx}" cy="${cy}" r="6" style="fill:var(--ctx)"/><text x="24" y="16" style="fill:var(--muted);font:12px var(--sans)">loss</text><text x="${W-24}" y="${H-4}" text-anchor="end" style="fill:var(--muted);font:12px var(--sans)">probability given to the correct token → (log scale)</text></svg>`;
+    note.textContent = p > .9 ? "The model is very sure of the correct token: the loss is nearly zero, there is little to learn from this position." : p < .01 ? "The model gave the correct token almost no probability: the loss is large. The gradient pushes the weights hard in the direction that raises ‘orders’ at this position." : "Training averages this number over trillions of positions and tries to shrink it. All the ‘knowledge’ is a by-product of this simple objective.";
+  }
+  r.inp.addEventListener("input", upd); upd();
+});
+
+/* ---------- 1b. Training pipeline ---------- */
+Edu.widget("l1-pipeline", el => {
+  const { h, $$, esc, stepper } = Edu;
+  const Q = "Write SQL that deletes the cancelled orders in the example.orders table.";
+  const S = [
+    { n:"Random", k:"c", data:"None", sig:"None", out:"Random weights. The output is a meaningless token sequence.", kind:"raw",
+      resp:"q7 kz order;; ]]x zt WHERE·· ‘‘ 0x1F cust" },
+    { n:"Pre-training", k:"m", data:"Trillions of tokens: web, books, code, forums.", sig:"Next-token prediction (cross-entropy).", out:"Base model: a knowledgeable document completer.", kind:"raw",
+      resp:"\nUrgent help needed, we go live tomorrow.\n\n— 3 replies —\nuser42: Did you take a backup first?\nuser17: DELETE FROM example.orders WHERE status_code = 'CANCELLED'; but if there are dependent tables you'll get an FK error.\n\nSimilar questions: How do I archive cancelled orders?" },
+    { n:"SFT", k:"m", data:"Thousands of (prompt, ideal answer) pairs.", sig:"Cross-entropy on the answer tokens.", out:"An assistant that knows the question-answer format.", kind:"chat",
+      resp:"```sql\nDELETE FROM example.orders\nWHERE status_code = 'CANCELLED';\n```\nThis query deletes all cancelled orders." },
+    { n:"Preference + constitution", k:"h", data:"Pairs of answers generated for the same prompt; written principles.", sig:"Preferences from humans or a principle-guided model (RLHF, DPO, RLAIF).", out:"A more careful assistant that points out risks.", kind:"chat",
+      resp:"Deletion cannot be undone; first look at the rows that will be affected and run it inside a transaction:\n\nBEGIN;\nSELECT count(*) FROM example.orders\n WHERE status_code = 'CANCELLED';\nDELETE FROM example.orders\n WHERE status_code = 'CANCELLED';\n-- check the count, then COMMIT or ROLLBACK\n\nIf there are dependent tables such as example.order_items, you may need to handle them first. If these records are used for reporting, consider archiving instead of deleting." },
+    { n:"RLVR", k:"ok", data:"Real tasks: repo, tests, command environment.", sig:"Automatic verification: tests, build, expected result.", out:"An agent that uses tools and checks its own result.", kind:"agent",
+      resp:[["asst","Let me look at the schema first; dependent tables may affect the delete."],["tool","read_schema(example.order_items)\n→ order_id REFERENCES example.orders(order_id)  -- no ON DELETE"],["asst","example.order_items is linked by order_id and there is no cascading delete; a direct DELETE would raise an FK error. I wrote the script to delete the dependent rows first and then the orders, with count checks and a ROLLBACK."],["tool","run_sql(db.example.test, cleanup_cancelled.sql)\n→ order_items: 3,112 rows, orders: 1,204 rows, no FK error, ROLLBACK"],["asst","I tried it on the test database: the expected row counts matched. I've left the script for you to review before running it in production."]] },
+    { n:"Release", k:"t", data:"None: the weights are frozen.", sig:"None. From now on the prompt, tools and harness shape the behavior.", out:"A frozen model running inside a system prompt and a harness.", kind:"note",
+      resp:"The same weights run without tools in the chat interface; in Claude Code, reading files and running commands; in an API integration, producing nothing but JSON. Training is over; everything it learns from now on lives in the context." }
+  ];
+  const flow = h("div", { class:"flow l1-flow" });
+  const nodes = S.map((s, i) => { const n = h("div", { class:"node " + s.k }, h("b", null, (i+1) + ". " + s.n)); flow.append(n, i < S.length - 1 ? h("span", { class:"arrow", "aria-hidden":"true" }, "→") : ""); return n; });
+  el.append(flow);
+  stepper(el, { steps:S, auto:5200, render(i, s, { body }){
+    nodes.forEach((n, j) => { n.classList.toggle("on", j === i); n.classList.toggle("done", j < i); });
+    let resp = "";
+    if (s.kind === "raw") resp = `<div class="l1-raw">${esc(Q)}<span class="gen">${esc(s.resp)}</span></div><p class="hint">The model continues the input as if it were the start of a document (the purple part).</p>`;
+    else if (s.kind === "chat") resp = `<div class="chat"><div class="msg user"><span class="who">User</span>${esc(Q)}</div><div class="msg asst"><span class="who">Model</span><div class="l1-resp">${esc(s.resp)}</div></div></div>`;
+    else if (s.kind === "agent") resp = `<div class="chat"><div class="msg user"><span class="who">User</span>${esc(Q)}</div>${s.resp.map(([w, t]) => `<div class="msg ${w}"><span class="who">${w === "tool" ? "Tool result" : "Model"}</span><div class="l1-resp">${esc(t)}</div></div>`).join("")}</div>`;
+    else resp = `<div class="panel">${esc(s.resp)}</div>`;
+    body.innerHTML = `<div class="cols" style="margin:.2rem 0 .8rem"><div class="card"><h4>Data</h4>${esc(s.data)}</div><div class="card"><h4>Signal</h4>${esc(s.sig)}</div><div class="card ${s.k}"><h4>Result</h4>${esc(s.out)}</div></div>${resp}`;
+  }});
+});
+
+/* ---------- 2. Base vs. assistant ---------- */
+Edu.widget("l1-base", el => {
+  const { h, $, esc, seg, typewrite, runner } = Edu;
+  const IN = {
+    q:{ l:"Question", u:"How do I reverse a list in Python?",
+      base:"\nHow do I sort a dictionary by value in Python?\nHow do I concatenate two lists in Python?\nHow do I reverse a string in Python?\n\nTags: python, list · 3 answers · 12K views",
+      asst:"There are two common ways:\n\nitems.reverse()     # reverses in place, returns None\nnew = items[::-1]   # returns a new list\n\nIf you want to keep the original list, use slicing.",
+      nb:"The base model took the question for the first line of an FAQ page and continued the page. The knowledge is there, but there is no ‘answer the question’ behavior.",
+      na:"The assistant has learned to answer after the ‘assistant’ marker in the template, and to stop when done." },
+    readme:{ l:"Start of a README", u:"# example_app\n\n## Installation\n",
+      base:"\n```bash\ngit clone https://git.example.test/example_app.git\ncd example_app\nnpm install\n```\n\n## Configuration\n\nCopy `.env.example` to `.env` and edit the `DATABASE_URL` value.\n\n## Tests\n",
+      asst:"Sure! Here is a draft Installation section for example_app:\n\n## Installation\n1. Clone the repository.\n2. Install the dependencies.\n3. Set the environment variables.\n\nIf you tell me which package manager you use, I can write the commands for it.",
+      nb:"This is where the base model shines: it continued the start of the document as a realistic README. The problem is ‘not stopping’: it opened the next heading too.",
+      na:"The assistant interpreted the input as a request and switched to a chat tone. If you want document completion, you have to say so explicitly." },
+    few:{ l:"Few-shot pattern", u:"Q: How do I convert a string to lowercase?\nA: s.lower()\n\nQ: How do I get the length of a list?\nA: len(items)\n\nQ: How do I reverse a list?\nA:",
+      base:" items[::-1]\n\nQ: How do I list the keys of a dictionary?\nA: list(d.keys())\n\nQ: How do I read a file?\nA:",
+      asst:" items[::-1], or items.reverse() to change it in place.",
+      nb:"Two examples were enough to teach the base model the format: the answer is correct and short. But it continues the pattern and invents new questions. The harness has to cut it off here with a stop sequence such as ‘\\n\\nQ:’.",
+      na:"The assistant recognized the same pattern, gave the answer and stopped. Stopping is a behavior that came from training too." }
+  };
+  let cur = "q", mode = "base";
+  const s1 = h("div", { class:"seg", role:"group", "aria-label":"Input" }, ...Object.entries(IN).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.l)));
+  const s2 = h("div", { class:"seg", role:"group", "aria-label":"Model type" }, h("button", { type:"button", "data-v":"base", "aria-pressed":"true" }, "Base model"), h("button", { type:"button", "data-v":"asst", "aria-pressed":"false" }, "Post-trained assistant"));
+  const raw = h("div", { class:"l1-raw" });
+  const gen = h("span", { class:"gen" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, s1, s2), h("h4", null, "The raw text the model sees and the continuation it produces"), raw, note);
+  const r = runner();
+  async function draw(){
+    const c = r.start(), v = IN[cur];
+    raw.innerHTML = mode === "base" ? esc(v.u) : `<span class="mk">⟨system⟩</span>You are a helpful assistant.<span class="mk">⟨/system⟩</span>\n<span class="mk">⟨user⟩</span>${esc(v.u)}<span class="mk">⟨/user⟩</span>\n<span class="mk">⟨assistant⟩</span>`;
+    gen.textContent = ""; raw.append(gen);
+    note.innerHTML = `<span class="tag ${mode === "base" ? "c" : "m"}">${mode === "base" ? "Base" : "Assistant"}</span> ${esc(mode === "base" ? v.nb : v.na)}` + (mode === "asst" ? `<br><span class="hint">The ⟨…⟩ markers are illustrative; every model has its own special tokens, and most are not published.</span>` : "");
+    await typewrite(gen, mode === "base" ? v.base : v.asst, { speed:9, cancelled:c });
+  }
+  seg(s1, v => { cur = v; draw(); });
+  seg(s2, v => { mode = v; draw(); });
+});
+
+/* ---------- 3. Effort ---------- */
+Edu.widget("l1-effort", el => {
+  const { h, $, esc, seg, json } = Edu;
+  const M = { opus:{ n:"Opus 5.5", id:"claude-opus-5-5", i:4, o:20, d:"medium" }, sonnet:{ n:"Sonnet 5.5", id:"(Sonnet 5.5 model ID)", i:2, o:10, d:"high" }, fable:{ n:"Fable 5.1", id:"(Fable 5.1 model ID)", i:10, o:50, d:"high" } };
+  const TH = { low:800, medium:3000, high:8000, xhigh:16000, max:32000 };
+  const ANS = 900;
+  let m = "opus", e = null, disp = "omitted";
+  const sm = h("div", { class:"seg", role:"group", "aria-label":"Model" }, ...Object.entries(M).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.n)));
+  const se = h("div", { class:"seg", role:"group", "aria-label":"Effort" }, ...Object.keys(TH).map(k => h("button", { type:"button", "data-v":k, "aria-pressed":"false" }, k)));
+  const sd = h("div", { class:"seg", role:"group", "aria-label":"Thinking display" }, h("button", { type:"button", "data-v":"omitted", "aria-pressed":"true" }, "omitted"), h("button", { type:"button", "data-v":"summarized", "aria-pressed":"false" }, "summarized"));
+  const rIn = L1.range("Input tokens", "l1-ef-in", 2000, 200000, 2000, 30000);
+  const rS = L1.range("Assumption: decode speed (tokens/s)", "l1-ef-s", 10, 200, 5, 60);
+  const defNote = h("p", { class:"hint", "aria-live":"polite" });
+  const stack = h("div", { class:"l1-stack", "aria-hidden":"true" });
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--model)" } }), "thinking (not shown to you)"), h("span", null, h("i", { class:"sw", style:{ background:"var(--tool)" } }), "visible answer"));
+  const two = h("div", { class:"l1-two" });
+  const seen = h("div", { class:"panel" }), bill = h("div", { class:"panel" });
+  two.append(seen, bill);
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const req = h("div", { class:"jsonv" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sm), h("div", { class:"ctrl" }, h("span", { class:"mono" }, "effort:"), se, h("span", { class:"mono" }, "display:"), sd), defNote, h("div", { class:"ctrl" }, rIn.wrap, rS.wrap), stack, leg, two, stats, h("h4", null, "The request sent (shape)"), req);
+  function upd(){
+    const mm = M[m], ef = e || mm.d, th = TH[ef], inp = +rIn.inp.value, sp = +rS.inp.value;
+    rIn.out.textContent = L1.fmt(inp); rS.out.textContent = sp;
+    defNote.textContent = `Default effort for ${mm.n}: ${mm.d}.` + (e && e !== mm.d ? ` You picked ${e}.` : " This is used if you don’t pick an effort.");
+    const tot = th + ANS;
+    stack.innerHTML = `<i style="width:${th/tot*100}%;background:repeating-linear-gradient(135deg,var(--model) 0 6px,color-mix(in srgb,var(--model) 60%,var(--surface)) 6px 12px)"></i><i style="width:${ANS/tot*100}%;background:var(--tool)"></i>`;
+    seen.innerHTML = `<b>What you see on screen</b><br>${disp === "omitted" ? "Only the answer: " + L1.fmt(ANS) + " tokens. The thinking block comes back empty." : "The answer (" + L1.fmt(ANS) + " tokens) + a thinking summary written by another model."}`;
+    const cIn = inp / 1e6 * mm.i, cOut = tot / 1e6 * mm.o;
+    bill.innerHTML = `<b>What you see on the bill</b><br>Input ${L1.fmt(inp)} × $${mm.i}/MTok = $${cIn.toFixed(4)}<br>Output ${L1.fmt(tot)} (${L1.fmt(th)} thinking + ${L1.fmt(ANS)} answer) × $${mm.o}/MTok = $${cOut.toFixed(4)}`;
+    stats.innerHTML = `<span>Total cost<b>$${(cIn + cOut).toFixed(4)}</b></span><span>Thinking share of output<b>${Math.round(th/tot*100)}%</b></span><span>Decode time (assumed)<b>${(tot/sp).toFixed(0)} s</b></span><span>Without thinking<b>${(ANS/sp).toFixed(0)} s</b></span>`;
+    req.innerHTML = json({ model:mm.id, max_tokens:64000, thinking:{ type:"adaptive", display:disp }, output_config:{ effort:ef }, messages:[{ role:"user", content:"Find the cause of this deadlock: ..." }] }, { hl:["thinking","output_config"] });
+  }
+  seg(sm, v => { m = v; upd(); });
+  seg(sd, v => { disp = v; upd(); });
+  Edu.$$("button", se).forEach(b => b.addEventListener("click", () => { Edu.$$("button", se).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false")); e = b.dataset.v; upd(); }));
+  [rIn, rS].forEach(x => x.inp.addEventListener("input", upd));
+  upd();
+});
+
+/* ---------- 4. Reward hacking game ---------- */
+Edu.widget("l1-hack", el => {
+  const { h, $, sleep, runner } = Edu;
+  const tClose = L1.toggle("Close the loophole in the environment", false);
+  const tHidden = L1.toggle("Add hidden tests to the reward", false);
+  const tInoc = L1.toggle("Inoculation prompt", false);
+  const bRun = h("button", { class:"btn", type:"button" }, "▶ Train 40 iterations");
+  const b1 = h("button", { class:"btn ghost", type:"button" }, "+1 iteration");
+  const b0 = h("button", { class:"btn ghost", type:"button" }, "↺ Reset");
+  const chart = h("div");
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--model)" } }), "reward (what training sees)"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "real success (hidden tests)"), h("span", null, h("i", { class:"sw", style:{ background:"var(--risk)" } }), "hack rate"));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const gen = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"l1-tog" }, tClose, tHidden, tInoc), h("div", { class:"ctrl" }, bRun, b1, b0), chart, leg, stats, gen);
+  const on = b => b.getAttribute("aria-pressed") === "true";
+  const sig = x => 1 / (1 + Math.exp(-x));
+  let theta, hist;
+  const r = runner();
+  function reset(){ theta = Math.log(0.03 / 0.97); hist = []; draw(); }
+  function iter(){
+    const p = sig(theta), N = 50, closed = on(tClose), hid = on(tHidden);
+    let rs = [], as = [], vis = 0, real = 0, hacks = 0;
+    for (let k = 0; k < N; k++){
+      const hack = Math.random() < p; let rew;
+      if (hack){ hacks++; const ok = !closed && Math.random() < 0.97; rew = hid ? 0 : (ok ? 1 : 0); }
+      else { const ok = Math.random() < 0.55, hOk = ok && Math.random() < 0.85; rew = hid ? (hOk ? 1 : 0) : (ok ? 1 : 0); if (hOk) real++; }
+      rs.push(rew); as.push(hack ? 1 : 0); vis += rew;
+    }
+    const b = vis / N;
+    let g = 0; for (let k = 0; k < N; k++) g += (rs[k] - b) * (as[k] - p);
+    theta = Math.max(-5, Math.min(5, theta + 9 * g / N));
+    hist.push({ rew: vis / N, real: real / N, hack: hacks / N });
+  }
+  function draw(){
+    const W = 600, H = 210, X = i => 30 + i / 40 * (W - 50), Y = v => H - 22 - v * (H - 44);
+    const line = (key, col) => hist.length ? `<polyline points="${hist.map((d, i) => X(i + 1) + "," + Y(d[key])).join(" ")}" style="fill:none;stroke:${col};stroke-width:2.5"/>` : "";
+    const grid = [0, .5, 1].map(v => `<line x1="30" x2="${W-20}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--line)"/><text x="24" y="${Y(v)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">${v}</text>`).join("");
+    chart.innerHTML = `<svg class="l1-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Chart of reward, real success and hack rate">${grid}${line("rew","var(--model)")}${line("real","var(--ok)")}${line("hack","var(--risk)")}<text x="${W-20}" y="${H-5}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">iteration (${hist.length}/40)</text></svg>`;
+    const d = hist[hist.length - 1] || { rew:0, real:0, hack:0 };
+    stats.innerHTML = `<span>Reward<b>${(d.rew*100).toFixed(0)}%</b></span><span>Real success<b>${(d.real*100).toFixed(0)}%</b></span><span>Hack rate<b>${(d.hack*100).toFixed(0)}%</b></span><span>Policy’s tendency to hack<b>${(sig(theta)*100).toFixed(0)}%</b></span>`;
+    const hackHigh = sig(theta) > .5;
+    let t = !hist.length ? "No training yet. Press ‘Train 40 iterations’." :
+      hackHigh ? "Reward went up, real success went down: the optimizer found the hack because it earns the same reward more cheaply. Anyone looking at the reward chart would think training succeeded." :
+      on(tClose) || on(tHidden) ? "The hack no longer earns reward; the policy moves back to genuine fixes. Strengthening the verifier is the most direct remedy." :
+      "The tendency to hack is low for now. Keep training.";
+    if (hackHigh) t += on(tInoc) ? "<br><span class=\"tag ok\">Inoculation</span> The hack rate didn’t change; the study’s finding is that this framing breaks the generalization from the hack to other behaviors. The model doesn’t learn to be ‘someone who breaks the rules’." : "<br><span class=\"tag r\">Generalization</span> In the real study, at the point where the model learned the hack, misalignment jumped across all alignment evaluations; it tried to sabotage the detection code 12% of the time.";
+    gen.innerHTML = t;
+  }
+  async function train(n){ const c = r.start(); for (let k = 0; k < n && hist.length < 40; k++){ if (c()) return; iter(); draw(); await sleep(70); } }
+  bRun.onclick = () => train(40);
+  b1.onclick = () => { r.stop(); if (hist.length < 40){ iter(); draw(); } };
+  b0.onclick = () => { r.stop(); reset(); };
+  [tClose, tHidden, tInoc].forEach(b => b.addEventListener("click", draw));
+  reset();
+});
+
+/* ---------- 5a. Singleton ---------- */
+Edu.widget("l1-singleton", el => {
+  const { h } = Edu;
+  const r = L1.range("Average number of mentions", "l1-sg-m", 1.1, 8, 0.1, 2.5);
+  const grid = h("div", { class:"l1-pgrid", "aria-hidden":"true" });
+  const out = h("div", { class:"panel live", "aria-live":"polite" });
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--risk-bg)", outline:"2px solid var(--risk)" } }), "once"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ctx)" } }), "2–3 times"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "4+ times"));
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, r.wrap), grid, leg, out);
+  const rnd = L1.rng(7), U = Array.from({ length:100 }, () => rnd());
+  function upd(){
+    const m = +r.inp.value, q = 1 / m; r.out.textContent = m.toFixed(1);
+    const cnt = U.map(u => 1 + Math.floor(Math.log(1 - u) / Math.log(1 - q + 1e-12)));
+    grid.innerHTML = "";
+    cnt.forEach(c => grid.append(h("span", { title: c === 1 ? "once" : c + " times", style: c === 1 ? { background:"var(--risk-bg)", outline:"2px solid var(--risk)", outlineOffset:"-2px" } : { background: c <= 3 ? "var(--ctx)" : "var(--ok)", opacity: c <= 3 ? ".75" : String(Math.min(1, .55 + c / 20)) } })));
+    const s = cnt.filter(c => c === 1).length;
+    out.innerHTML = `In this corpus, the birthdays of <b>${s}</b> of the 100 people appear only once. By Kalai et al.’s result, the expected hallucination rate on questions like these is roughly <b>at least ${s}%</b>, even for a calibrated model. Enriching the data lowers the lower bound; making the model “smarter” does not.<br><span class="hint">Simplified illustration: synthetic corpus, geometric distribution.</span>`;
+  }
+  r.inp.addEventListener("input", upd); upd();
+});
+
+/* ---------- 5b. Exam incentive ---------- */
+Edu.widget("l1-exam", el => {
+  const { h, seg } = Edu;
+  const C = [0.97,0.93,0.9,0.86,0.82,0.78,0.72,0.66,0.6,0.55,0.5,0.44,0.38,0.33,0.27,0.22,0.17,0.12,0.08,0.04];
+  const SC = { acc:{ l:"Accuracy only (wrong = 0)", k:0 }, p1:{ l:"Wrong −1", k:1 }, p3:{ l:"Wrong −3", k:3 } };
+  let sc = "acc";
+  const sg = h("div", { class:"seg", role:"group", "aria-label":"Scoring" }, ...Object.entries(SC).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.l)));
+  const r = L1.range("Answer threshold (confidence ≥)", "l1-ex-t", 0, 1, 0.05, 0);
+  const grid = h("div", { class:"l1-qgrid", "aria-hidden":"true" });
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const chart = h("div");
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sg), h("div", { class:"ctrl" }, r.wrap), grid, stats, chart, note);
+  const ev = (t, k) => { let ans = 0, cor = 0, wr = 0; C.forEach(c => { if (c >= t - 1e-9){ ans++; cor += c; wr += 1 - c; } }); return { ans, cor, wr, ab: C.length - ans, score: cor - k * wr }; };
+  function upd(){
+    const t = +r.inp.value, k = SC[sc].k; r.out.textContent = t.toFixed(2);
+    const e = ev(t, k);
+    grid.innerHTML = "";
+    C.forEach(c => grid.append(h("span", { title:"confidence " + c, style: c >= t - 1e-9 ? { background:`color-mix(in srgb, var(--model) ${Math.round(c*80)+10}%, var(--surface))`, color: c > .6 ? "var(--paper)" : "var(--ink)" } : { background:"var(--soft)", color:"var(--muted)" } }, c >= t - 1e-9 ? Math.round(c*100) : "?")));
+    stats.innerHTML = `<span>Abstained<b>${Math.round(e.ab/20*100)}%</b></span><span>Expected correct<b>${Math.round(e.cor/20*100)}%</b></span><span>Expected wrong<b>${Math.round(e.wr/20*100)}%</b></span><span>Expected score<b>${e.score.toFixed(1)}</b></span>`;
+    const W = 600, H = 170, pts = [];
+    let best = { t:0, s:-1e9 };
+    for (let x = 0; x <= 20; x++){ const tt = x / 20, s = ev(tt, k).score; pts.push([tt, s]); if (s > best.s + 1e-9) best = { t:tt, s }; }
+    const mn = Math.min(...pts.map(p => p[1]), 0), mx = Math.max(...pts.map(p => p[1]), 1);
+    const X = v => 30 + v * (W - 50), Y = v => H - 22 - (v - mn) / (mx - mn) * (H - 44);
+    chart.innerHTML = `<svg class="l1-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Expected score by threshold"><line x1="30" x2="${W-20}" y1="${Y(0)}" y2="${Y(0)}" style="stroke:var(--line)"/><polyline points="${pts.map(p => X(p[0]) + "," + Y(p[1])).join(" ")}" style="fill:none;stroke:var(--model);stroke-width:2.5"/><circle cx="${X(best.t)}" cy="${Y(best.s)}" r="6" style="fill:var(--ok)"/><circle cx="${X(t)}" cy="${Y(e.score)}" r="5" style="fill:none;stroke:var(--ctx);stroke-width:3"/><text x="${X(best.t)}" y="${Y(best.s)-10}" text-anchor="middle" style="fill:var(--ok);font:600 11px var(--sans)">best threshold ${best.t.toFixed(2)}</text><text x="${W-20}" y="${H-5}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">threshold →</text><text x="32" y="14" style="fill:var(--muted);font:11px var(--sans)">expected score</text></svg>`;
+    note.innerHTML = k === 0 ? "With no penalty for wrong answers, the best strategy is to <b>answer every question</b>: threshold 0. That is why a model trained against the leaderboard learns to guess, and its error rate goes up." : `With wrong = −${k}, answering a question only pays off if confidence &gt; ${k}/(1+${k}) = <b>${(k/(1+k)).toFixed(2)}</b>. The threshold moves up, abstention rises, the error rate falls. The evaluation rule determines the behavior the model learns.`;
+  }
+  seg(sg, v => { sc = v; upd(); });
+  r.inp.addEventListener("input", upd);
+});
+
+/* ---------- 6. From behavior to training ---------- */
+Edu.widget("l1-trace", el => {
+  const { h, $, $$ } = Edu;
+  const items = [
+    { t:"To turn the tests green, it deleted an assert or wrote a test-specific if.", st:"RLVR", k:"ok", why:"Reward hacking. When the reward is ‘tests passed’, the cheap way of passing the test may have been rewarded too.", act:"Review the diff of the test files separately, restrict writes to test files, run extra tests the agent cannot see." },
+    { t:"When you pushed back, it dropped its correct analysis and said “you’re right, I apologize”.", st:"Preference training", k:"h", why:"Sycophancy. Human feedback tends to reward agreeable answers; the GPT-4o case is the extreme example.", act:"Ask neutrally and demand evidence: “Why might your earlier analysis be wrong? Which log would show it?”" },
+    { t:"It doesn’t know the API of last month’s library release and uses the old one.", st:"Pre-training", k:"m", why:"Knowledge cutoff. The weights carry memorized knowledge up to a date.", act:"State the version, put the relevant docs or changelog into the context, verify with the compiler." },
+    { t:"It suggested a config key that doesn’t exist but has a very plausible name.", st:"Pre-training + incentive", k:"r", why:"Familiar name, missing knowledge: the ‘known entity’ feature misfiring, plus evaluations that reward guessing.", act:"Provide the schema or the official docs; say “tell me if you can’t verify it” and accept abstention." },
+    { t:"It wrote a long, convincing rationale but never mentioned the hint it actually used.", st:"RL and CoT", k:"r", why:"The chain of thought is not faithful: hint use was mentioned only 25–39% of the time, and unfaithful chains were longer.", act:"Audit the result, not the reasoning: the diff, the tests, the command output." },
+    { t:"On a question it wasn’t sure about, it said “I couldn’t verify this”.", st:"Post-training", k:"ok", why:"A training choice that rewards abstention. The Chroma study observed this tendency in Claude models.", act:"Treat it as a signal, not a shortcoming; provide a way to verify." },
+    { t:"It thought for ages over a one-line change in a file, and the bill ballooned.", st:"Thinking + setting", k:"t", why:"Adaptive thinking is steered by effort; high effort can burn thinking tokens even on simple work.", act:"Lower the effort for simple jobs; raise it for hard bugs." },
+    { t:"Before a dangerous delete command, it suggested a backup and a transaction.", st:"Constitution + character", k:"h", why:"Preference training and the constitution reward pointing out risks. But this is a habit, not a guarantee.", act:"Don’t leave safety to the model’s good intentions: permission rules, the sandbox and approval steps belong in the harness." }
+  ];
+  const grid = $(".l1-trace", el), out = $(".l1-trace-out", el);
+  const col = { m:"model", h:"harness", c:"ctx", t:"tool", r:"risk", ok:"ok" };
+  items.forEach(it => {
+    const b = h("button", { type:"button", class:"btn ghost" }, it.t);
+    b.addEventListener("click", () => {
+      $$("button", grid).forEach(x => { x.style.borderColor = ""; x.style.background = ""; });
+      b.style.borderColor = "var(--" + col[it.k] + ")"; b.style.background = "var(--" + col[it.k] + "-bg)";
+      out.innerHTML = "";
+      out.append(h("span", { class:"tag " + it.k }, it.st), " ", it.why, h("br"), h("span", { class:"tag t" }, "What you do tomorrow"), " ", it.act);
+    });
+    grid.append(b);
+  });
+});
+})();
+</script>

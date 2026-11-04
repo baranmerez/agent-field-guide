@@ -21,7 +21,7 @@
     @media (prefers-reduced-motion:reduce){.w,.sub{animation:none;opacity:1}.stream,.cursor{animation:none}}
   </style>
   <rect class="bg" x="1" y="1" width="898" height="298" rx="18"/>
-  <text class="kick" x="48" y="62">YAZILIMCILAR İÇİN TÜRKÇE EĞİTİM SETİ</text>
+  <text class="kick" x="48" y="62">AGENT ROADMAP · A HANDS-ON COURSE FOR DEVELOPERS · EN / TR</text>
   <g transform="translate(48 140)">
     <text class="w agent d1" x="0" y="0">Agent</text>
     <text class="w op d2" x="196" y="0">=</text>
@@ -29,7 +29,7 @@
     <text class="w op d4" x="452" y="0">+</text>
     <text class="w harness d5" x="508" y="0">Harness</text>
   </g>
-  <text class="sub" x="48" y="182">Token’dan agent döngüsüne, Claude Code ve Codex pratiğinden harness güvenliğine.</text>
+  <text class="sub" x="48" y="182">From tokens to the agent loop, from Claude Code and Codex practice to harness security.</text>
   <clipPath id="c"><rect x="48" y="214" width="804" height="40" rx="8"/></clipPath>
   <g clip-path="url(#c)">
     <g class="stream">

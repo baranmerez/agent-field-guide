@@ -8,6 +8,10 @@
 const RM = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+const LANG = window.EDU_LANG || "tr";
+const T = window.EDU_T || {};
+/* Arayüz metni: t("lessons", {n:3}) -> "{n} konu" kalıbını doldurur. */
+function t(k, vars){ let v = T[k] != null ? T[k] : k; if (vars) for (const [a, b] of Object.entries(vars)) v = v.split("{" + a + "}").join(b); return v; }
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 
 function h(tag, props, ...kids){
@@ -82,7 +86,7 @@ function tokenize(text){
   for (const p of parts){
     const lead = p.match(/^\s*/)[0], w = p.slice(lead.length);
     if (!/[\p{L}]/u.test(w)){ out.push(p); continue; }
-    const low = w.toLocaleLowerCase("tr");
+    const low = w.toLocaleLowerCase(LANG);
     if (w.length <= 3 || COMMON.has(low)){ out.push(p); continue; }
     // ASCII ve sık görünen İngilizce kökler daha uzun parçalar tutar; Türkçe ekler ve
     // ASCII dışı harfler (ç, ğ, ı, ö, ş, ü) daha sık bölünür.
@@ -112,15 +116,15 @@ const store = {
 function stepper(root, cfg){
   const steps = cfg.steps, n = steps.length, auto = cfg.auto ?? 1800;
   const body = h("div", {class:"stp-body"});
-  const prev = h("button", {class:"btn ghost sm", type:"button"}, "← Geri");
-  const play = h("button", {class:"btn sm", type:"button"}, "▶ Oynat");
-  const next = h("button", {class:"btn ghost sm", type:"button"}, "İleri →");
-  const reset = h("button", {class:"btn ghost sm", type:"button"}, "↺ Baştan");
-  const dots = h("div", {class:"stp-dots", role:"group", "aria-label":"Adımlar"});
+  const prev = h("button", {class:"btn ghost sm", type:"button"}, t("back"));
+  const play = h("button", {class:"btn sm", type:"button"}, t("play"));
+  const next = h("button", {class:"btn ghost sm", type:"button"}, t("fwd"));
+  const reset = h("button", {class:"btn ghost sm", type:"button"}, t("restart"));
+  const dots = h("div", {class:"stp-dots", role:"group", "aria-label":t("steps")});
   const count = h("span", {class:"stp-count"});
   const head = h("div", {class:"stp-head"}, prev, play, next, reset, dots, count);
   if (cfg.controlsFirst === false){ root.append(body, head); } else { root.append(head, body); }
-  steps.forEach((s, k) => dots.append(h("button", {type:"button", "aria-label":"Adım "+(k+1), onclick:()=>{ stopPlay(); go(k); }})));
+  steps.forEach((s, k) => dots.append(h("button", {type:"button", "aria-label":t("step")+" "+(k+1), onclick:()=>{ stopPlay(); go(k); }})));
   let i = -1, timer = null;
   function go(k){
     i = Math.max(0, Math.min(n-1, k));
@@ -129,10 +133,10 @@ function stepper(root, cfg){
     prev.disabled = i === 0; next.disabled = i === n-1;
     cfg.render(i, steps[i], {body, root});
   }
-  function stopPlay(){ clearInterval(timer); timer = null; play.textContent = "▶ Oynat"; }
+  function stopPlay(){ clearInterval(timer); timer = null; play.textContent = t("play"); }
   function startPlay(){
     if (i >= n-1) go(0);
-    play.textContent = "❚❚ Durdur";
+    play.textContent = t("pause");
     timer = setInterval(() => { if (i >= n-1){ if (cfg.loop) go(0); else stopPlay(); } else go(i+1); }, RM ? Math.max(auto, 2500) : auto);
   }
   prev.onclick = () => { stopPlay(); go(i-1); };
@@ -158,12 +162,12 @@ function seg(el, onChange){
 const widgets = {};
 function widget(name, init){ widgets[name] = init; }
 function initWidgetsIn(scope){
-  $$("[data-widget]", scope).forEach(el => {
+  $$("[data-widget],[data-anim]", scope).forEach(el => {
     if (el.dataset.ready) return;
-    const fn = widgets[el.dataset.widget];
+    const fn = widgets[el.dataset.widget || ("anim:" + el.dataset.anim)];
     if (!fn) return;
     el.dataset.ready = "1";
-    try { fn(el); } catch(e){ console.error("widget " + el.dataset.widget, e); el.append(h("p", {class:"hint"}, "Bu etkileşim başlatılamadı: " + e.message)); }
+    try { fn(el); } catch(e){ console.error("widget " + el.dataset.widget, e); el.append(h("p", {class:"hint"}, t("widgetFail") + e.message)); }
   });
 }
 
@@ -172,5 +176,5 @@ const gloss = {};
 /* Aynı terim birden çok seviyede tanımlanırsa ilk tanım (konunun öğretildiği yer) kalır. */
 function glossary(map){ for (const [k, v] of Object.entries(map)) if (!(k in gloss)) gloss[k] = v; }
 
-window.Edu = { $, $$, h, esc, sleep, RM, runner, typewrite, json, tokenize, store, stepper, seg, widget, glossary, gloss, initWidgetsIn };
+window.Edu = { t, LANG, $, $$, h, esc, sleep, RM, runner, typewrite, json, tokenize, store, stepper, seg, widget, glossary, gloss, initWidgetsIn };
 })();

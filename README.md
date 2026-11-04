@@ -1,43 +1,47 @@
 <p align="center">
-  <a href="https://baranmerez.github.io/model-harness-agent/"><img src="assets/hero.svg" alt="Agent = Model + Harness" width="900"></a>
+  <a href="https://baranmerez.github.io/agent-roadmap/"><img src="assets/hero.svg" alt="Agent = Model + Harness" width="900"></a>
 </p>
 
 <p align="center">
-  <b>Yazılımcılar için Türkçe, etkileşimli LLM ve coding agent eğitimi.</b><br>
-  <a href="https://baranmerez.github.io/model-harness-agent/"><b>Eğitimi aç →</b></a>
+  <b>A hands-on, interactive course on LLMs and coding agents for software developers.</b><br>
+  <a href="https://baranmerez.github.io/agent-roadmap/en/"><b>Open the course →</b></a> &nbsp;·&nbsp; <a href="https://baranmerez.github.io/agent-roadmap/tr/"><b>Türkçe →</b></a>
 </p>
 
-Claude Code ya da Codex ile çalışırken bir davranışın modelden mi, harness’tan mı, yoksa context’ten mi geldiğini ayırt edebilmek için hazırlanmış bir set. Her konu bir mekanizmayı anlatıyor ve onu kurcalayabileceğin bir şemayla gösteriyor. Quiz yok, ezber yok.
+When you work with Claude Code or Codex, every behaviour comes from one of three places: the **model**, the **harness** around it, or the **context** it sees. This course teaches you to tell them apart. Each lesson explains one mechanism and lets you poke at it in an interactive diagram. No quizzes, no memorising.
 
-<p align="center"><img src="assets/loop.svg" alt="Agent döngüsü: model araç ister, harness çalıştırır, sonuç modele döner" width="900"></p>
+<p align="center"><img src="assets/loop.svg" alt="Agent loop: the model requests a tool, the harness runs it, the result goes back to the model" width="900"></p>
 
-## İçinde ne var
+## What’s inside
 
 | | |
 |---|---|
-| **0–2 · Model** | Token ve tokenizer, sampling, eğitim hattı, reasoning, halüsinasyon, context window, prompt caching |
-| **3–5 · Konuşmak ve döngü** | Prompt’ta folklor ve kanıt, tool use ve MCP, agent loop, başarısızlık modları |
-| **6–7 · Harness** | Katmanlar, aynı model farklı sonuç, Claude ve Codex karşılaştırması |
-| **8–10 · Pratik ve güvenlik** | Claude Code (CLAUDE.md, izinler, hook’lar), headless/CI, eval, prompt injection, ölümcül üçlü |
+| **0–2 · The model** | Tokens and tokenizers, sampling, the training pipeline, reasoning, hallucination, the context window, prompt caching |
+| **3–5 · Talking to it, looping it** | Prompt myths vs evidence, tool use and MCP, the agent loop, failure modes |
+| **6–7 · The harness** | Its layers, same model / different results, Claude vs Codex |
+| **8–10 · Practice and security** | Claude Code (CLAUDE.md, permissions, hooks), headless/CI, evals, prompt injection, the lethal trifecta |
 
-**69 konu · 91 etkileşimli şema · aranabilir sözlük · 11 tema.** Her şey tarayıcıda çalışır, hiçbir yere veri gönderilmez. Bilgiler **Kasım 2026** itibarıyla günceldir; her konunun sonunda kaynakları var.
+**69 lessons · 91 interactive diagrams · searchable glossary · 11 themes · English and Turkish.** Everything runs in your browser; nothing is sent anywhere. Facts are current as of **November 2026**, with sources at the end of every lesson.
 
-## Geliştirme
+## Türkçe
 
-Bağımlılık yok, yalnızca Node.js.
+Yazılımcılar için Türkçe, etkileşimli bir LLM ve coding agent eğitimi. Claude Code ya da Codex ile çalışırken bir davranışın modelden mi, harness’tan mı, yoksa context’ten mi geldiğini ayırt etmeyi öğretiyor. Her konu bir mekanizmayı anlatıyor ve onu kurcalayabileceğin bir şemayla gösteriyor. **[Eğitimi aç →](https://baranmerez.github.io/agent-roadmap/tr/)**
+
+## Development
+
+No dependencies, just Node.js.
 
 ```bash
-node build.js --public   # docs/index.html (GitHub Pages bunu yayınlar)
-node check.js            # seviye dosyalarını denetler
-node serve.js docs       # http://localhost:5178/index.html
+node build.js --public          # docs/en, docs/tr and a language router at docs/index.html
+node check.js                   # validates level files and EN/TR parity
+PORT=5178 node serve.js docs    # http://localhost:5178/en/index.html
 ```
 
-İçerik `src/levels/` altında, seviye başına bir dosya. Yeni içerik yazarken [WRITING-GUIDE.md](WRITING-GUIDE.md)’ye uy. Hata ya da eskimiş bilgi görürsen issue açman yeter.
+Content lives in `src/levels/<lang>/`, one file per level; UI strings are in `src/i18n.json`. Follow [WRITING-GUIDE.md](WRITING-GUIDE.md) when adding content. Found an error or something outdated? Open an issue.
 
-## Lisans
+## License
 
-İçerik [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.tr), kod MIT. Ayrıntılar [LICENSE](LICENSE)’ta.
+Content [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), code MIT. See [LICENSE](LICENSE).
 
 ---
 
-<sub>Hazırlayan: <b>Baran Merez</b> · <a href="https://github.com/baranmerez">GitHub</a> · <a href="https://www.linkedin.com/in/baranmerez/">LinkedIn</a></sub>
+<sub>Created by <b>Baran Merez</b> · <a href="https://github.com/baranmerez">GitHub</a> · <a href="https://www.linkedin.com/in/baranmerez/">LinkedIn</a></sub>

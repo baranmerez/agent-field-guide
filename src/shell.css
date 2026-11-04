@@ -63,7 +63,7 @@ body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:
 img,svg{max-width:100%}
 a{color:var(--tool)}
 :focus-visible{outline:3px solid var(--acc,var(--tool));outline-offset:2px;border-radius:4px}
-code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);border:1px solid var(--line);padding:.05em .35em;border-radius:5px}
+code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);border:1px solid var(--line);padding:.05em .35em;border-radius:5px;overflow-wrap:anywhere}
 pre{position:relative;font-family:var(--mono);font-size:.83rem;line-height:1.6;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem;overflow-x:auto;margin:1.2rem 0;tab-size:2}
 pre code{background:none;border:0;padding:0;font-size:inherit}
 pre[data-title]{padding-top:2.3rem}
@@ -189,7 +189,8 @@ th{font-family:var(--sans);font-weight:700;font-size:.82rem;color:var(--muted);b
 .card > :last-child{margin-bottom:0}
 .card h4{margin:0 0 .35rem}
 .card.m{border-top:4px solid var(--model)} .card.h{border-top:4px solid var(--harness)} .card.c{border-top:4px solid var(--ctx)} .card.t{border-top:4px solid var(--tool)} .card.r{border-top:4px solid var(--risk)} .card.ok{border-top:4px solid var(--ok)}
-.vs{display:grid;grid-template-columns:1fr 1fr;gap:.9rem;margin:1.3rem 0}
+.vs{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:.9rem;margin:1.3rem 0}
+.vs > div,.cols > *{min-width:0}
 .vs > div{border-radius:var(--radius);padding:1rem 1.1rem;border:1px solid var(--line);background:var(--surface);font-size:.94rem}
 .vs .bad{border-color:color-mix(in srgb,var(--risk) 40%,var(--line))}
 .vs .good{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
@@ -488,3 +489,6 @@ button.prog:focus-visible{outline:3px solid var(--tool)}
 .sf-lic{margin:0;font-family:var(--body);font-size:.8rem}
 .sf-lic a{color:var(--muted)}
 @media print{.site-foot{display:none}}
+
+/* dil düğmesi */
+.lang-btn{text-decoration:none;font-weight:800;letter-spacing:.04em;display:inline-flex;align-items:center}

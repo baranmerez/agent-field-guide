@@ -1,0 +1,976 @@
+<section class="level" data-no="8" data-short="Claude Code" data-title="Using Claude Code for real"
+  data-accent="tool" data-time="90 min"
+  data-lede="You know the harness concept and the two ecosystems. Now we shape Claude Code around your team’s rules: working rhythm, CLAUDE.md, permission rules, extension tools, hooks, context commands, checkpoints and parallel sessions.">
+
+  <!-- ============ 8.1 ============ -->
+  <div class="lesson" data-tab="Working rhythm">
+    <h2>Explore, plan, implement, verify</h2>
+    <p class="lead">The teams that get the most out of Claude Code share a common rhythm, and it has not changed since 2025: first have it read, then have it plan, then have it implement, and last have it verify. What has changed is that the tools supporting this rhythm have matured, and the official guide has boiled it down to a sharper statement.</p>
+    <p>The current “best practices” page ties the work to three sentences: <b>tell Claude what it cannot see</b>, <b>give it a check it can run</b>, and <b>enforce the rules that must have no exceptions</b>. The first is the job of context (this lesson and CLAUDE.md), the second is the job of verification (tests, the compiler, <code>/verify</code>), the third is the job of the harness (permission rules and hooks). Every lesson in this level unpacks those three sentences.</p>
+
+    <h3>Why plan first?</h3>
+    <p>In level 5 you saw the agent loop: every turn is a model call that rereads the whole history. An agent spinning for twenty turns on a misunderstood task burns context, money and your time, and ends up producing a diff you will have to revert. Spending five minutes reading the plan is the cheapest debugging method there is. <span class="g" data-g="Plan mode">Plan mode</span> exists exactly for this: the agent can read files and run read-only commands, but it cannot edit anything until the plan is approved. If auto mode is available, commands approved by the classifier also run in plan mode.</p>
+    <p>You cycle through the modes with <kbd>Shift</kbd>+<kbd>Tab</kbd>. As of November 2026 the cycle is: <code>auto → default → acceptEdits → plan → (bypassPermissions) → auto</code>. The mode in parentheses only joins the cycle if it has been enabled; <code>dontAsk</code> is not in the cycle at all and can only be turned on with a command-line flag.</p>
+
+    <div class="fig" data-widget="l8-modes">
+      <p class="fig-title">The Shift+Tab cycle</p>
+      <p class="fig-cap">Press the button to move to the next mode. For each mode, see what happens to four representative actions. The “bypass enabled” box adds bypass mode to the cycle, as long as it has not been disabled in settings.</p>
+      <div class="ctrl l8-md-ctrl"></div>
+      <div class="l8-md-out live" aria-live="polite"></div>
+    </div>
+
+    <h3>A good task description</h3>
+    <p>In level 3 we talked about writing a prompt like a work order. In Claude Code the practical version is: state the symptom, where to look, and what counts as “done”. The official guide’s example replaces “fix the login bug” with “login fails after session timeout; check the token refresh in src/auth/; write a failing test that reproduces the issue first, then fix it”. Apply the same pattern to your own work:</p>
+    <div class="vs">
+      <div class="bad" data-label="Weak"><pre><code>order total is wrong, fix it</code></pre></div>
+      <div class="good" data-label="Strong"><pre><code>In example.orders, discounted orders get the
+discount applied twice (e.g. order_id 1042).
+Look at the calculation in src/Orders/OrderTotal.cs.
+First write a failing test that reproduces this,
+then fix it. dotnet test must pass; no migration.</code></pre></div>
+    </div>
+
+    <div class="fig" data-widget="l8-ritim">
+      <p class="fig-title">Anatomy of a session</p>
+      <p class="fig-cap">A realistic session for the task above, in the fictional <code>example_app</code> repository. Step through it; at each step, watch which mode you are in, what the agent is doing and where you step in.</p>
+    </div>
+
+    <h3>Steering: when do you intervene?</h3>
+    <ul>
+      <li><kbd>Esc</kbd> stops the agent mid-action. The guide’s advice: “watch the first minute, and press Esc the moment it starts to drift”.</li>
+      <li><kbd>Esc</kbd> <kbd>Esc</kbd> or <code>/rewind</code> opens the rewind menu (the last lesson of this level).</li>
+      <li><b>After two failed fixes</b>, do not write a third: clear with <code>/clear</code> and start again with a better prompt. A context full of failed attempts keeps the model in the same rut.</li>
+      <li><code>/btw</code> lets you ask a side question without polluting the history.</li>
+      <li><code>/rename</code> names the session, and <code>claude --resume &lt;name&gt;</code> brings you back to it.</li>
+      <li><code>/verify</code> builds and runs the application; <code>/goal</code> has a separate model check a condition every turn; <code>/code-review</code> gets the change reviewed.</li>
+      <li><code>/effort high</code> or <code>xhigh</code> raises the thinking budget for subtle bugs and schema changes.</li>
+    </ul>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>It is like working with a talented new junior. First you ask them to read the code, then to explain what they intend to do; you do not let them touch anything until you have approved the plan. When the work is done, you run the tests together. The difference: this junior is extremely fast, never gets tired, and may forget the beginning of the conversation.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Tell it what it cannot see, give it a check it can run, enforce no-exception rules in the harness.</li>
+        <li>Plan mode reads but does not edit; reading the plan is the cheapest debugging there is.</li>
+        <li>The Shift+Tab cycle: auto → default → acceptEdits → plan → (bypass) → auto. dontAsk only via a flag.</li>
+        <li>After two failed fixes, <code>/clear</code> and a better prompt.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/permission-modes">Claude Code: Permission modes</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-best-practices">Anthropic: Claude Code best practices (April 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.2 ============ -->
+  <div class="lesson" data-tab="CLAUDE.md">
+    <h2>Instructions read in every session</h2>
+    <p><span class="g" data-g="CLAUDE.md">CLAUDE.md</span> is a Markdown file that Claude Code loads into context at the start of every session. In level 3 we said that for lasting impact you should invest in the layers that are added automatically to every request; this is that layer. But let us make one thing clear up front: CLAUDE.md is <b>guidance</b>, not enforcement. Claude reads it and mostly follows it; but, in the words of the official docs, it is allowed to decide that a line does not apply in a given situation. That is why the most important sentence in the guide is this one: <em>If you keep adding emphasis to a CLAUDE.md line and Claude still misses it, that line belongs in a hook.</em> Adding “IMPORTANT” probably will not fix it.</p>
+
+    <h3>Hierarchy</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Scope</th><th>Location</th><th>For whom</th></tr></thead>
+      <tbody>
+        <tr><td>Managed (organization)</td><td><code>/etc/claude-code/CLAUDE.md</code>, on Windows <code>C:\Program Files\ClaudeCode\CLAUDE.md</code></td><td>All users; deployed by IT</td></tr>
+        <tr><td>User</td><td><code>~/.claude/CLAUDE.md</code></td><td>All your projects</td></tr>
+        <tr><td>Project</td><td><code>./CLAUDE.md</code> or <code>./.claude/CLAUDE.md</code></td><td>The team; committed to the repo</td></tr>
+        <tr><td>Local</td><td><code>./CLAUDE.local.md</code></td><td>You, this project; stays out of git</td></tr>
+        <tr><td>Rules</td><td><code>.claude/rules/*.md</code> (with a <code>paths:</code> header)</td><td>Only when matching files are touched</td></tr>
+      </tbody>
+    </table></div>
+    <p>At startup, the files in the ancestor directories from the root down to the working directory are loaded; files in subdirectories are loaded when a file in that directory is touched. The files are <b>concatenated</b>, they do not override each other: the closer one is read later. This resembles the CSS cascade but is not quite the same; if two rules conflict, both stay in context and the model has to decide which one applies. Resolve the conflict yourself.</p>
+    <p>With the <code>@path/file.md</code> syntax you can import other files. The path is relative to the importing file; at most 4 hops of depth are allowed; importing a file from outside the project requires a one-time approval. Let us correct an important misconception: imports do <b>not</b> reduce context cost; the imported file is loaded in full as well. The real savings tools are rules with a <code>paths:</code> header under <code>.claude/rules/</code>, and skills. The official target is under 200 lines per file. For auto memory (MEMORY.md), the first 200 lines or 25 KB are loaded. In monorepos you can leave out the files of unrelated subprojects with <code>claudeMdExcludes</code>.</p>
+<pre data-title=".claude/rules/sql.md"><code>---
+paths:
+  - "**/*.sql"
+---
+- Always schema-qualify names: example.orders, example.customers.
+- DML scripts start with BEGIN and end with ROLLBACK; a human puts in the COMMIT.</code></pre>
+
+    <h3>What goes in, what stays out?</h3>
+    <div class="cols">
+      <div class="card ok"><h4>Write</h4><ul>
+        <li>Exact verification commands: how to run a single test file, typecheck, lint.</li>
+        <li>Misleading code: “src/legacy/ is still live, but do not copy its patterns into new code”.</li>
+        <li>Decisions that are not in the repo, and their reasons.</li>
+        <li>Anything you have corrected twice.</li>
+      </ul></div>
+      <div class="card r"><h4>Don’t write</h4><ul>
+        <li>Things that can be inferred from the code (“we use Angular in this project”).</li>
+        <li>Personal preferences: those go in <code>CLAUDE.local.md</code>.</li>
+        <li>Long procedures: those go in a skill.</li>
+        <li>No-exception prohibitions: those go in a deny rule or a hook.</li>
+        <li>Secrets, tokens, passwords. Never.</li>
+      </ul></div>
+    </div>
+    <p>The sample file in the official docs is a good summary of these principles. Here is a version adapted for a .NET project:</p>
+<pre data-title="CLAUDE.md"><code># Commands
+- Build: dotnet build -warnaserror
+- Single test class: dotnet test --filter FullyQualifiedName~OrderTotalTests
+- Format check: dotnet format --verify-no-changes
+
+# Conventions
+- Use src/Common/Result.cs for error returns; do not throw raw exceptions
+- src/Legacy/ is still live, but do not copy its patterns into new code
+
+# Gotchas
+- Integration tests need DATABASE_URL; see .env.example
+- example.orders.amount is numeric(12,2); use decimal on the C# side</code></pre>
+
+    <div class="fig" data-widget="l8-claudemd">
+      <p class="fig-title">Pruning a CLAUDE.md</p>
+      <p class="fig-cap">Lines that came out of a team’s “let’s put everything in CLAUDE.md” meeting. Click a line: see where it belongs according to the official guide and why; the line moves to that destination. The preview on the right shows the size of the remaining CLAUDE.md and the approximate tokens it costs in every session.</p>
+      <div class="ctrl"><button type="button" class="btn sm l8-cm-all">Place them all</button><button type="button" class="btn ghost sm l8-cm-reset">↺ Start over</button></div>
+      <div class="l8-cm-grid"></div>
+      <div class="panel live l8-cm-out" aria-live="polite"><span class="muted">Click a line.</span></div>
+    </div>
+
+    <div class="callout tip"><span class="ct">In practice</span>In a new repo, <code>/init</code> generates a starter CLAUDE.md; do not leave it as is, run it through the filter above. To see the problems in your existing instructions you can use <code>/doctor prompt-audit</code>. And the best habit: when the agent makes the same mistake a second time, add a single line for it. If it makes it a third time, that line should probably be a hook.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>CLAUDE.md is guidance, not enforcement. If a rule is still missed after you add emphasis, it belongs in a hook.</li>
+        <li>Files are concatenated, not overridden; resolve conflicts yourself.</li>
+        <li>@import does not reduce cost; savings come from <code>.claude/rules</code> (paths) and skills.</li>
+        <li>Write commands, misleading code, decisions not in the repo and anything corrected twice; everything else goes elsewhere.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/memory">Claude Code: Memory (CLAUDE.md)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.3 ============ -->
+  <div class="lesson" data-tab="Permissions">
+    <h2>Permission rules: who gets what, in which order</h2>
+    <p>In level 7 you saw the permission modes. Modes are the coarse setting; fine-tuning is done with <span class="g" data-g="Permission rule">permission rules</span>. A rule has the form <code>Tool</code> or <code>Tool(specifier)</code>: <code>Bash(npm run *)</code>, <code>Read(./.env)</code>, <code>WebFetch(domain:example.com)</code>, <code>mcp__server__tool</code>, <code>Skill(skill:release)</code>. Rules go into three lists: <code>deny</code>, <code>ask</code>, <code>allow</code>.</p>
+
+    <h3>Evaluation order: deny, ask, allow</h3>
+    <p>The most important sentence of this lesson: <b>deny is evaluated first, then ask, then allow; the first match wins, and specificity does not matter.</b> In the words of the docs, an allow rule cannot carve an exception out of a deny rule. For someone used to firewall rules this may feel backwards at first; there, usually the most specific rule or the first rule in order wins. Here, the list type wins.</p>
+
+    <h3>How do Bash rules match?</h3>
+    <ul>
+      <li>The pattern is a glob applied to the whole command. <code>Bash(npm run *)</code> matches <code>npm run build</code>, not <code>npm install</code>.</li>
+      <li>The space before <code>*</code> matters: <code>Bash(git diff *)</code> only matches <code>git diff …</code>; <code>Bash(git diff*)</code> also matches <code>git diff-index</code>.</li>
+      <li><span class="g" data-g="Compound command">Compound commands</span> are split: <code>&amp;&amp; || ; | |&amp; &amp;</code> and newline are separators. For allow, <b>every</b> subcommand must be permitted; for deny and ask, a match on <b>any</b> subcommand is enough. The contents of <code>$(…)</code>, subshells and loops also count as subcommands.</li>
+      <li>Wrappers are stripped: <code>timeout time nice nohup stdbuf command builtin noglob</code>. <code>timeout 30 npm run build</code> is evaluated like <code>npm run build</code>.</li>
+      <li>Leading environment variable assignments (<code>FOO=bar command</code>): allow rules do not match past them, deny rules do. So nobody can trick an allow with an environment variable, but nobody can escape a deny that way either.</li>
+    </ul>
+
+    <div class="fig" data-widget="l8-matcher">
+      <p class="fig-title">Permission rule matcher</p>
+      <p class="fig-cap">Edit the rules, type a command or path, or pick one of the ready-made examples. The matcher splits the command into subcommands, strips wrappers and, for each piece, shows which rule matches in deny → ask → allow order. It is a teaching matcher built from the rules in the docs; it does not mimic every detail of the real implementation.</p>
+      <div class="l8-mt-rules"></div>
+      <div class="ctrl l8-mt-tool"></div>
+      <div class="ctrl l8-mt-in"></div>
+      <div class="ctrl l8-mt-pre"></div>
+      <div class="panel live l8-mt-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout warn"><span class="ct">Caution: Bash deny is not a security boundary</span>The docs say this explicitly. A <code>Bash(curl *)</code> deny rule does not stop <code>/usr/bin/curl …</code> or <code>sh -c 'curl …'</code>; nor does it stop curl written into a script file and executed. Deny rules are a good seatbelt against accidental mistakes. A real boundary is a mechanism that works regardless of how the command is written: the sandbox’s network allowlist, operating system permissions, the narrow scope of the agent’s credentials. <em>Pair</em> deny rules with these; do not substitute them.</div>
+
+    <h3>Read and Edit paths</h3>
+    <p>File rules use gitignore syntax and there are four path forms: <code>//absolute/path</code>, <code>~/home/directory</code>, <code>/relative-to-settings-file-source</code> and <code>./relative</code>. Careful: a path starting with a single slash is not absolute; it is relative to the project where the settings file lives; an absolute path needs a double slash. Windows paths are normalized: <code>C:\Users\alice</code> becomes <code>/c/Users/alice</code> on the rule side; to block <code>.env</code> files on every drive you write <code>//**/.env</code>. A Read deny rule also blocks Edit and Write for the same path. A misconception: a file called <code>.claudeignore</code> has no effect whatsoever.</p>
+
+    <h3>Settings layers</h3>
+    <p>Rules live in <code>settings.json</code> files, and the precedence order is: <span class="g" data-g="Managed settings">managed settings</span> &gt; <code>--settings</code> on the command line &gt; <code>.claude/settings.local.json</code> &gt; <code>.claude/settings.json</code> &gt; <code>~/.claude/settings.json</code>. Arrays such as <code>permissions.allow</code> are <b>merged</b> across layers, not overridden. Two details matter for security: allow rules in a project wait until <span class="g" data-g="Workspace trust">workspace trust</span> is granted, while deny and ask rules apply immediately; and a <code>defaultMode: auto</code> or <code>bypassPermissions</code> value in a project or local file is ignored (since v2.1.257). So a repo you clone cannot put itself into bypass mode on its own.</p>
+<pre data-title=".claude/settings.json (team)"><code>{
+  "permissions": {
+    "deny":  ["Bash(git push --force *)", "Read(./.env)", "Read(//**/.ssh/**)",
+              "Edit(./src/Generated/**)"],
+    "ask":   ["Bash(git clean *)"],
+    "allow": ["Bash(dotnet build *)", "Bash(dotnet test *)", "Bash(git diff *)", "Bash(git status)"]
+  }
+}</code></pre>
+    <p>There are new keys for organization-level hardening: <code>permissions.blockReadsOutsideWorkingDirectories</code> and <code>permissions.blockWritesOutsideWorkingDirectories</code> (v2.1.314), <code>disableBypassPermissionsMode</code> and <code>disableAutoMode</code>. When these are placed in managed settings, users cannot loosen them.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>Put only the safe allows everyone will want and the hard denies into the team settings (<code>.claude/settings.json</code>): build and test commands open, force push and secret files closed. Write personal conveniences into <code>settings.local.json</code>. If you approve a command every day, adding it to allow reduces approval fatigue; 93% of approval prompts get approved anyway.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>deny → ask → allow; the first match wins; allow cannot carve an exception out of deny.</li>
+        <li>In a compound command, every piece must be permitted for allow; one piece is enough for deny and ask. Wrappers are stripped.</li>
+        <li>The space before <code>*</code> matters; a single-slash path is relative to the project, a double-slash path to the root.</li>
+        <li>Bash deny is not a security boundary; pair it with the sandbox and narrow credentials.</li>
+        <li>Arrays merge across layers; project allows wait until trust is granted.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/permissions">Claude Code: Permissions</a></li>
+      <li><a href="https://code.claude.com/docs/en/settings">Claude Code: Settings</a></li>
+      <li><a href="https://www.anthropic.com/engineering/claude-code-auto-mode">Anthropic: Claude Code auto mode</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.4 ============ -->
+  <div class="lesson" data-tab="Extension tools">
+    <h2>Six tools, one question: who decides?</h2>
+    <p>There are six ways to extend Claude Code, and the most common mistake teams make is handing the job to the wrong tool: writing a no-exception rule into CLAUDE.md, putting a one-line fact into a skill, setting up an MCP server for a system that already has a good CLI. The key to picking the right tool is a single question: <b>should Claude decide this behavior, or the harness?</b></p>
+    <div class="cols">
+      <div class="card m"><h4 class="m">Claude decides (probabilistic)</h4>CLAUDE.md, <code>.claude/rules</code>, skills, subagent definitions, instructions in the prompt. The model reads them and usually follows them; depending on context it may also choose not to.</div>
+      <div class="card h"><h4 class="h">The harness enforces (deterministic)</h4>Hooks, deny rules, a strict sandbox, managed settings, <code>--max-turns</code> and <code>--max-budget-usd</code>, CI checks, branch protection. They work regardless of what the model thinks.</div>
+    </div>
+
+    <h3>The tools one by one</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Tool</th><th>What</th><th>When it loads</th><th>What for</th></tr></thead>
+      <tbody>
+        <tr><td><b>CLAUDE.md / rules</b></td><td>Always-on guidance</td><td>Every session (rules: by path)</td><td>Facts Claude cannot infer from the code</td></tr>
+        <tr><td><b><span class="g" data-g="Skill">Skill</span></b></td><td><code>.claude/skills/&lt;name&gt;/SKILL.md</code> + files; via <code>/name</code> or automatically</td><td>Description always (truncated at 1,536 characters); body when invoked; extra files when referenced</td><td>Repeated team procedure: release, review, migration</td></tr>
+        <tr><td><b><span class="g" data-g="Subagent">Subagent</span></b></td><td><code>.claude/agents/*.md</code>: separate context, its own prompt, tools, model</td><td>When delegated to</td><td>Isolating noisy work, restricting tools, parallelism; only a summary comes back</td></tr>
+        <tr><td><b>MCP server</b></td><td>External tools and data</td><td>Tool names are deferred by default (tool search)</td><td>Systems without a good CLI; if <code>gh</code> or <code>aws</code> exists, prefer them</td></tr>
+        <tr><td><b>Hook</b></td><td>Deterministic code on lifecycle events</td><td>Always</td><td>Rules that must have no exceptions</td></tr>
+        <tr><td><b><span class="g" data-g="Plugin">Plugin</span></b></td><td><code>.claude-plugin/plugin.json</code>: a bundle of the above</td><td>Descriptions of enabled plugins in every session</td><td>Distributing a setup to the team or a marketplace; runs with your permissions</td></tr>
+      </tbody>
+    </table></div>
+    <p>The old custom commands (<code>.claude/commands/*.md</code>) have merged into skills; if you want to write a new “slash command”, write a skill. A skill’s frontmatter has fields such as <code>name</code>, <code>description</code>, <code>when_to_use</code>, <code>allowed-tools</code>, <code>disable-model-invocation</code>, <code>model</code>, <code>effort</code>, <code>context: fork</code> and <code>paths</code>. A powerful feature is dynamic context: a line such as <code>!`git diff HEAD`</code> in the skill body is executed before the model sees the skill, and its output is substituted in. Keep SKILL.md under 500 lines; move detail into extra files.</p>
+<pre data-title=".claude/skills/release-notes/SKILL.md"><code>---
+name: release-notes
+description: Drafts release notes for example_app. Use when the user asks for release notes,
+  a changelog, or "what changed in this release".
+allowed-tools: Bash(git log *), Bash(git diff *), Read
+disable-model-invocation: false
+---
+Changes since the last tag:
+!`git log --oneline $(git describe --tags --abbrev=0)..HEAD`
+
+1. Group the changes as Feature / Fix / Maintenance.
+2. Describe the user-visible impact in one sentence; do not copy commit wording.
+3. See templates/release-notes.md for the format.</code></pre>
+    <p>In a subagent’s frontmatter the required fields are <code>name</code> and <code>description</code>; there are also fields such as <code>tools</code>, <code>disallowedTools</code>, <code>model</code> (sonnet, opus, haiku, fable, inherit or a full ID), <code>permissionMode</code>, <code>skills</code>, <code>hooks</code>, <code>isolation: worktree</code>, <code>background</code>, <code>maxTurns</code> and <code>mcpServers</code>. Built in: Explore, Plan and general-purpose. Subagents can be nested up to 3 levels deep. “Agent teams”, where several agents talk to each other, are experimental and according to the docs spend roughly 7 times the tokens.</p>
+
+    <div class="fig" data-widget="l8-tree">
+      <p class="fig-title">Which extension tool?</p>
+      <p class="fig-cap">Walk the decision tree on the left yourself by answering its questions, or click one of the real scenarios on the right; the tree lights up that scenario’s path step by step and explains why that tool was chosen in the end.</p>
+      <div class="l8-tr-wrap"><div class="l8-tr-tree"></div><div class="l8-tr-sc"></div></div>
+      <div class="panel live l8-tr-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout myth"><span class="ct">Myth</span>“The more MCP servers I connect, the more capable the agent gets.” Every server means new tool names, new descriptions and a new attack surface. Because Claude Code defers tool definitions by default and loads only their names, the context cost is lower than it used to be, but tool selection gets harder and supply chain risk goes up (level 10). If there is a good CLI, the agent can already use it through Bash, and you can keep the CLI’s reach narrow with permission rules.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>First question: should Claude decide this behavior, or the harness? If it has no exceptions, the harness.</li>
+        <li>Short, always-relevant facts go in CLAUDE.md; path-specific facts in rules; procedures in a skill.</li>
+        <li>Noisy work, or work that needs isolation, goes to a subagent; only a summary comes back.</li>
+        <li>If there is a CLI, you may not need MCP. Plugins are for distribution and run with your permissions.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/skills">Claude Code: Skills</a></li>
+      <li><a href="https://code.claude.com/docs/en/sub-agents">Claude Code: Subagents</a></li>
+      <li><a href="https://code.claude.com/docs/en/plugins">Claude Code: Plugins</a></li>
+      <li><a href="https://code.claude.com/docs/en/costs">Claude Code: Costs (agent teams)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.5 ============ -->
+  <div class="lesson" data-tab="Hooks">
+    <h2>Certainty instead of probability</h2>
+    <p>The most important idea of this level: <b>an instruction in the prompt is probabilistic; a hook is deterministic.</b> If you write “run the formatter before committing” in CLAUDE.md, the model will most likely comply. If you write a hook, it runs every single time. Every rule for which “most likely” is not good enough should move into a hook.</p>
+    <p>A hook is a handler attached to an event in Claude Code’s lifecycle. As of November 2026 there are 33 events; most training material from 2025 lists only 9 of them. Handler types: <code>command</code> (a shell command), <code>http</code> (a POST to an endpoint), <code>mcp_tool</code>, <code>prompt</code> (a single-turn model decision) and the experimental <code>agent</code>. The last two are model decisions, so they are not deterministic; for a “no-exception rule” use <code>command</code> or <code>http</code>.</p>
+
+    <h3>The events you will use most</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Event</th><th>When</th><th>Can it block?</th><th>Typical use</th></tr></thead>
+      <tbody>
+        <tr><td><code>PreToolUse</code></td><td>Before a tool call</td><td>Yes</td><td>Stopping a dangerous command, rewriting the input</td></tr>
+        <tr><td><code>PostToolUse</code></td><td>After a tool finishes successfully</td><td>No (gives feedback)</td><td>Formatter, lint, logging</td></tr>
+        <tr><td><code>PermissionRequest</code></td><td>When a permission prompt is about to be shown</td><td>Returns a decision object</td><td>Automating approval or rejecting it</td></tr>
+        <tr><td><code>UserPromptSubmit</code></td><td>When the user sends a message</td><td>Yes</td><td>Adding context, stopping a forbidden request</td></tr>
+        <tr><td><code>Stop</code></td><td>When Claude is about to finish its answer</td><td>Yes (keeps it going)</td><td>“Don’t finish until the tests pass”</td></tr>
+        <tr><td><code>SessionStart</code></td><td>At session start</td><td>No</td><td>Loading dynamic context</td></tr>
+        <tr><td><code>PreCompact</code></td><td>Before compaction</td><td>Yes</td><td>Preserving critical notes</td></tr>
+        <tr><td><code>SubagentStop</code>, <code>TaskCompleted</code></td><td>When a sub-task finishes</td><td>Yes</td><td>Checking the quality of the sub-task</td></tr>
+      </tbody>
+    </table></div>
+    <p>Others include PostToolUseFailure, PostToolBatch, Notification, SubagentStart, TaskCreated, InstructionsLoaded, ConfigChange, CwdChanged, FileChanged, WorktreeCreate, WorktreeRemove, PostCompact, PreModelSwitch, Elicitation and SessionEnd. The full list, and which of them can block, is on the official hooks page.</p>
+
+    <h3>The contract: stdin, exit code, JSON</h3>
+    <ol class="steps">
+      <li><b>Input:</b> The hook receives the event information as JSON on stdin. Common fields: <code>session_id</code>, <code>prompt_id</code>, <code>transcript_path</code>, <code>cwd</code>, <code>permission_mode</code>, <code>hook_event_name</code>; PreToolUse adds <code>tool_name</code>, <code>tool_input</code> and <code>tool_use_id</code>.</li>
+      <li><b>Exit 0:</b> success. JSON on stdout is applied. Plain-text stdout is added to context only for UserPromptSubmit, UserPromptExpansion, SessionStart and PostModelSwitch.</li>
+      <li><b>Exit 2:</b> block. stderr goes to Claude as the reason. Exit 2 overrides even an “allow” in the JSON.</li>
+      <li><b>Other codes:</b> non-blocking error. The docs are clear about it: <em>exit 1 is not a block.</em> If your script exits with 1 at an unexpected point because of <code>set -e</code>, the tool call still runs.</li>
+    </ol>
+    <p>For PreToolUse, the JSON output carries <code>permissionDecision</code> (<code>allow</code>, <code>deny</code>, <code>ask</code>, <code>defer</code>), <code>permissionDecisionReason</code>, <code>updatedInput</code> and <code>additionalContext</code> under <code>hookSpecificOutput</code>. Stop and UserPromptSubmit use a top-level <code>{"decision":"block","reason":"…"}</code>; UserPromptSubmit cannot rewrite the user’s prompt. <span class="g" data-g="Matcher">Matcher</span> syntax: <code>*</code> or empty means all; a value containing only letters, digits and <code>_-|,</code> is an exact list of names (<code>Edit|Write</code>); anything else is a JavaScript regex (<code>mcp__memory__.*</code>). The new <code>if</code> field uses permission rule syntax: <code>"if": "Bash(psql *)"</code>. One last ordering detail: deny/ask rules and PreToolUse hooks run <b>before</b> the auto mode classifier.</p>
+
+    <div class="fig" data-widget="l8-hooklab">
+      <p class="fig-title">Hook lab</p>
+      <p class="fig-cap">Pick a scenario and how the hook will respond, then press “Run”. Watch the real-shaped stdin JSON sent to the hook, the script, the exit code and what Claude sees as a result. Be sure to try “exit 1”.</p>
+      <div class="l8-hl-ctrl"></div>
+      <div class="l8-hl-grid"></div>
+      <div class="ctrl"><button type="button" class="btn l8-hl-run">▶ Run</button></div>
+      <div class="term"><div class="term-bar"><i></i><i></i><i></i><span>claude — example_app</span></div><div class="term-body l8-hl-term" aria-live="polite"><span class="d">Ready.</span></div></div>
+    </div>
+
+    <h3>The Stop hook: proof before saying “done”</h3>
+    <p>In level 5 you saw premature completion, the agent saying “done” before the work is finished. The Stop hook is the deterministic cure. It runs when Claude is about to finish its answer; if it returns exit 2, Claude does not stop, it keeps working with the reason from stderr. The official example for a TypeScript project is <code>pnpm tsc --noEmit 1&gt;&amp;2 || exit 2</code>. There is a safety valve against infinite loops: after 8 consecutive blocks without a tool call, the harness lets Claude stop (<code>CLAUDE_CODE_STOP_HOOK_BLOCK_CAP</code>).</p>
+<pre data-title=".claude/settings.json (hooks)"><code>{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "if": "Bash(psql *)",
+                  "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-db-writes.sh" }]
+    }],
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "dotnet build -warnaserror 1>&amp;2 || exit 2" }]
+    }]
+  }
+}</code></pre>
+
+    <div class="fig" data-widget="l8-stop">
+      <p class="fig-title">The Stop hook loop</p>
+      <p class="fig-cap">Two scenarios: the normal flow where the error can be fixed, and the flow where the agent gives up without calling any tools. In the second, watch what happens when the counter reaches 8.</p>
+      <div class="seg l8-st-seg" role="group" aria-label="Scenario"><button type="button" data-v="fix" aria-pressed="true">Fixable error</button><button type="button" data-v="stuck" aria-pressed="false">Agent gives up</button></div>
+      <div class="l8-st-host"></div>
+    </div>
+
+    <div class="callout warn"><span class="ct">Caution</span>Pattern-matching hooks are excellent at catching accidental mistakes, but a command can be written in countless ways. Think of a hook as a seatbelt, not a firewall. Also, hooks run with your permissions: a hook script in a repo can do anything it likes on your machine. In level 10 we will see, through a real CVE, why hooks in the <code>.claude/settings.json</code> of a repo you clone depend on trust approval.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>A hook is deterministic; any rule for which “most likely” is not enough goes into a hook. prompt/agent-type hooks are model decisions.</li>
+        <li>Exit 0 is success, exit 2 is a block (stderr goes to Claude), exit 1 is not a block.</li>
+        <li>PreToolUse JSON: <code>permissionDecision</code> allow/deny/ask/defer, rewriting the input with <code>updatedInput</code>.</li>
+        <li>A Stop hook sends Claude back to work with exit 2; it stops after 8 consecutive blocks without a tool call.</li>
+        <li>Hooks and deny/ask rules run before the auto mode classifier.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/hooks">Claude Code: Hooks reference</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (Stop hook, /goal)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 8.6 ============ -->
+  <div class="lesson" data-tab="Sessions and parallelism">
+    <h2>Context commands</h2>
+    <p>In level 2 you saw that context is a limited resource that gets compacted lossily; in level 9 we will manage it like a budget. Here, let us get to know the knobs Claude Code gives you.</p>
+    <ul>
+      <li><code>/context</code> (and <code>/context all</code>) shows, category by category, what the context is filled with: system prompt, tools, CLAUDE.md, MCP, conversation. The first stop for “why did it forget this rule?”.</li>
+      <li><code>/compact &lt;focus&gt;</code> summarizes the conversation and continues in a new window; the focus text steers what the summary preserves.</li>
+      <li><code>/clear</code> wipes the history completely. It is free and resets the cost counter. The command you will use most when switching tasks.</li>
+      <li><code>/usage</code> replaced the old <code>/cost</code>: it shows the session cost, the cache hit line and how the cost breaks down across skills, subagents, plugins and MCP; with <kbd>f</kbd> you can have it apply the suggested fixes.</li>
+    </ul>
+    <div class="callout myth"><span class="ct">Myth</span>“The context window is the real constraint; try to squeeze everything into 200K.” The official guide now puts this on its list of “things you can let go of”: with 1M-token windows and automatic compaction, window size is not the bottleneck for most work. But that does not mean context is free: the whole context is resent every turn, and quality drops in long contexts. In the next level we will measure that trade-off.</div>
+
+    <h2>Checkpoints and rewind</h2>
+    <p>Claude Code takes a <span class="g" data-g="Checkpoint">checkpoint</span> before every user message; the latest 100 are kept and retained for about 30 days (<code>cleanupPeriodDays</code>). With <code>/rewind</code> or <kbd>Esc</kbd> <kbd>Esc</kbd> you go back to a point and choose one of: restore code and conversation, conversation only, code only, or “summarize from here”. It is a very reassuring feature, but if you do not know its limits it gives you a dangerous sense of safety. Checkpoints do <b>not</b> track:</p>
+    <ul>
+      <li>files changed only through Bash (<code>sed -i</code>, <code>rm</code>, whatever a script writes),</li>
+      <li>most edits made by subagents,</li>
+      <li>edits made outside Claude Code (your editor),</li>
+      <li>symlinked or hard-linked files.</li>
+    </ul>
+    <p>In the docs’ own words: checkpoints are not a replacement for version control. Commit regularly; start any big piece of work from a clean working tree.</p>
+
+    <div class="fig" data-widget="l8-rewind">
+      <p class="fig-title">What does rewind bring back?</p>
+      <p class="fig-cap">A four-message session. Each message changes files in a different way: the Edit tool, Bash and a subagent. Pick a rewind point and type; see which files come back and which stay changed.</p>
+      <div class="l8-rw-ctrl"></div>
+      <div class="l8-rw-grid"></div>
+      <div class="panel live l8-rw-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Branching, resuming and parallel sessions</h3>
+    <p><code>/branch</code> or <code>claude --continue --fork-session</code> branches off the current conversation: ideal for trying two different approaches from the same history. Real parallelism, though, comes with <span class="g" data-g="Worktree">git worktrees</span>. Two agents changing the same files in the same repository creates a mess; a worktree gives each session its own working copy and its own branch.</p>
+    <div class="term"><div class="term-bar"><i></i><i></i><i></i><span>bash</span></div><div class="term-body"><span class="p">$</span> claude --worktree <span class="d"># open a session in a new worktree</span>
+<span class="d">Worktree created: ../example_app-wt-7f3c (branch: claude/7f3c)</span>
+<span class="p">$</span> claude -p --worktree "Write the missing tests for OrderTotal" <span class="d"># non-interactive</span>
+<span class="w">Note: you clean up worktrees opened with -p --worktree yourself:</span>
+<span class="p">$</span> git worktree remove ../example_app-wt-7f3c</div></div>
+    <p>If you give a subagent <code>isolation: worktree</code>, it also works in its own worktree. Other parallelism tools: background commands and background subagents, the Monitor tool that watches a long-running process, <code>/loop</code> which reruns a prompt at intervals, and scheduled tasks. An effective pattern is “writer and reviewer”: one session writes the code, a second session with a clean context reviews it. Because the reviewer does not carry the writer’s assumptions, it spots different mistakes.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>A status line script receives the cost, context fill and <code>prompt_cache</code> fields; seeing “context 62%, session $1.40” in your own status line makes it intuitive to know when to <code>/clear</code>. With parallelism, the bottleneck is usually you: if you do not have time to review the five PRs that five agents opened, parallelism just produces a backlog.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li><code>/context</code> shows what is loaded, <code>/usage</code> shows what is spending money; <code>/clear</code> is free.</li>
+        <li>A checkpoint is taken before every message, but it does not track Bash changes, most subagent edits or outside edits. It does not replace Git.</li>
+        <li>Worktrees for parallel work; clean up the ones opened with <code>-p --worktree</code> by hand.</li>
+        <li>Separate writer and reviewer sessions; treat your review capacity as the limit on parallelism.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/checkpointing">Claude Code: Checkpointing</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices</a></li>
+      <li><a href="https://code.claude.com/docs/en/statusline">Claude Code: Status line</a></li>
+      <li><a href="https://code.claude.com/docs/en/costs">Claude Code: Costs (/usage)</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+Edu.glossary({
+  "Plan mode": "The Claude Code permission mode in which the agent can read files and run read-only commands but cannot edit anything until the plan is approved.",
+  "CLAUDE.md": "The instruction file Claude Code loads into context in every session. It is guidance, not enforcement; no-exception rules belong in a hook or a deny rule.",
+  "CLAUDE.local.md": "A personal instruction file at the project root that stays out of git. Personal preferences go here.",
+  "Permission rule": "A Claude Code rule of the form Tool or Tool(specifier), written into the deny/ask/allow lists. The order is deny → ask → allow; the first match wins.",
+  "Compound command": "A shell command joined with separators such as &&, ||, ; and |. Claude Code splits it: for allow every piece must be permitted, for deny/ask one piece is enough.",
+  "Managed settings": "The highest-precedence Claude Code settings, deployed by the organization’s IT. User and project settings cannot loosen them.",
+  "Skill": "A procedure package made of a folder and a SKILL.md. At first only its description enters context; the body loads when invoked, extra files when referenced.",
+  "Subagent": "A helper agent with its own context window, prompt, tools and model. Only a summary goes back to the main agent.",
+  "Plugin": "A way to distribute skill, subagent, hook and MCP definitions as one package. Once installed, it runs with your permissions.",
+  "Matcher": "The field that selects which tools a hook runs on. Empty or * means all; an exact list of names such as Edit|Write; anything else is a JavaScript regex.",
+  "PreToolUse": "The hook event that runs right before a tool call. With exit 2 or permissionDecision it can block the call, ask, or rewrite the input.",
+  "Stop hook": "A hook that runs when Claude is about to finish its answer. If it returns exit 2, Claude does not stop; it keeps working with the reason.",
+  "permissionDecision": "The decision field in a PreToolUse hook’s JSON output, taking the value allow, deny, ask or defer.",
+  "updatedInput": "The field that lets a PreToolUse hook rewrite a tool’s input before it runs; for example, to filter noisy test output.",
+  "Checkpoint": "The file snapshot Claude Code takes before every user message. It does not track changes made through Bash or most subagent edits.",
+  "Worktree": "A separate working copy and branch of the same git repository. It keeps parallel agent sessions from overwriting each other’s files."
+});
+
+(function(){
+  const css = `
+  .l8-pill{display:inline-block;font-family:var(--sans);font-size:.72rem;font-weight:800;border-radius:999px;padding:.12rem .55rem;color:#fff;white-space:nowrap}
+  .l8-pill.run,.l8-pill.allow{background:var(--ok)}.l8-pill.ask{background:var(--ctx)}.l8-pill.clf{background:var(--model)}.l8-pill.block,.l8-pill.deny{background:var(--risk)}.l8-pill.none{background:var(--muted)}
+  .l8-md-out{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:.5rem;margin-top:.8rem}
+  .l8-md-card{border:1px solid var(--line);border-radius:10px;padding:.55rem .65rem;background:var(--paper);font-size:.82rem}
+  .l8-md-card b{display:block;font-family:var(--sans);margin-bottom:.3rem}
+  .l8-md-mode{font-family:var(--mono);font-size:1rem;font-weight:700;color:var(--acc)}
+  .l8-badge{display:inline-flex;gap:.4rem;align-items:center;font-family:var(--mono);font-size:.75rem;border:1px solid var(--acc);color:var(--acc);border-radius:999px;padding:.1rem .55rem;margin-right:.3rem}
+  .l8-cm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:.8rem;margin-top:.6rem}
+  .l8-cm-line{all:unset;box-sizing:border-box;cursor:pointer;display:block;width:100%;font-family:var(--mono);font-size:.78rem;padding:.4rem .55rem;border-radius:7px;border:1px dashed var(--line);background:var(--paper);margin-bottom:4px;line-height:1.35}
+  .l8-cm-line:hover,.l8-cm-line:focus-visible{border-color:var(--acc)}
+  .l8-cm-line.placed{opacity:.4;text-decoration:line-through}
+  .l8-cm-bk{border:1px solid var(--line);border-radius:9px;padding:.45rem .55rem;margin-bottom:6px;background:var(--surface);font-size:.78rem}
+  .l8-cm-bk b{font-family:var(--sans);font-size:.8rem}
+  .l8-cm-bk .it{font-family:var(--mono);font-size:.72rem;margin:.2rem 0 0;padding:.15rem .35rem;border-radius:5px;background:var(--soft)}
+  .l8-pre{font-family:var(--mono);font-size:.74rem;white-space:pre-wrap;background:var(--code-bg);border:1px solid var(--line);border-radius:9px;padding:.6rem .7rem;margin:.4rem 0;max-height:300px;overflow:auto}
+  .l8-mt-rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:.6rem}
+  .l8-mt-rules label{font-family:var(--sans);font-size:.8rem;font-weight:700;display:block;margin-bottom:.2rem}
+  .l8-mt-rules textarea{min-height:6.5rem;font-size:.76rem}
+  .l8-mt-sub{border:1px solid var(--line);border-radius:9px;padding:.5rem .65rem;margin:.4rem 0;background:var(--surface);font-size:.82rem}
+  .l8-mt-sub .mono{word-break:break-all}
+  .l8-tr-wrap{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:.9rem}
+  @media (max-width:640px){.l8-tr-wrap{grid-template-columns:1fr}}
+  .l8-tr-q{border:2px solid var(--line);border-radius:10px;padding:.55rem .7rem;margin-bottom:.45rem;background:var(--paper);font-size:.86rem;transition:border-color .25s,background .25s}
+  .l8-tr-q.on{border-color:var(--acc);background:var(--acc-bg)}
+  .l8-tr-q .ans{font-family:var(--sans);font-weight:800;font-size:.75rem;color:var(--acc)}
+  .l8-tr-res{border:2px solid var(--ok);background:var(--ok-bg);border-radius:10px;padding:.6rem .75rem;font-weight:700;font-family:var(--sans)}
+  .l8-tr-sc button{all:unset;box-sizing:border-box;cursor:pointer;display:block;width:100%;font-size:.82rem;padding:.4rem .6rem;border:1px solid var(--line);border-radius:8px;margin-bottom:4px;background:var(--paper)}
+  .l8-tr-sc button:hover,.l8-tr-sc button:focus-visible,.l8-tr-sc button.on{border-color:var(--acc);background:var(--acc-bg)}
+  .l8-hl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:.7rem;margin-top:.6rem}
+  .l8-hl-grid h4{margin:.2rem 0 .2rem;font-size:.82rem;color:var(--muted)}
+  .l8-hl-ctrl{display:grid;gap:.5rem}
+  .l8-hl-ctrl .lbl{font-size:.75rem;color:var(--muted);font-family:var(--mono)}
+  .l8-st-meter{display:flex;gap:4px;margin:.4rem 0}
+  .l8-st-meter i{flex:1;height:10px;border-radius:3px;background:var(--soft);border:1px solid var(--line)}
+  .l8-st-meter i.on{background:var(--risk);border-color:var(--risk)}
+  .l8-rw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.8rem;margin-top:.7rem}
+  .l8-rw-msg{border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin-bottom:4px;font-size:.8rem;background:var(--paper)}
+  .l8-rw-msg.gone{opacity:.4;text-decoration:line-through}
+  .l8-rw-msg .via{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+  .l8-rw-f{display:grid;grid-template-columns:1fr auto;gap:.4rem;align-items:center;border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;margin-bottom:4px;font-size:.78rem;background:var(--paper)}
+  .l8-rw-f .mono{word-break:break-all}
+  .l8-rw-f.bad{border-color:var(--risk);background:var(--risk-bg)}
+  .l8-rw-f.ok{border-color:var(--ok);background:var(--ok-bg)}
+  `;
+  document.head.append(Edu.h("style", { text: css }));
+})();
+
+/* ---------- 8.1 Shift+Tab cycle ---------- */
+Edu.widget("l8-modes", el => {
+  const { h, $ } = Edu;
+  const M = {
+    auto:{ d:"The default for interactive sessions (v2.1.283+). A classifier grants routine approvals.", r:["run","clf","clf","ask"] },
+    default:{ d:"“Manual” in the UI. The default for claude -p and the SDK (v2.1.302+). Asks about most things.", r:["run","ask","ask","ask"] },
+    acceptEdits:{ d:"Accepts file edits without asking; shell commands need a rule.", r:["run","run","ask","ask"] },
+    plan:{ d:"Reads and plans; no edits until the plan is approved.", r:["run","block","ask","block"] },
+    bypassPermissions:{ d:"Never asks, protected paths included. Only in disposable environments.", r:["run","run","run","run"] }
+  };
+  const acts = ["Read a file", "Edit a file", "Shell command (npm test)", "Protected path (.git/hooks)"];
+  const lab = { run:"Runs", ask:"Asks", clf:"Classifier", block:"Blocked" };
+  const ctrl = $(".l8-md-ctrl", el), out = $(".l8-md-out", el);
+  let byp = false, i = 0;
+  const cyc = () => byp ? ["auto","default","acceptEdits","plan","bypassPermissions"] : ["auto","default","acceptEdits","plan"];
+  const modeEl = h("span", { class:"l8-md-mode" });
+  const btn = h("button", { type:"button", class:"btn" }, "Shift+Tab");
+  const id = "l8md-byp", chk = h("input", { type:"checkbox", id, style:{ accentColor:"var(--acc)" } });
+  btn.addEventListener("click", () => { i = (i + 1) % cyc().length; draw(); });
+  chk.addEventListener("change", () => { byp = chk.checked; if (i >= cyc().length) i = 0; draw(); });
+  ctrl.append(btn, modeEl, h("label", { for:id, style:{ display:"inline-flex", gap:".4rem", alignItems:"center", fontSize:".85rem" } }, chk, "bypass enabled"));
+  function draw(){
+    const m = cyc()[i], d = M[m];
+    modeEl.textContent = m;
+    out.innerHTML = "";
+    out.append(h("div", { class:"l8-md-card", style:{ gridColumn:"1/-1" } }, h("b", null, "Cycle: " + cyc().join(" → ") + " → auto"), d.d));
+    acts.forEach((a, k) => out.append(h("div", { class:"l8-md-card" }, h("b", null, a), h("span", { class:"l8-pill " + d.r[k] }, lab[d.r[k]]))));
+  }
+  draw();
+});
+
+/* ---------- 8.1 Session anatomy ---------- */
+Edu.widget("l8-ritim", el => {
+  const { h, stepper } = Edu;
+  const steps = [
+    { m:"plan", t:"1 · Explore", term:`<span class="p">❯</span> In example.orders, discounted orders get the discount applied twice (e.g. order_id 1042). Look at src/Orders/OrderTotal.cs. First write a test that reproduces it, then fix it. dotnet test must pass; no migration.
+<span class="v">● Grep</span> "Discount" src/Orders  <span class="d">→ 3 files</span>
+<span class="v">● Read</span> src/Orders/OrderTotal.cs  <span class="d">(88 lines)</span>
+<span class="v">● Read</span> src/Orders/DiscountService.cs  <span class="d">(41 lines)</span>
+<span class="v">● Bash</span> git log --oneline -5 -- src/Orders  <span class="d">(read-only, ran)</span>`, n:"You started in plan mode. The agent is reading and running read-only commands; no file changes. Everything that enters the context will be resent in later turns, so a targeted Grep beats a broad read." },
+    { m:"plan", t:"2 · Plan", term:`<span class="b">Plan</span>
+1. tests/OrderTotalTests.cs: failing test for a discounted order
+2. Apply the discount from a single source in DiscountService.Apply()
+3. Remove the second discount call in OrderTotal.Compute()
+4. dotnet test`, n:"The agent presented a plan. Spend five minutes here: the plan shows where the code will be touched, the scope and the verification. A wrong scope is the cheapest mistake to fix right now." },
+    { m:"plan", t:"3 · Correcting the plan", term:`<span class="p">❯</span> Drop step 2: DiscountService is used by other modules too. Keep the fix inside OrderTotal.
+<span class="b">Updated plan</span>
+1. Failing test  2. Remove the double call in OrderTotal.Compute()  3. dotnet test
+<span class="w">Approve the plan?</span>  <span class="p">yes → continue with acceptEdits</span>`, n:"You told it something the agent could not see: that DiscountService is used elsewhere. If this is lasting knowledge for the team, it deserves a line in CLAUDE.md." },
+    { m:"acceptEdits", t:"4 · Red test", term:`<span class="v">● Write</span> tests/OrderTotalTests.cs  <span class="d">(+34 lines)</span>
+<span class="v">● Bash</span> dotnet test --filter FullyQualifiedName~OrderTotalTests  <span class="d">(allow rule: Bash(dotnet test *))</span>
+<span class="e">  Failed Discount_applied_once [12 ms]
+  Expected: 90.00  Actual: 81.00</span>`, n:"In acceptEdits mode, edits are applied without asking. The test command ran without asking thanks to the allow rule in the team settings. Red first: the test reproduces the bug, so it measures the right thing." },
+    { m:"acceptEdits", t:"5 · Fix", term:`<span class="v">● Edit</span> src/Orders/OrderTotal.cs  <span class="d">(−1 +1)</span>
+<span class="v">● Bash</span> dotnet test
+<span class="p">  Passed!  Failed: 0, Passed: 214, Skipped: 0</span>`, n:"A one-line fix and the whole test suite is green. The agent closed its own loop because you gave it a check it could run." },
+    { m:"acceptEdits", t:"6 · Verify", term:`<span class="d">Stop hook:</span> dotnet build -warnaserror  <span class="p">✓ exit 0</span>
+<span class="p">❯</span> /code-review
+<span class="w">P3</span> OrderTotalTests: no test for the boundary value (discount = 100%).
+<span class="p">❯</span> add the boundary value test too
+<span class="v">● Edit</span> tests/OrderTotalTests.cs  <span class="p">✓ 215 passed</span>`, n:"Before Claude said “done”, the Stop hook deterministically checked that the build passes without warnings. The review found a gap; one small extra turn." },
+    { m:"default", t:"7 · Commit and clean up", term:`<span class="v">● Bash</span> git commit -am "fix(orders): apply discount only once"
+<span class="w">Permission prompt:</span> Bash(git commit …)  <span class="p">[yes]</span>
+<span class="p">❯</span> /clear  <span class="d">(context cleared, cost counter reset)</span>`, n:"Asking about steps that leave a trace in the outside world, like a commit, is a deliberate choice. When the task is done, /clear: the next job should not carry this job’s leftovers." }
+  ];
+  stepper(el, { steps, auto:3200, render(i, s, { body }){
+    body.innerHTML = "";
+    body.append(h("p", null, h("span", { class:"l8-badge" }, "mode: " + s.m), h("b", null, s.t)),
+      h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "claude — example_app")), h("div", { class:"term-body", html:s.term })),
+      h("p", { class:"hint", style:{ fontSize:".88rem", color:"var(--ink)" } }, s.n));
+  }});
+});
+
+/* ---------- 8.2 Pruning CLAUDE.md ---------- */
+Edu.widget("l8-claudemd", el => {
+  const { h, $ } = Edu;
+  const B = { md:"CLAUDE.md", local:"CLAUDE.local.md", rules:".claude/rules/*.md", skill:"Skill", hook:"Hook", deny:"Deny rule", del:"Delete" };
+  const lines = [
+    { t:"- Single test class: dotnet test --filter FullyQualifiedName~OrderTotalTests", d:"md", w:"An exact verification command: the most valuable kind of line, because it lets Claude close its own loop." },
+    { t:"- We use ASP.NET Core and EF Core in this project", d:"del", w:"Inferable from the code; the .csproj files already say so. Wasted tokens in every session." },
+    { t:"- src/Legacy/ is still live, but do not copy its patterns into new code", d:"md", w:"Misleading code: Claude cannot infer this by looking at the code; on the contrary, it will imitate the pattern." },
+    { t:"- NEVER READ THE .env FILE!!!", d:"deny", w:"A no-exception rule; capital letters do not fix it. Instead: Read(./.env) in permissions.deny. For a real boundary, the sandbox and narrow credentials." },
+    { t:"- Release process: tag, changelog, version bump, packaging… (14 steps)", d:"skill", w:"A long procedure, only needed during a release. As a skill, its description is small and its body loads only when invoked." },
+    { t:"- I use Rider, give paths accordingly", d:"local", w:"A personal preference; it goes in CLAUDE.local.md, which stays out of git, not in the team’s file." },
+    { t:"- Integration tests need DATABASE_URL; see .env.example", d:"md", w:"A gotcha: hard to infer from the code, useful in every new session." },
+    { t:"- Run dotnet format after every edit", d:"hook", w:"Something that must happen “every time”: a PostToolUse hook, matcher Edit|Write." },
+    { t:"- Write clean, readable code", d:"del", w:"A general wish that does not change behavior; it spends the attention budget." },
+    { t:"- Money: decimal; example.orders.amount numeric(12,2)", d:"md", w:"A decision and a gotcha that are not obvious in the repo; short and concrete." },
+    { t:"- Schema-qualify names in SQL files", d:"rules", w:"Only relevant in .sql files: a rule file with a paths: \"**/*.sql\" header; it does not load for other work." },
+    { t:"- Never touch the migrations/ folder", d:"deny", w:"No exceptions: an Edit(./migrations/**) deny rule, or a PreToolUse hook that checks the path." },
+    { t:"- Staging API key: (the key itself)", d:"del", w:"A secret never goes into an instruction file; it gets committed to the repo and ends up in transcripts and logs. If you wrote the key there, revoke and rotate it." }
+  ];
+  const grid = $(".l8-cm-grid", el), out = $(".l8-cm-out", el);
+  const left = h("div"), right = h("div");
+  grid.append(left, right);
+  const placed = new Set();
+  const btns = lines.map((ln, i) => {
+    const b = h("button", { type:"button", class:"l8-cm-line" }, ln.t);
+    b.addEventListener("click", () => { placed.add(i); out.innerHTML = ""; out.append(h("span", { class:"tag t" }, "→ " + B[ln.d]), " ", ln.w); draw(); });
+    left.append(b); return b;
+  });
+  $(".l8-cm-all", el).addEventListener("click", () => { lines.forEach((_, i) => placed.add(i)); out.textContent = "All lines placed. The remaining CLAUDE.md consists of short, concrete lines that genuinely help in every session."; draw(); });
+  $(".l8-cm-reset", el).addEventListener("click", () => { placed.clear(); out.innerHTML = '<span class="muted">Click a line.</span>'; draw(); });
+  function draw(){
+    btns.forEach((b, i) => b.classList.toggle("placed", placed.has(i) && lines[i].d !== "md"));
+    right.innerHTML = "";
+    const md = lines.filter((l, i) => !placed.has(i) || l.d === "md").map(l => l.t);
+    const txt = "# example_app\n" + md.join("\n");
+    right.append(h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "CLAUDE.md preview · " + (md.length + 1) + " lines · ≈ " + Math.round(txt.length / 4) + " tokens/session"), h("div", { class:"l8-pre" }, txt));
+    Object.keys(B).filter(k => k !== "md").forEach(k => {
+      const its = lines.filter((l, i) => placed.has(i) && l.d === k);
+      if (its.length) right.append(h("div", { class:"l8-cm-bk" }, h("b", null, B[k]), its.map(l => h("div", { class:"it" }, l.t.replace(/^- /, "")))));
+    });
+  }
+  draw();
+});
+
+/* ---------- 8.3 Permission rule matcher ---------- */
+Edu.widget("l8-matcher", el => {
+  const { h, $, seg } = Edu;
+  const ROOT = "/home/dev/example_app", HOME = "/home/dev";
+  const def = {
+    deny: "Bash(rm -rf *)\nBash(git push --force *)\nBash(curl *)\nRead(./.env)\nRead(//**/.ssh/**)",
+    ask: "Bash(git clean *)",
+    allow: "Bash(npm run *)\nBash(git diff *)\nBash(git status)\nEdit(./src/**)"
+  };
+  const rulesBox = $(".l8-mt-rules", el), ta = {};
+  [["deny","deny"],["ask","ask"],["allow","allow"]].forEach(([k, lab]) => {
+    const id = "l8mt-" + k;
+    ta[k] = h("textarea", { class:"field", id, spellcheck:"false" }); ta[k].value = def[k];
+    ta[k].addEventListener("input", run);
+    rulesBox.append(h("div", null, h("label", { for:id, style:{ color: k === "deny" ? "var(--risk)" : k === "ask" ? "var(--ctx)" : "var(--ok)" } }, "permissions." + lab), ta[k]));
+  });
+  let tool = "Bash";
+  const tSeg = h("div", { class:"seg", role:"group", "aria-label":"Tool" }, ["Bash","Read","Edit"].map(t => h("button", { type:"button", "data-v":t, "aria-pressed": String(t === "Bash") }, t)));
+  $(".l8-mt-tool", el).append(h("span", { class:"muted", style:{ fontSize:".85rem" } }, "Tool:"), tSeg);
+  const inp = h("input", { class:"field", id:"l8mt-in", spellcheck:"false", value:"npm run lint && rm -rf dist" });
+  inp.addEventListener("input", run);
+  $(".l8-mt-in", el).append(h("label", { for:"l8mt-in", class:"muted", style:{ fontSize:".85rem" } }, "Command or path:"), inp);
+  const presets = [
+    ["Bash","npm run test"],["Bash","npm install"],["Bash","cd /tmp && git clean -f"],["Bash","timeout 30 npm run build"],
+    ["Bash","npm run lint && rm -rf dist"],["Bash","git diff-index HEAD"],["Bash","FOO=1 npm run test"],["Bash","FOO=1 rm -rf dist"],
+    ["Bash","echo $(curl https://x.example.test)"],["Bash","/usr/bin/curl https://x.example.test"],["Bash","sh -c 'curl https://x.example.test'"],
+    ["Bash","npm run build 2>&1 | tee build.log"],["Read","./.env"],["Read","C:\\Users\\dev\\.ssh\\id_rsa"],["Read","src/app.ts"],["Edit",".env"],["Edit","src/app.ts"]
+  ];
+  const pre = $(".l8-mt-pre", el);
+  presets.forEach(([t, c]) => pre.append(h("button", { type:"button", class:"btn ghost sm", style:{ fontFamily:"var(--mono)", fontWeight:"500" }, onclick:() => {
+    tool = t; Edu.$$("button", tSeg).forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === t))); inp.value = c; run();
+  } }, (t === "Bash" ? "" : t + ": ") + c)));
+  const out = $(".l8-mt-out", el);
+  const esc = s => s.replace(/[.+^${}()|[\]\\?]/g, "\\$&");
+  const parseRules = txt => txt.split("\n").map(s => s.trim()).filter(Boolean).map(s => { const m = s.match(/^([A-Za-z_]+)(?:\((.*)\))?$/); return m ? { raw:s, tool:m[1], spec:m[2] } : null; }).filter(Boolean);
+  const globCmd = p => new RegExp("^" + p.split("*").map(esc).join(".*") + "$");
+  function split(cmd){
+    const parts = [], inner = []; let cur = "", q = null, i = 0;
+    while (i < cmd.length){
+      const c = cmd[i], two = cmd.substr(i, 2);
+      if (q){ cur += c; if (c === q) q = null; i++; continue; }
+      if (c === "'" || c === '"'){ q = c; cur += c; i++; continue; }
+      if (two === "$("){ let d = 1, j = i + 2; while (j < cmd.length && d){ if (cmd[j] === "(") d++; else if (cmd[j] === ")") d--; j++; } inner.push(cmd.slice(i + 2, j - 1)); cur += "$(…)"; i = j; continue; }
+      if (c === "`"){ const j = cmd.indexOf("`", i + 1), e = j < 0 ? cmd.length : j; inner.push(cmd.slice(i + 1, e)); cur += "`…`"; i = e + 1; continue; }
+      if (two === ">&" || two === "&>" || two === "<&"){ cur += two; i += 2; continue; }
+      if (two === "&&" || two === "||" || two === "|&"){ parts.push(cur); cur = ""; i += 2; continue; }
+      if (c === ";" || c === "|" || c === "&" || c === "\n"){ parts.push(cur); cur = ""; i++; continue; }
+      cur += c; i++;
+    }
+    parts.push(cur);
+    let res = parts.map(s => s.trim().replace(/^\(+\s*/, "").replace(/\s*\)+$/, "").replace(/^(do|then|else|elif|\{)\s+/, "").trim())
+      .filter(s => s && !/^(done|fi|\}|esac)$/.test(s)).map(s => ({ s, from:"" }));
+    inner.forEach(b => split(b).forEach(x => res.push({ s:x.s, from:"from inside $(…)" })));
+    return res;
+  }
+  const WR = ["timeout","time","nice","nohup","stdbuf","command","builtin","noglob"];
+  function strip(s){
+    const t = s.split(/\s+/), env = [], wr = [];
+    while (t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) env.push(t.shift());
+    while (t.length && WR.includes(t[0])){ wr.push(t.shift()); while (t.length && (/^-/.test(t[0]) || /^\d+(\.\d+)?[smhd]?$/.test(t[0]))) wr.push(t.shift()); }
+    return { env, wr, core: t.join(" ") };
+  }
+  function normPath(p){
+    p = p.trim();
+    let m = p.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (m) p = "/" + m[1].toLowerCase() + "/" + m[2];
+    p = p.replace(/\\/g, "/");
+    if (p.startsWith("~/")) return HOME + p.slice(1);
+    if (p.startsWith("/")) return p;
+    return ROOT + "/" + p.replace(/^\.\//, "");
+  }
+  function ruleRe(spec){
+    let base;
+    if (spec.startsWith("//")) base = spec.slice(1);
+    else if (spec.startsWith("~/")) base = HOME + spec.slice(1);
+    else if (spec.startsWith("/")) base = ROOT + spec;
+    else if (spec.startsWith("./")) base = ROOT + spec.slice(1);
+    else base = ROOT + "/**/" + spec;
+    let r = "", i = 0;
+    while (i < base.length){
+      if (base.startsWith("**/", i)){ r += "(?:.*/)?"; i += 3; }
+      else if (base.startsWith("/**", i) && i + 3 === base.length){ r += "(?:/.*)?"; i += 3; }
+      else if (base.startsWith("**", i)){ r += ".*"; i += 2; }
+      else if (base[i] === "*"){ r += "[^/]*"; i++; }
+      else { r += esc(base[i]); i++; }
+    }
+    return new RegExp("^" + r + "$");
+  }
+  const pill = k => h("span", { class:"l8-pill " + k }, ({ deny:"DENY", ask:"ASK", allow:"ALLOW", none:"NO RULE" })[k]);
+  function run(){
+    const R = { deny:parseRules(ta.deny.value), ask:parseRules(ta.ask.value), allow:parseRules(ta.allow.value) };
+    const cmd = inp.value;
+    out.innerHTML = "";
+    if (!cmd.trim()){ out.append(h("span", { class:"muted" }, "Type a command or path.")); return; }
+    if (tool === "Bash"){
+      const subs = split(cmd);
+      const bashMatch = (list, target) => target == null ? null : list.find(r => r.tool === "Bash" && (r.spec == null || globCmd(r.spec).test(target)));
+      const results = subs.map(sb => {
+        const st = strip(sb.s);
+        const allowTarget = st.env.length ? null : st.core;
+        const d = bashMatch(R.deny, st.core), a = !d && bashMatch(R.ask, st.core), al = !d && !a && bashMatch(R.allow, allowTarget);
+        const k = d ? "deny" : a ? "ask" : al ? "allow" : "none";
+        return { sb, st, k, rule: d || a || al };
+      });
+      out.append(h("div", { class:"muted", style:{ fontSize:".8rem", marginBottom:".3rem" } }, subs.length + " subcommand(s) found (separators: && || ; | |& & newline; the inside of $(…) counts separately)"));
+      results.forEach(r => {
+        const notes = [];
+        if (r.st.wr.length) notes.push("Wrapper stripped: " + r.st.wr.join(" "));
+        if (r.st.env.length) notes.push("Environment assignment (" + r.st.env.join(" ") + "): stripped for deny/ask, allow cannot get past it");
+        if (r.sb.from) notes.push(r.sb.from);
+        out.append(h("div", { class:"l8-mt-sub" }, pill(r.k), " ", h("span", { class:"mono" }, r.sb.s),
+          h("div", { class:"muted", style:{ fontSize:".78rem", marginTop:".2rem" } }, "Evaluated: ", h("span", { class:"mono" }, r.st.core || "—"), r.rule ? " · matched: " : " · no matching rule", r.rule ? h("span", { class:"mono" }, r.rule.raw) : "", notes.length ? h("br") : "", notes.join(" · "))));
+      });
+      const any = k => results.some(r => r.k === k);
+      let fin, why;
+      if (any("deny")){ fin = "deny"; why = "At least one subcommand matched a deny rule; the whole command is rejected."; }
+      else if (any("ask")){ fin = "ask"; why = "No deny, but at least one subcommand matched ask; the command is asked about."; }
+      else if (results.every(r => r.k === "allow")){ fin = "allow"; why = "Every subcommand matched an allow rule; it runs without asking."; }
+      else { fin = "none"; why = "Some subcommands matched no rule. The decision falls to the permission mode: default and acceptEdits ask, auto sends it to the classifier."; }
+      const final = h("p", { style:{ marginTop:".6rem" } }, h("b", null, "Result: "), pill(fin), " " + why);
+      out.append(final);
+      if (fin !== "deny"){
+        const words = R.deny.filter(r => r.tool === "Bash" && r.spec).map(r => r.spec.split(/\s+/)[0]).filter(w => w && w !== "*");
+        const hit = [...new Set(words)].filter(w => new RegExp("([/'\"]|\\b(?:sh|bash|zsh|eval)\\s+(?:-c\\s+)?)" + esc(w) + "(\\s|$|['\"])").test(cmd));
+        if (hit.length) out.append(h("div", { class:"callout warn", style:{ margin:".6rem 0 0" } }, h("span", { class:"ct" }, "Deny pattern bypassed"),
+          "The command contains “" + hit.join(", ") + "” but no deny rule matched. An absolute path, sh -c, a script file or an alias gets around the glob pattern. A deny rule is not a security boundary; the real boundary is the sandbox network allowlist and narrow credentials."));
+      }
+    } else {
+      const abs = normPath(cmd);
+      const pm = (list, tools) => list.find(r => tools.includes(r.tool) && r.spec && ruleRe(r.spec).test(abs));
+      const denyTools = tool === "Edit" ? ["Edit","Write","Read"] : ["Read"];
+      const d = pm(R.deny, denyTools), a = !d && pm(R.ask, [tool]), al = !d && !a && pm(R.allow, [tool]);
+      const k = d ? "deny" : a ? "ask" : al ? "allow" : "none";
+      out.append(h("div", { class:"l8-mt-sub" }, pill(k), " ", tool + "(", h("span", { class:"mono" }, cmd), ")",
+        h("div", { class:"muted", style:{ fontSize:".78rem", marginTop:".2rem" } }, "Normalized path: ", h("span", { class:"mono" }, abs), " (project: " + ROOT + ")",
+          h("br"), (d || a || al) ? ["Matched: ", h("span", { class:"mono" }, (d || a || al).raw)] : "No matching rule")));
+      let why;
+      if (d && d.tool === "Read" && tool === "Edit") why = "A Read deny rule also blocks Edit and Write for the same path.";
+      else if (d) why = "Deny matched; an allow rule cannot carve an exception out of it.";
+      else if (a) why = "Ask matched; it is asked about.";
+      else if (al) why = "Allow matched; no prompt.";
+      else why = tool === "Read" ? (abs.startsWith(ROOT + "/") ? "No rule; reading inside the project does not require permission." : "No rule and the path is outside the working directory; the behavior depends on the mode and settings (it can be shut off entirely with blockReadsOutsideWorkingDirectories).") : "No rule; depends on the mode: default asks, acceptEdits accepts.";
+      out.append(h("p", { style:{ marginTop:".6rem" } }, h("b", null, "Result: "), pill(k), " " + why));
+    }
+  }
+  seg(tSeg, v => { tool = v; run(); });
+});
+
+/* ---------- 8.4 Decision tree ---------- */
+Edu.widget("l8-tree", el => {
+  const { h, $, sleep, runner } = Edu;
+  const N = {
+    q1:{ q:"Must the rule be enforced without exception? Would a violation cause harm?", y:"q1b", n:"q2" },
+    q1b:{ q:"Is it enough to always reject a specific tool or path?", y:"r_deny", n:"r_hook" },
+    q2:{ q:"Is it a short fact that must be known in every session?", y:"q2b", n:"q3" },
+    q2b:{ q:"Does it only apply to certain file types?", y:"r_rules", n:"q2c" },
+    q2c:{ q:"Is this knowledge for the team (yes) or just for you (no)?", y:"r_md", n:"r_local" },
+    q3:{ q:"Does the agent need to reach an external system it cannot access?", y:"q3b", n:"q4" },
+    q3b:{ q:"Does that system have a good CLI (gh, aws, az…)?", y:"r_cli", n:"r_mcp" },
+    q4:{ q:"Is it a repeated, multi-step procedure?", y:"q4b", n:"q5" },
+    q4b:{ q:"Is it work that produces a lot of output and would pollute the main context, or needs separate tool restrictions?", y:"r_sub", n:"r_skill" },
+    q5:{ q:"Do you want to distribute this setup to the team or to other projects?", y:"r_plugin", n:"r_none" }
+  };
+  const RS = { r_deny:"Deny / ask rule (sandbox if needed)", r_hook:"Hook (PreToolUse, PostToolUse or Stop)", r_rules:".claude/rules/*.md (with a paths header)", r_md:"CLAUDE.md", r_local:"CLAUDE.local.md", r_cli:"CLI + permission rule", r_mcp:"MCP server", r_sub:"Subagent", r_skill:"Skill", r_plugin:"Plugin", r_none:"Saying it in the prompt is enough" };
+  const SC = [
+    { t:"Files under src/Generated/ must not be edited by hand", p:"yy", w:"An Edit(./src/Generated/**) deny rule. Path-based, no exceptions and simple: no need to write a hook." },
+    { t:"Run dotnet format after every edit", p:"yn", w:"A PostToolUse hook, matcher \"Edit|Write\". The job is not to reject something but to run something every time." },
+    { t:"Never write to the prod database", p:"yn", w:"A PreToolUse hook (\"if\": \"Bash(psql *)\") and, most importantly, a read-only database role for the agent. The hook is a seatbelt; the role is the real boundary." },
+    { t:"The command to run a single test class", p:"nyny", w:"CLAUDE.md: short, useful in every session, team knowledge." },
+    { t:"Schema-qualify names in SQL files", p:"nyy", w:".claude/rules/sql.md, paths: \"**/*.sql\". Loaded only when SQL is touched." },
+    { t:"My terminal is PowerShell", p:"nynn", w:"CLAUDE.local.md: personal, stays out of git." },
+    { t:"Have it read PR comments", p:"nnyy", w:"The gh CLI already exists; a narrow allow rule such as Bash(gh pr view *) is enough. No need to set up an MCP server." },
+    { t:"Have it read the in-house ticket system that has no CLI", p:"nnyn", w:"An MCP server. Connect it with a read-only identity; review the tool descriptions (level 10: tool poisoning)." },
+    { t:"A 12-step release procedure", p:"nnnyn", w:"A skill: its description is small, its body loads only during a release; it can pull in dynamic context with !`git log …`." },
+    { t:"Error triage across 40 log files", p:"nnnyy", w:"A subagent: thousands of log lines stay out of the main context; only a 1–2K-token summary comes back." },
+    { t:"Roll out the team setup to 30 developers", p:"nnnny", w:"A plugin: ships skills, hooks and settings in one package. Do not forget that it runs with your permissions." },
+    { t:"Just this once: name the variables in English", p:"nnnnn", w:"Set nothing up; saying it in the prompt is enough. If it keeps coming up, move it into CLAUDE.md." }
+  ];
+  const tree = $(".l8-tr-tree", el), sc = $(".l8-tr-sc", el), out = $(".l8-tr-out", el);
+  const r = runner();
+  let path = [];
+  function walk(){
+    tree.innerHTML = "";
+    let id = "q1";
+    path.forEach(a => { const n = N[id]; tree.append(h("div", { class:"l8-tr-q" }, n.q, h("div", { class:"ans" }, a === "y" ? "→ Yes" : "→ No"))); id = n[a]; });
+    if (id.startsWith("r_")){ tree.append(h("div", { class:"l8-tr-res" }, "Result: " + RS[id])); return id; }
+    const n = N[id];
+    tree.append(h("div", { class:"l8-tr-q on" }, n.q, h("div", { class:"ctrl", style:{ marginTop:".4rem" } },
+      h("button", { type:"button", class:"btn sm", onclick:() => { r.stop(); path.push("y"); clearSc(); walk(); } }, "Yes"),
+      h("button", { type:"button", class:"btn ghost sm", onclick:() => { r.stop(); path.push("n"); clearSc(); walk(); } }, "No"),
+      path.length ? h("button", { type:"button", class:"btn ghost sm", onclick:() => { r.stop(); path = []; clearSc(); out.textContent = ""; walk(); } }, "↺") : null)));
+    return null;
+  }
+  const clearSc = () => Edu.$$("button", sc).forEach(b => b.classList.remove("on"));
+  sc.append(h("p", { class:"muted", style:{ fontSize:".8rem", margin:"0 0 .4rem" } }, "Scenarios"));
+  SC.forEach(s => {
+    const b = h("button", { type:"button" }, s.t);
+    b.addEventListener("click", async () => {
+      const c = r.start(); clearSc(); b.classList.add("on");
+      path = []; out.textContent = ""; walk();
+      for (const a of s.p){ await sleep(450); if (c()) return; path.push(a); walk(); }
+      const id = walk();
+      out.innerHTML = ""; out.append(h("b", null, (id ? RS[id] : "") + ": "), s.w);
+    });
+    sc.append(b);
+  });
+  walk();
+});
+
+/* ---------- 8.5 Hook lab ---------- */
+Edu.widget("l8-hooklab", el => {
+  const { h, $, json, sleep, runner, seg } = Edu;
+  const base = { session_id:"abc123", prompt_id:"550e8400-e29b-41d4-a716-446655440000", transcript_path:"/home/dev/.claude/projects/example/abc123.jsonl", cwd:"/home/dev/example_app", permission_mode:"auto", hook_event_name:"PreToolUse" };
+  const SC = {
+    db:{ lab:"DELETE via psql", tool:"Bash", input:{ command:"psql -h db.example.test -c \"DELETE FROM example.orders\"", description:"Clean orders", timeout:120000, run_in_background:false }, runs:'<span class="e">DELETE 1834</span>\n<span class="e">1,834 rows deleted from example.orders.</span>', reason:"Writes to example.* are blocked. Use a read-only SELECT instead.", adapt:"Understood. Instead of deleting, let me first check how many rows would be affected with SELECT count(*)." },
+    test:{ lab:"npm test (noisy)", tool:"Bash", input:{ command:"npm test", description:"Run tests", timeout:120000, run_in_background:false }, runs:'<span class="d">… 412 lines of test output (≈ 9,000 tokens) entered the context …</span>\n<span class="e">FAIL src/orders/total.test.ts</span>', reason:"Run the focused suite instead.", adapt:"Running a narrower test command." },
+    mig:{ lab:"Editing migrations/", tool:"Edit", input:{ file_path:"/home/dev/example_app/migrations/20261104_add_status.sql", old_string:"status_code varchar(10)", new_string:"status_code varchar(20)" }, runs:'<span class="w">migrations/20261104_add_status.sql edited.</span>\n<span class="d">(An applied migration changed; risk of schema drift between environments.)</span>', reason:"migrations/ is append-only. Create a new migration file instead.", adapt:"Instead of changing the existing migration, I will create a new migration file." }
+  };
+  const RESP = {
+    e0:{ lab:"exit 0", script:sc => `#!/usr/bin/env bash
+# Exit without making any decision
+exit 0` },
+    e1:{ lab:"exit 1 + stderr", script:sc => `#!/usr/bin/env bash
+in=$(cat)
+target=$(echo "$in" | jq -r '.tool_input.command // .tool_input.file_path')
+if [[ "$target" == ${sc === "mig" ? "*migrations/*" : sc === "db" ? "*DELETE*" : "*npm\\ test*"} ]]; then
+  echo "${SC[sc].reason}" >&2
+  exit 1        # BUG: 1 is not a block
+fi
+exit 0` },
+    e2:{ lab:"exit 2 + stderr", script:sc => `#!/usr/bin/env bash
+in=$(cat)
+target=$(echo "$in" | jq -r '.tool_input.command // .tool_input.file_path')
+if [[ "$target" == ${sc === "mig" ? "*migrations/*" : sc === "db" ? "*DELETE*" : "*npm\\ test*"} ]]; then
+  echo "${SC[sc].reason}" >&2
+  exit 2        # block; stderr goes to Claude
+fi
+exit 0` },
+    jdeny:{ lab:"JSON deny", script:sc => `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"deny",
+ "permissionDecisionReason":"${SC[sc].reason}"}}
+JSON
+exit 0` },
+    jask:{ lab:"JSON ask", script:sc => `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"ask",
+ "permissionDecisionReason":"Touches a shared resource; human approval required"}}
+JSON
+exit 0` },
+    jupd:{ lab:"JSON updatedInput", script:sc => sc === "test" ? `#!/usr/bin/env bash
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ "permissionDecision":"allow",
+ "updatedInput":{"command":"npm test 2>&1 | grep -A5 -E '(FAIL|ERROR)'"}}}
+JSON
+exit 0` : `# Rewriting the input makes no sense in this scenario.
+# updatedInput is mostly used to narrow output or to add
+# a safe flag (see the npm test scenario).
+exit 0` }
+  };
+  const S = { sc:"db", rp:"e2" };
+  const ctrl = $(".l8-hl-ctrl", el), grid = $(".l8-hl-grid", el), term = $(".l8-hl-term", el);
+  const sSeg = h("div", { class:"seg", role:"group", "aria-label":"Scenario" }, Object.entries(SC).map(([k, v]) => h("button", { type:"button", "data-v":k, "aria-pressed": String(k === S.sc) }, v.lab)));
+  const rSeg = h("div", { class:"seg", role:"group", "aria-label":"Hook response" }, Object.entries(RESP).map(([k, v]) => h("button", { type:"button", "data-v":k, "aria-pressed": String(k === S.rp) }, v.lab)));
+  ctrl.append(h("div", null, h("div", { class:"lbl" }, "Scenario"), sSeg), h("div", null, h("div", { class:"lbl" }, "The hook’s response"), rSeg));
+  const r = runner();
+  function draw(){
+    r.stop();
+    const sc = SC[S.sc];
+    const payload = Object.assign({}, base, { tool_name: sc.tool, tool_input: sc.input, tool_use_id:"toolu_01ABC123" });
+    grid.innerHTML = "";
+    const jv = h("div", { class:"jsonv", html: json(payload, { hl:["tool_name","tool_input","hook_event_name"] }) });
+    grid.append(h("div", null, h("h4", null, "stdin → hook (PreToolUse)"), jv),
+      h("div", null, h("h4", null, ".claude/hooks/guard.sh"), h("div", { class:"l8-pre" }, RESP[S.rp].script(S.sc))));
+    term.innerHTML = '<span class="d">Press “Run”.</span>';
+  }
+  async function play(){
+    const c = r.start(), sc = SC[S.sc], rp = S.rp;
+    const lines = [];
+    const add = async (html, ms = 500) => { if (c()) return true; lines.push(html); term.innerHTML = lines.join("\n"); term.scrollTop = term.scrollHeight; await sleep(ms); return c(); };
+    const cmd = sc.tool === "Bash" ? sc.input.command : "Edit " + sc.input.file_path.replace("/home/dev/example_app/", "");
+    if (await add('<span class="v">● ' + sc.tool + '</span> ' + Edu.esc(cmd))) return;
+    if (await add('<span class="d">PreToolUse hook running: guard.sh …</span>', 700)) return;
+    if (rp === "e0" || (rp === "jupd" && S.sc !== "test")){
+      if (await add('<span class="d">exit 0, no output → the hook made no decision; the permission flow continues (deny/ask rules, then the auto classifier).</span>')) return;
+      if (S.sc === "db"){ await add('<span class="w">The auto classifier is evaluating… It will most likely stop a delete like this, but it is probabilistic. The hook’s job was to make it certain.</span>'); return; }
+      await add(sc.runs); return;
+    }
+    if (rp === "e1"){
+      if (await add('<span class="w">hook error (exit 1): ' + Edu.esc(sc.reason) + '</span>')) return;
+      if (await add('<span class="d">Exit 1 is a non-blocking error → the tool call goes ahead.</span>')) return;
+      if (S.sc === "db"){ await add('<span class="w">The decision was left to the auto classifier. What you thought was a block was only a warning.</span>'); return; }
+      await add(sc.runs); return;
+    }
+    if (rp === "e2" || rp === "jdeny"){
+      if (await add(rp === "e2" ? '<span class="e">exit 2 → blocked.</span> <span class="d">stderr goes to Claude:</span>' : '<span class="e">permissionDecision: deny → blocked.</span> <span class="d">The reason goes to Claude:</span>')) return;
+      if (await add('<span class="w">  “' + Edu.esc(sc.reason) + '”</span>')) return;
+      await add('<span class="b">Claude:</span> ' + Edu.esc(sc.adapt)); return;
+    }
+    if (rp === "jask"){
+      if (await add('<span class="w">Permission prompt: ' + Edu.esc(cmd) + '</span>\n<span class="d">  Reason: Touches a shared resource; human approval required  [yes / no]</span>')) return;
+      await add('<span class="d">The decision is yours. Even in auto mode, this call comes to you, not to the classifier.</span>'); return;
+    }
+    if (rp === "jupd"){
+      if (await add('<span class="b">updatedInput:</span> npm test 2>&amp;1 | grep -A5 -E \'(FAIL|ERROR)\'')) return;
+      await add('<span class="e">FAIL src/orders/total.test.ts</span>\n<span class="e">  ✕ discount applied once (12 ms)</span>\n<span class="d">    Expected: 90  Received: 81</span>\n<span class="p">6 lines entered the context (instead of 412).</span>');
+    }
+  }
+  seg(sSeg, v => { S.sc = v; draw(); });
+  seg(rSeg, v => { S.rp = v; draw(); });
+  $(".l8-hl-run", el).addEventListener("click", play);
+});
+
+/* ---------- 8.5 Stop hook loop ---------- */
+Edu.widget("l8-stop", el => {
+  const { h, $, seg, stepper } = Edu;
+  const host = $(".l8-st-host", el);
+  const T = s => h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "Stop hook: dotnet build -warnaserror 1>&2 || exit 2")), h("div", { class:"term-body", html:s }));
+  const fix = [
+    { t:'<span class="b">Claude:</span> The fix is done, tests are passing.\n<span class="d">Stop hook running…</span>\n<span class="e">OrderTotal.cs(42,17): warning CS8602: Dereference of a possibly null reference.</span>\n<span class="e">exit 2 → Claude does not stop; stderr goes back as the reason.</span>', n:1, m:"Claude thought it was done; the hook saw that the build did not pass without warnings." },
+    { t:'<span class="v">● Read</span> src/Orders/OrderTotal.cs\n<span class="v">● Edit</span> src/Orders/OrderTotal.cs  <span class="d">(null check added)</span>', n:0, m:"A tool call was made: the consecutive-block counter resets." },
+    { t:'<span class="b">Claude:</span> I fixed the warning too.\n<span class="d">Stop hook running…</span>\n<span class="p">Build succeeded. 0 Warning(s) 0 Error(s) → exit 0</span>\n<span class="p">Claude stops.</span>', n:0, m:"This time the “done” claim was verified by a deterministic check." }
+  ];
+  const stuck = [];
+  for (let k = 1; k <= 8; k++) stuck.push({ t:(k === 1 ? '<span class="b">Claude:</span> Done.' : '<span class="b">Claude:</span> I can’t fix this warning; you will need to look at it by hand.') + '\n<span class="e">exit 2 → block #' + k + ' (no tool call in between)</span>', n:k, m: k < 8 ? "Claude tries to stop again without calling a tool; the counter goes up." : "The eighth consecutive block." });
+  stuck.push({ t:'<span class="w">The Stop hook blocked 8 times in a row without a tool call → loop limit exceeded.</span>\n<span class="p">The harness lets Claude stop.</span>\n<span class="d">(Limit: CLAUDE_CODE_STOP_HOOK_BLOCK_CAP)</span>', n:8, m:"The infinite-loop safety valve. Now you need to step in: is the task impossible, or is the hook wrong?" });
+  seg($(".l8-st-seg", el), v => {
+    host.innerHTML = "";
+    const steps = v === "fix" ? fix : stuck;
+    stepper(host, { steps, auto:1500, render(i, s, { body }){
+      body.innerHTML = "";
+      const meter = h("div", { class:"l8-st-meter", "aria-label":"Consecutive blocks: " + s.n + " / 8" }, Array.from({ length:8 }, (_, k) => h("i", { class: k < s.n ? "on" : "" })));
+      body.append(h("div", { class:"muted", style:{ fontSize:".8rem" } }, "Consecutive blocks without a tool call: " + s.n + " / 8"), meter, T(s.t), h("p", { class:"hint", style:{ color:"var(--ink)" } }, s.m));
+    }});
+  });
+});
+
+/* ---------- 8.6 Rewind ---------- */
+Edu.widget("l8-rewind", el => {
+  const { h, $, seg } = Edu;
+  const MSG = [
+    { t:"1 · “Write a failing test”", ch:[{ f:"tests/OrderTotalTests.cs", via:"Write tool", tr:true, d:"created" }] },
+    { t:"2 · “Fix the bug”", ch:[{ f:"src/Orders/OrderTotal.cs", via:"Edit tool", tr:true, d:"changed" }] },
+    { t:"3 · “Bump the version, delete the old log”", ch:[{ f:"version.txt", via:"Bash: sed -i", tr:false, d:"1.4.0 → 1.4.1" }, { f:"logs/old.log", via:"Bash: rm", tr:false, d:"deleted" }] },
+    { t:"4 · “Update the docs with a subagent”", ch:[{ f:"docs/api.md", via:"subagent edit", tr:false, d:"changed" }] }
+  ];
+  const S = { p:1, mode:"both" };
+  const ctrl = $(".l8-rw-ctrl", el), grid = $(".l8-rw-grid", el), out = $(".l8-rw-out", el);
+  const pSeg = h("div", { class:"seg", role:"group", "aria-label":"Rewind point" }, [1,2,3,4].map(k => h("button", { type:"button", "data-v":String(k), "aria-pressed": String(k === 1) }, "Before message " + k)));
+  const mSeg = h("div", { class:"seg", role:"group", "aria-label":"Rewind type" }, [["both","Code + conversation"],["conv","Conversation only"],["code","Code only"]].map(([v, l]) => h("button", { type:"button", "data-v":v, "aria-pressed": String(v === "both") }, l)));
+  ctrl.append(h("div", { class:"ctrl" }, pSeg), h("div", { class:"ctrl" }, mSeg));
+  function draw(){
+    grid.innerHTML = "";
+    const codeBack = S.mode !== "conv", convBack = S.mode !== "code";
+    const conv = h("div", null, h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "Conversation"));
+    MSG.forEach((m, i) => conv.append(h("div", { class:"l8-rw-msg" + (convBack && i + 1 >= S.p ? " gone" : "") }, m.t, h("div", { class:"via" }, m.ch.map(c => c.via + " → " + c.f).join(" · ")))));
+    const files = h("div", null, h("b", { style:{ fontFamily:"var(--sans)", fontSize:".85rem" } }, "Files after the rewind"));
+    let lost = 0, back = 0;
+    MSG.forEach((m, i) => m.ch.forEach(c => {
+      const after = i + 1 >= S.p;
+      let cls = "", st;
+      if (!after){ st = "change kept (before the rewind point)"; }
+      else if (!codeBack){ st = "stays changed (only the conversation was rewound)"; }
+      else if (c.tr){ cls = "ok"; st = "restored"; back++; }
+      else { cls = "bad"; st = "stayed changed: not tracked by checkpoints (" + c.via + ")"; lost++; }
+      files.append(h("div", { class:"l8-rw-f " + cls }, h("span", null, h("span", { class:"mono" }, c.f), h("br"), h("span", { class:"muted", style:{ fontSize:".72rem" } }, c.d)), h("span", { style:{ fontSize:".75rem", textAlign:"right" } }, st)));
+    }));
+    grid.append(conv, files);
+    out.innerHTML = "";
+    if (!codeBack) out.append("Only the conversation was rewound: Claude “forgets” those messages, but the files on disk stay as they are. The model and the disk are now out of sync; Claude should reread the files in its next step.");
+    else out.append(back + " file(s) restored" + (lost ? ", " : "."), lost ? h("b", { class:"r" }, lost + " file(s) stayed changed") : "", lost ? ". Changes made through Bash and most subagent edits do not go into checkpoints. Only git can bring them back: git checkout -- version.txt, git restore logs/old.log." : "", !convBack ? " The conversation was kept: Claude may still think the reverted changes are in place." : "");
+  }
+  seg(pSeg, v => { S.p = +v; draw(); });
+  seg(mSeg, v => { S.mode = v; draw(); });
+});
+</script>

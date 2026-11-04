@@ -1,0 +1,27 @@
+/* token şeridi */
+.tok-stream{position:relative;z-index:1;margin-top:1.3rem;height:34px;overflow:hidden;border-radius:9px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 6%,#000 88%,transparent);mask-image:linear-gradient(90deg,transparent,#000 6%,#000 88%,transparent)}
+.tok-track{display:flex;gap:6px;width:max-content;padding:4px 0;animation:tokSlide 38s linear infinite}
+@keyframes tokSlide{to{transform:translateX(-50%)}}
+.tok-chip{font-family:var(--mono);font-size:.82rem;white-space:pre;padding:.18rem .5rem;border-radius:6px;background:var(--ctx-bg);color:var(--ink);border:1px solid color-mix(in srgb,var(--ctx) 45%,transparent)}
+.tok-chip.alt{background:color-mix(in srgb,var(--ctx) 28%,var(--surface))}
+.tok-cursor{position:absolute;right:10%;top:5px;width:10px;height:24px;border-radius:2px;background:var(--ctx);animation:blink 1s steps(1) infinite}
+@media (prefers-reduced-motion:reduce){.tok-track,.tok-cursor{animation:none}}
+
+/* agent döngüsü */
+.loop-anim .lsv{overflow-x:auto;scrollbar-width:thin}
+.loop-anim svg{display:block;width:100%;min-width:620px;height:auto;max-height:280px}
+.loop-anim text{font-family:var(--sans)}
+.loop-anim .lp{fill:none;stroke:var(--line);stroke-width:2.5;stroke-dasharray:6 6}
+.loop-anim .lb{transition:transform .3s cubic-bezier(.2,.7,.2,1),opacity .3s;transform-box:fill-box;transform-origin:center;opacity:.7}
+.loop-anim .lb.on{transform:scale(1.07);opacity:1}
+.loop-anim .lb rect{stroke-width:2;transition:stroke-width .25s}
+.loop-anim .lb.on rect{stroke-width:3.5}
+.loop-anim .lb.u rect{fill:var(--tool-bg);stroke:var(--tool)}
+.loop-anim .lb.m rect{fill:var(--model-bg);stroke:var(--model)}
+.loop-anim .lb.c rect{fill:var(--ctx-bg);stroke:var(--ctx)}
+.loop-anim .lb.h rect{fill:var(--harness-bg);stroke:var(--harness)}
+.loop-anim .lt{font-size:16px;font-weight:800;fill:var(--ink)}
+.loop-anim .ls{font-size:12.5px;fill:var(--muted)}
+.loop-anim .lc text{font-family:var(--mono);font-size:13px;fill:var(--muted)}
+.loop-anim .ld{fill:var(--ctx);filter:drop-shadow(0 0 6px var(--ctx))}
+.loop-cap{min-height:4.2rem}

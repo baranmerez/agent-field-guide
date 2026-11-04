@@ -4,7 +4,7 @@
    ================================================================ */
 (function(){
 "use strict";
-const { $, $$, h, store, initWidgetsIn, gloss } = Edu;
+const { $, $$, h, store, initWidgetsIn, gloss, t, LANG } = Edu;
 const ACC = { model:"var(--model)", harness:"var(--harness)", ctx:"var(--ctx)", tool:"var(--tool)", risk:"var(--risk)" };
 const levels = $$(".level");
 const ltabs = $("#ltabs");
@@ -17,16 +17,16 @@ levels.forEach((lv, li) => {
   lv.id = "L" + no;
   if (!$(":scope > .lvl-hero", lv)){
     const hero = h("header", {class:"lvl-hero", "data-no": no === "G" ? "" : no},
-      h("p", {class:"lvl-kicker"}, no === "G" ? "Başlarken" : "Seviye " + no),
+      h("p", {class:"lvl-kicker"}, no === "G" ? t("start") : t("level") + " " + no),
       h("h1", null, lv.dataset.title),
       lv.dataset.lede ? h("p", {class:"lede"}, lv.dataset.lede) : null,
       h("div", {class:"lvl-meta"},
-        h("span", null, lessons.length + " konu"),
+        h("span", null, t("lessons", {n: lessons.length})),
         lv.dataset.time ? h("span", null, "≈ " + lv.dataset.time) : null,
         lv.dataset.for ? h("span", null, lv.dataset.for) : null));
     lv.prepend(hero);
   }
-  const bar = h("div", {class:"stabs", role:"tablist", "aria-label":"Konular"});
+  const bar = h("div", {class:"stabs", role:"tablist", "aria-label":t("topics")});
   const prog = h("i");
   lessons.forEach((ls, k) => {
     ls.id = lv.id + "-" + (k+1);
@@ -38,7 +38,7 @@ levels.forEach((lv, li) => {
   });
   const wrap = h("div", {class:"stabs-wrap"}, bar, h("div", {class:"stab-bar"}, prog));
   lessons[0].before(wrap);
-  lv.append(h("nav", {class:"pager", "aria-label":"Konu geçişi"}, h("button", {type:"button", class:"prev"}), h("button", {type:"button", class:"next"})));
+  lv.append(h("nav", {class:"pager", "aria-label":t("pagerAria")}, h("button", {type:"button", class:"prev"}), h("button", {type:"button", class:"next"})));
 
   const tab = h("button", {class:"ltab", role:"tab", type:"button", style:{"--tc": ACC[lv.dataset.accent] || "var(--ink)"}, title: lv.dataset.title},
     h("span", {class:"n"}, h("span", null, no === "G" ? "★" : no)), h("span", {class:"lt"}, lv.dataset.short || lv.dataset.title));
@@ -48,6 +48,10 @@ levels.forEach((lv, li) => {
   });
   ltabs.append(tab);
 });
+
+/* Başlarken kahramanına kayan token şeridi (iki dilde de, seviye dosyasından bağımsız) */
+const gHero = $(".level[data-no=\"G\"] > .lvl-hero");
+if (gHero && !$("[data-anim]", gHero)){ gHero.append(h("div", {"data-anim":"token-stream"})); initWidgetsIn(gHero); }
 
 function labelOf(li, k){
   const lv = levels[li], ls = $$(":scope > .lesson", lv)[k];
@@ -64,8 +68,8 @@ function neighbour(li, k, dir){
 function updateProgress(){
   const p = Math.round(seen.size / total * 100);
   $("#progRing").style.setProperty("--p", p);
-  $("#progTxt").textContent = "%" + p;
-  $("#progStat").innerHTML = "<b>%" + p + "</b> · " + seen.size + " / " + total + " konu açıldı";
+  $("#progTxt").textContent = t("pct", {p});
+  $("#progStat").innerHTML = "<b>" + t("pct", {p}) + "</b> · " + t("progStat", {done: seen.size, total});
   $("#progMeter").style.width = p + "%";
   levels.forEach((lv, li) => {
     const ids = $$(":scope > .lesson", lv).map(x => x.id);
@@ -92,15 +96,15 @@ function show(li, k, scroll){
   const pn = neighbour(li, k, -1), nn = neighbour(li, k, 1);
   prev.style.visibility = pn ? "visible" : "hidden";
   next.style.visibility = nn ? "visible" : "hidden";
-  if (pn){ prev.innerHTML = "<small>← Önceki</small><span></span>"; prev.lastChild.textContent = labelOf(...pn); prev.onclick = () => go(...pn, true); }
-  if (nn){ next.innerHTML = "<small>Sonraki →</small><span></span>"; next.lastChild.textContent = labelOf(...nn); next.onclick = () => go(...nn, true); }
+  if (pn){ prev.innerHTML = "<small>" + t("prev") + "</small><span></span>"; prev.lastChild.textContent = labelOf(...pn); prev.onclick = () => go(...pn, true); }
+  if (nn){ next.innerHTML = "<small>" + t("next") + "</small><span></span>"; next.lastChild.textContent = labelOf(...nn); next.onclick = () => go(...nn, true); }
 
   const ls = lessons[k];
   seen.add(ls.id); store.set("seen", [...seen]); store.set("last:" + lv.id, k); store.set("pos", [li, k]);
   updateProgress();
-  if (lv.dataset.no === "G" && !lv.dataset.anim){ lv.dataset.anim = "1"; const eq = $(".eq", lv); if (eq) eq.classList.add("anim"); }
+  if (lv.dataset.no === "G" && !lv.dataset.eqAnim){ lv.dataset.eqAnim = "1"; const eq = $(".eq", lv); if (eq) eq.classList.add("anim"); }
   initWidgetsIn(ls);
-  document.title = (lv.dataset.no === "G" ? "" : "Seviye " + lv.dataset.no + ": " + ls.dataset.tab + " · ") + "Model, Harness, Agent";
+  document.title = (lv.dataset.no === "G" ? "" : t("level") + " " + lv.dataset.no + ": " + ls.dataset.tab + " · ") + t("brand");
   const levelChanged = cur[0] !== li;
   cur = [li, k];
   if (scroll){
@@ -153,11 +157,11 @@ $$('a[href^="http"]').forEach(a => { a.target = "_blank"; a.rel = "noopener nore
 /* ---- kod blokları: kopyala düğmesi ---- */
 $$("pre").forEach(pre => {
   if (pre.closest(".fig") && !pre.dataset.copy) return;
-  const b = h("button", {class:"copy-btn", type:"button"}, "Kopyala");
+  const b = h("button", {class:"copy-btn", type:"button"}, t("copy"));
   b.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(pre.querySelector("code") ? pre.querySelector("code").innerText : pre.innerText); b.textContent = "Kopyalandı"; }
-    catch(e){ b.textContent = "Kopyalanamadı"; }
-    setTimeout(() => b.textContent = "Kopyala", 1400);
+    try { await navigator.clipboard.writeText(pre.querySelector("code") ? pre.querySelector("code").innerText : pre.innerText); b.textContent = t("copied"); }
+    catch(e){ b.textContent = t("copyFail"); }
+    setTimeout(() => b.textContent = t("copy"), 1400);
   });
   pre.append(b);
 });
@@ -165,10 +169,10 @@ $$("pre").forEach(pre => {
 /* ---- sözlük: açılır kutu + çekmece ---- */
 const pop = h("div", {class:"gpop", role:"tooltip"});
 document.body.append(pop);
-function keyOf(el){ return (el.dataset.g || el.textContent).trim().toLocaleLowerCase("tr"); }
+function keyOf(el){ return (el.dataset.g || el.textContent).trim().toLocaleLowerCase(LANG); }
 function findTerm(key){
   if (gloss[key]) return [key, gloss[key]];
-  const hit = Object.keys(gloss).find(t => t.toLocaleLowerCase("tr") === key);
+  const hit = Object.keys(gloss).find(t => t.toLocaleLowerCase(LANG) === key);
   return hit ? [hit, gloss[hit]] : null;
 }
 function showPop(el){
@@ -188,13 +192,13 @@ window.addEventListener("scroll", () => pop.classList.remove("on"), {passive:tru
 
 const drawer = $("#gloss"), scrim = $("#scrim"), gsearch = $("#glossSearch"), glist = $("#glossList");
 function renderGloss(){
-  const q = gsearch.value.trim().toLocaleLowerCase("tr");
+  const q = gsearch.value.trim().toLocaleLowerCase(LANG);
   glist.innerHTML = "";
-  Object.keys(gloss).sort((a,b) => a.localeCompare(b, "tr")).forEach(k => {
-    if (q && !(k.toLocaleLowerCase("tr").includes(q) || gloss[k].toLocaleLowerCase("tr").includes(q))) return;
+  Object.keys(gloss).sort((a,b) => a.localeCompare(b, LANG)).forEach(k => {
+    if (q && !(k.toLocaleLowerCase(LANG).includes(q) || gloss[k].toLocaleLowerCase(LANG).includes(q))) return;
     glist.append(h("div", {class:"gl-item"}, h("b", null, k), gloss[k]));
   });
-  if (!glist.children.length) glist.append(h("p", {class:"muted"}, "Eşleşen terim yok."));
+  if (!glist.children.length) glist.append(h("p", {class:"muted"}, t("noMatch")));
 }
 function openGloss(o){ drawer.classList.toggle("open", o); scrim.classList.toggle("on", o); drawer.setAttribute("aria-hidden", o ? "false" : "true"); if (o){ renderGloss(); gsearch.focus(); } }
 $("#glossBtn").addEventListener("click", () => openGloss(true));
@@ -234,7 +238,7 @@ const resetBtn = $("#progReset"), progMsg = $("#progMsg");
 let armed = false, armTimer = null;
 resetBtn.addEventListener("click", () => {
   if (!armed){
-    armed = true; resetBtn.textContent = "Emin misin? Evet, sıfırla"; resetBtn.classList.remove("ghost");
+    armed = true; resetBtn.textContent = t("progConfirm"); resetBtn.classList.remove("ghost");
     clearTimeout(armTimer); armTimer = setTimeout(disarm, 5000);
     return;
   }
@@ -242,24 +246,25 @@ resetBtn.addEventListener("click", () => {
   levels.forEach(lv => store.set("last:" + lv.id, 0));
   if (cur[0] >= 0){ const ls = $$(":scope > .lesson", levels[cur[0]])[cur[1]]; seen.add(ls.id); store.set("seen", [...seen]); }
   updateProgress(); disarm();
-  progMsg.textContent = "İlerleme sıfırlandı.";
+  progMsg.textContent = t("progDone");
   setTimeout(() => progMsg.textContent = "", 2500);
 });
-function disarm(){ armed = false; resetBtn.textContent = "İlerlemeyi sıfırla"; resetBtn.classList.add("ghost"); }
+function disarm(){ armed = false; resetBtn.textContent = t("progReset"); resetBtn.classList.add("ghost"); }
 
 /* Temalar: değer = data-theme; "auto" sistem tercihini izler. */
+const T_THEMES = t("themes");
 const THEMES = [
-  ["auto", "Otomatik", null],
-  ["light", "Açık", ["#F5F6FA", "#141B27"]],
-  ["sepia", "Sepya", ["#F4ECD8", "#3B2F22"]],
-  ["lavender", "Lavanta", ["#F6F3FB", "#221B33"]],
-  ["mint", "Nane", ["#EEF6F2", "#16271F"]],
-  ["dark", "Koyu", ["#0F131A", "#E7EAF0"]],
-  ["nordic", "Kuzey", ["#1F2430", "#E5E9F0"]],
-  ["forest", "Orman", ["#121A16", "#E3ECE6"]],
-  ["coffee", "Kahve", ["#1C1714", "#EEE4D8"]],
-  ["oled", "Gece yarısı", ["#000000", "#E8E8EC"]],
-  ["contrast", "Yüksek kontrast", ["#000000", "#FFFFFF"]]
+  ["auto", T_THEMES.auto, null],
+  ["light", T_THEMES.light, ["#F5F6FA", "#141B27"]],
+  ["sepia", T_THEMES.sepia, ["#F4ECD8", "#3B2F22"]],
+  ["lavender", T_THEMES.lavender, ["#F6F3FB", "#221B33"]],
+  ["mint", T_THEMES.mint, ["#EEF6F2", "#16271F"]],
+  ["dark", T_THEMES.dark, ["#0F131A", "#E7EAF0"]],
+  ["nordic", T_THEMES.nordic, ["#1F2430", "#E5E9F0"]],
+  ["forest", T_THEMES.forest, ["#121A16", "#E3ECE6"]],
+  ["coffee", T_THEMES.coffee, ["#1C1714", "#EEE4D8"]],
+  ["oled", T_THEMES.oled, ["#000000", "#E8E8EC"]],
+  ["contrast", T_THEMES.contrast, ["#000000", "#FFFFFF"]]
 ];
 const DOTS = { light:["#8A2C9C","#0B7A70","#B06F00","#2456C9"], sepia:["#8B3A8F","#2F6F5E","#9A5C06","#2F5596"], lavender:["#7E3AB5","#11786F","#A0600A","#3A55C9"], mint:["#83338F","#0B6E62","#9A5F00","#245CB0"], dark:["#D58BE6","#3CC8BA","#EDB24B","#7EA6FF"], nordic:["#C89BE8","#7FD1C3","#EBCB8B","#88B4F5"], forest:["#D49BE0","#5FD3B5","#E7C068","#8FB8FF"], coffee:["#DA9AD8","#6FCDB8","#F0B860","#92B2F0"], oled:["#DB8EF0","#45D3C4","#F2B84E","#82A9FF"], contrast:["#F0A6FF","#3FF0DD","#FFD23F","#A8C8FF"] };
 const grid = $("#themeGrid");
@@ -292,7 +297,7 @@ let fs = store.get("fs", 1) || 1;
 function applyFs(v){
   fs = Math.round(Math.max(.85, Math.min(1.3, v)) * 100) / 100;
   if (fs === 1){ root.style.removeProperty("--fs"); store.set("fs", null); } else { root.style.setProperty("--fs", fs); store.set("fs", fs); }
-  $("#fsVal").textContent = "%" + Math.round(fs * 100);
+  $("#fsVal").textContent = t("pct", {p: Math.round(fs * 100)});
   $("#fsDown").disabled = fs <= .85; $("#fsUp").disabled = fs >= 1.3;
   setTopVar();
 }
@@ -300,6 +305,16 @@ $("#fsDown").addEventListener("click", () => applyFs(fs - .05));
 $("#fsUp").addEventListener("click", () => applyFs(fs + .05));
 $("#fsVal").addEventListener("click", () => applyFs(1));
 applyFs(fs);
+
+/* ---- dil düğmesi: aynı konunun diğer dildeki karşılığına geçer ---- */
+const langBtn = $("#langBtn");
+if (langBtn){
+  const base = langBtn.getAttribute("href");
+  const sync = () => { langBtn.setAttribute("href", base + location.hash); };
+  ["mouseenter", "focus", "touchstart"].forEach(ev => langBtn.addEventListener(ev, sync, {passive:true}));
+  langBtn.addEventListener("click", () => { sync(); store.set("lang", langBtn.getAttribute("hreflang")); });
+}
+store.set("lang", LANG);
 
 /* ---- başlangıç ---- */
 setTopVar();

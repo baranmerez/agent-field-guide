@@ -1,0 +1,954 @@
+<section class="level" data-no="5" data-short="Agent loop" data-title="Agent loop: the power of a while loop"
+  data-accent="harness" data-time="55 min"
+  data-lede="Put tool use in a loop and give the model the authority to say “done”: that is exactly what we call an agent. In this level you will see the loop’s code, the raw messages of a session, how the loop breaks and what keeps it standing.">
+
+  <!-- ================= 1. THE LOOP'S CODE ================= -->
+  <div class="lesson" data-tab="The loop’s code">
+    <h2>A one-sentence definition, ten lines of code</h2>
+    <p class="lead">The word agent has been stuck onto so many things in the last two years that its meaning has gone blurry. The definition that is useful to an engineer is short: an <span class="g" data-g="Agent loop">agent</span> is a model that runs tools in a loop until it reaches a goal.</p>
+    <p>In September 2025 Simon Willison boiled this down to one sentence: “An LLM agent runs tools in a loop to achieve a goal.” Anthropic’s context engineering post says the same thing: an agent is an LLM autonomously using tools in a loop. Both definitions have three parts: <b>tools</b> (we covered them in level 4), <b>the loop</b> (the subject of this level) and <b>the goal</b>, the thing that decides when the loop ends. Take away any one of the three and you no longer have an agent: a loop without tools is just a chat talking to itself, a tool without a loop is a one-off function call, and a loop without a goal is an infinite loop that burns money.</p>
+
+    <div class="fig" data-anim="agent-loop"></div>
+
+    <h3>The canonical loop</h3>
+    <p>The loop in Anthropic’s tool use documentation works like this. The harness sends the messages and tool definitions to the model. As long as the response’s <code>stop_reason</code> field is <code>"tool_use"</code>, the harness runs the requested tools, appends the model’s response (the assistant message) to the history, then appends a user message carrying the tool results, and calls the model again. When <code>stop_reason</code> has any other value, the loop exits. At the heart of every coding agent, no matter how many layers are stacked on top, this loop is beating.</p>
+<pre data-title="agent_loop.py (teaching version)"><code>messages = [user(task)]
+for turn in range(MAX_TURNS):                  # hard stop condition
+    resp = llm(system, tools, messages)        # PURPLE: the single probabilistic line
+    messages.append(assistant(resp.content))   # the response enters the history
+    if resp.stop_reason != "tool_use":         # end_turn / max_tokens / refusal
+        break
+    results = [run(t) for t in resp.tool_uses] # TEAL: deterministic execution
+    messages.append(user([tool_result(r) for r in results]))
+    if tokens(messages) > BUDGET:              # context management
+        messages = compact(messages)
+else:
+    raise MaxTurnsExceeded()                   # limit reached, controlled failure</code></pre>
+    <p>Spend two minutes on this code, because the rest of the course is built around these lines. In the diagram below you can click each line to see what it does, which layer it belongs to and what would break without it.</p>
+
+    <div class="fig" data-widget="l5-code">
+      <p class="fig-title">What does each line of the loop do?</p>
+      <p class="fig-cap">Click a line. The color on the left edge shows the line’s layer: purple model, teal harness, amber context. Notice how many lines the intelligence lives in.</p>
+      <div class="l5-code" role="group" aria-label="Loop code lines"></div>
+      <div class="panel live l5-code-out" aria-live="polite"><span class="muted">Click a line.</span></div>
+    </div>
+
+    <h3>The intelligence is in one line</h3>
+    <p>The only “smart” place in the code is the <code>llm(...)</code> call. The model decides what to read, which command to run and whether the work is done. Every other line is ordinary, deterministic, testable software: appending to a list, comparing a field, calling a function. This split is the most solid frame for thinking about agent systems. When something goes wrong, the first question should be: did the <span class="m">model</span> make the wrong decision, or did the <span class="h">harness</span> fail to give it the information, tool or feedback it needed to make the right one? The second case comes up far more often than you would think, and it is also much easier to fix, because that side is the one you write.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Think of the reconcile loop in Kubernetes: the controller observes the current state, compares it with the desired state, takes an action and observes again. It stops when it reaches the desired state. The agent loop has the same skeleton. The difference is that “the gap between desired and current state” is computed by a model, not by a deterministic diff function. That is why neither the stop condition nor the correctness of the action is guaranteed; you have to put fuses around the loop.</div>
+
+    <h3><code>stop_reason</code>: the loop’s steering wheel</h3>
+    <p>A single field decides where the loop goes. Each <span class="g" data-g="stop_reason">stop_reason</span> value means something different to the loop, and harnesses that do not tell them apart break silently. The most common bug is treating everything other than <code>tool_use</code> as “work done”. A response cut off by <code>max_tokens</code> is not finished; it is truncated. <code>refusal</code> is not a finished job but a refused one, and it should be shown to the user as such. In server-side tool loops (such as web search), <span class="g" data-g="pause_turn">pause_turn</span> means “I hit the iteration limit, resend the request to continue”; a harness that mistakes it for completion abandons the work halfway.</p>
+
+    <div class="fig" data-widget="l5-stop">
+      <p class="fig-title">stop_reason explorer</p>
+      <p class="fig-cap">Pick a value. See a trimmed JSON of the model’s response, what the loop should do at that moment and the typical mistake.</p>
+      <div class="seg l5-stop-seg" role="group" aria-label="stop_reason value">
+        <button type="button" data-v="tool_use" aria-pressed="true">tool_use</button>
+        <button type="button" data-v="end_turn">end_turn</button>
+        <button type="button" data-v="max_tokens">max_tokens</button>
+        <button type="button" data-v="stop_sequence">stop_sequence</button>
+        <button type="button" data-v="refusal">refusal</button>
+        <button type="button" data-v="pause_turn">pause_turn</button>
+        <button type="button" data-v="model_context_window_exceeded">context_exceeded</button>
+      </div>
+      <div class="jsonv l5-stop-json"></div>
+      <div class="panel live l5-stop-out" aria-live="polite"></div>
+    </div>
+
+    <h3>The same loop in the other ecosystem</h3>
+    <p>The OpenAI Agents SDK loop is a slightly more abstracted version of the same idea. The SDK calls the model; if the output is “final”, meaning there is text output of the requested type and no tool call, it stops. If the output is a handoff, it passes control to another agent. If there are tool calls, it runs them, appends the results and calls again. When the <span class="g" data-g="max_turns">max_turns</span> limit is exceeded it raises <code>MaxTurnsExceeded</code>; if you defined an error handler, you can return a controlled final output instead. So both big providers guarantee the same three things: append tool results to the history, recognize the final answer, set a limit.</p>
+
+    <h3>Where did it come from?</h3>
+    <p>This loop did not appear overnight. The 2022 <span class="g" data-g="ReAct">ReAct</span> paper popularised the idea of having the model write “Thought / Action / Observation” lines in turn and executing the Action line by parsing it out of plain text. Back then the harness caught a line like <code>Action: search[...]</code> with a regular expression; if the model bent the format a little, the loop broke. Toolformer in 2023 showed that a model could learn to insert API calls into its own text. Today’s native tool calling APIs are the productised descendants of those ideas: the model no longer produces free text but a structured <code>tool_use</code> block that matches a schema, and it learns this specifically in post-training (levels 1 and 4).</p>
+
+    <div class="callout warn"><span class="ct">Caution</span>Do not write an unbounded loop. An agent built on <code>while True</code>, with no turn or budget limit, can repeat the same failing command until morning, and because it resends the whole history every turn, the cost grows with every turn. The limit belongs on the loop’s first line; it is not an improvement to add later.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Agent = a model that runs tools in a loop until it reaches a goal. The harness writes the loop.</li>
+        <li>The loop’s steering wheel is <code>stop_reason</code>. Every value other than <code>tool_use</code> has its own meaning; do not call them all “done”.</li>
+        <li>The intelligence is in one line; the rest is deterministic code. When debugging, ask first: “model or harness?”</li>
+        <li>Give every loop a turn and budget limit from day one.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://simonwillison.net/2025/Sep/18/agents/">Simon Willison: on the definition of an agent (18 September 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents (29 September 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude Docs: How tool use works</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Claude Docs: Context windows (model_context_window_exceeded)</a></li>
+      <li><a href="https://openai.github.io/openai-agents-python/running_agents/">OpenAI Agents SDK: Running agents</a></li>
+      <li><a href="https://arxiv.org/abs/2210.03629">Yao et al. ReAct (2022)</a> · <a href="https://arxiv.org/abs/2302.04761">Schick et al. Toolformer (2023)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 2. WATCH A SESSION ================= -->
+  <div class="lesson" data-tab="Watch a session">
+    <h2>An agent fixing a red test, in the raw</h2>
+    <p class="lead">What you see in the UI is a few lines of summary: “Ran 3 commands, edited 2 files, tests pass.” Behind the curtain there is a message array that grows every turn, seven model calls and, at one point, a harness that rejects the model’s “done” decision. In this lesson we lift that curtain.</p>
+    <p>Here is the scenario: <code>example_app</code> is an ASP.NET Core API backed by PostgreSQL. After this morning’s deploy, one of the <code>OrderMapper</code> tests is red: <code>Map_NullStatus_ReturnsUnknown</code>. When an order’s <code>status_code</code> comes in as NULL, the mapper throws <code>InvalidCastException</code>. The user types one sentence to the agent: “The OrderMapper test in example_app is red, fix it.” The harness has a Stop hook that runs the tests; the moment the agent says “done”, the harness will run the tests itself.</p>
+    <p>The simulation below replays this session event by event. At each step watch three things: which station of the loop we are at, what was appended to the <code>messages</code> array, and the total number of tokens the model has to read on the next call. The token counts are illustrative, but the ratios resemble real sessions.</p>
+
+    <div class="fig" data-widget="l5-session">
+      <p class="fig-title">An agent session, message by message</p>
+      <p class="fig-cap">Step through with Next or press Play. The strip on the left shows the loop’s stations, the middle shows the growing message array, and below is the raw JSON exchanged at that step. The orange row is the message appended at that step.</p>
+    </div>
+
+    <h3>What did you see in the simulation?</h3>
+    <p><b>The model did not run anything.</b> Every model call produced either plain text or a <code>tool_use</code> block. It was always the harness that ran <code>dotnet test</code>, read the file and applied the edit. On the next step the model only saw the text the harness put back as a <code>tool_result</code>. That is why how clear and how short the tool output is directly determines the quality of the model’s next decision (which is exactly what good tool design in level 4 is for).</p>
+    <p><b>Every call re-read the whole history.</b> On the first call the model saw roughly nine thousand tokens of system prompt and tool definitions plus a sixty-token user message. On the last call it saw all of that plus every tool result, its own earlier responses and the hook feedback. Because the API is stateless (level 2), this is unavoidable. The result: total processed input grows not linearly with the number of turns but roughly quadratically. The “total processed input” counter at the bottom right of the simulation shows this. Prompt caching cuts the price of that load considerably, but it does not reduce the space it takes in the context window.</p>
+    <p><b>Tool results filled most of the context.</b> What the model wrote itself is a few hundred tokens; the test output and file contents are thousands. In real sessions the ratio is even more extreme: a single log dump or a whole large file can take tens of thousands of tokens. That is why Claude Code capping a single tool output at 25,000 tokens is a harness decision.</p>
+
+    <h3>The critical moment: where the model says “done”</h3>
+    <p>On the fourth model call the model said “Fixed it” and stopped with <span class="g" data-g="end_turn"><code>end_turn</code></span>. But the fix was incomplete: it assigned <code>"UNKNOWN"</code> in the NULL case, yet a normalization a few lines below lowercased that value. Because the model finished without rerunning the test, it never saw this. This is the most common failure mode of agents: <span class="g" data-g="Premature completion">premature completion</span>. From the inside, the model has no signal that could show it the difference between “I made a sensible fix” and “the fix works”; only a verifier can produce that signal.</p>
+    <p>This is where the harness stepped in. The configured <span class="g" data-g="Stop hook">Stop hook</span> ran the tests when the model wanted to stop; because the test was red, it exited with code 2. In Claude Code that means the hook’s error output is passed back to the model and the loop continues. The model saw “1 test failed: expected UNKNOWN, got unknown” as a new message and solved the problem in two turns. The user probably did not even notice this extra round.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>A Stop hook works like a CI gate placed inside the loop. When a developer says “merge it” and the pipeline is red, nothing gets merged; when the agent says “done” and the test is red, the turn does not end. The difference is that CI reports to a human, while the hook reports straight to the model. That makes the hook output a prompt too: a short, actionable message that says which test broke and why gets a fix far faster than a long stack dump.</div>
+
+    <h3>What you do not see in the UI</h3>
+    <p>Had you watched this session in a terminal, you would most likely have seen a few tool lines, a “Fixed it” message, a short hook notice and the final summary. The real message array lives in the harness’s session log. Claude Code writes sessions to JSONL files, and resuming or forking a session works from that log; we will open it up in levels 6 and 8. When you are trying to understand an agent’s behavior, looking at this raw log is always more instructive than looking at the summary in the UI. The model decided based on what it saw; you cannot judge its decision without knowing what that was.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>When an agent makes a strange decision, first ask “what was in the context at that moment?” In Claude Code, <code>/context</code> shows what the context is filled with. If you are writing your own harness, logging the full request body of every model call is half of debugging.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>A session is a single <code>messages</code> array that grows every turn; every model call re-reads all of it.</li>
+        <li>Tool results fill most of the context. Short, clear tool output is both cheaper and leads to better decisions.</li>
+        <li>When the model says “done”, the work may not be done. A harness that puts a verifier at the loop’s exit catches this.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Claude Docs: How tool use works</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (Stop hook, verification)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works</a></li>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents (25K token limit)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 3. WORKFLOW OR AGENT ================= -->
+  <div class="lesson" data-tab="Workflow or agent">
+    <h2>Not every LLM application needs to be an agent</h2>
+    <p class="lead">Once you learn the loop, you want to build a loop for everything. Yet for many jobs the best solution is a flow where your code decides the steps and the model is only called at specific points.</p>
+    <p>Anthropic made this distinction explicit in “Building effective agents”, published in December 2024. It calls both “agentic systems” but splits them in two. In <span class="g" data-g="Workflow">workflows</span>, LLMs and tools are orchestrated through predefined code paths: the order, the branching and the stop condition are written in your code. In <b>agents</b>, the model directs its own process and tool use: the model decides how many steps to take, which tool to call and when to stop. The first is a pipeline; the second is an employee with a goal.</p>
+    <p>Both share the same building block: the <span class="g" data-g="Augmented LLM">augmented LLM</span>, a single model call enhanced with retrieval, tools and memory. Workflows wire these blocks together with code; an agent puts the block in a loop.</p>
+
+    <h3>Five workflow patterns</h3>
+    <p>The post lists five patterns that show up often in production. Knowing all of them pays off, because being able to look at a problem and say “this is a routing problem” saves you from building an agent you did not need.</p>
+    <ol class="steps">
+      <li><b><span class="g" data-g="Prompt chaining">Prompt chaining</span>.</b> The work is split into sequential steps; each step’s output is the next one’s input. You can put programmatic gates between steps: if the output is not in the expected format, the chain stops. Example: extract the changes from commit messages, categorize them, write the release notes.</li>
+      <li><b><span class="g" data-g="Routing">Routing</span>.</b> A classifier recognizes the input and sends it to a specialized handler. Each branch runs with its own prompt, and if needed with a cheaper or a stronger model. Example: sorting incoming support tickets into billing, technical bug and feature request.</li>
+      <li><b><span class="g" data-g="Parallelization">Parallelization</span>.</b> It comes in two forms. <i>Sectioning</i>: the work is split into independent pieces that run in parallel, and the results are merged. <i>Voting</i>: the same task is run several times and the decision is made by a vote or a threshold. Example: reviewing a PR separately for security, performance and readability; or checking a security suspicion with three independent runs.</li>
+      <li><b><span class="g" data-g="Orchestrator-workers">Orchestrator-workers</span>.</b> An orchestrator model dynamically breaks the work into subtasks, hands them to workers and merges the results. The difference from parallelization is that the subtasks are not known in advance. Example: a change where you cannot tell up front how many files it will touch.</li>
+      <li><b><span class="g" data-g="Evaluator-optimizer">Evaluator-optimizer</span>.</b> One model generates, another call evaluates against criteria and gives feedback, and the generator tries again. It works for tasks with clear evaluation criteria where iteration genuinely improves the result. Example: a translation that must follow a terminology glossary.</li>
+    </ol>
+
+    <div class="fig" data-widget="l5-patterns">
+      <p class="fig-title">Same boxes, six different wirings</p>
+      <p class="fig-cap">Pick a pattern, then step through to watch a sample request flow between the boxes. Purple boxes are model calls, teal boxes are your deterministic code.</p>
+      <div class="seg l5-pat-seg" role="group" aria-label="Pattern">
+        <button type="button" data-v="chain" aria-pressed="true">Chaining</button>
+        <button type="button" data-v="route">Routing</button>
+        <button type="button" data-v="par">Parallel</button>
+        <button type="button" data-v="orch">Orchestrator</button>
+        <button type="button" data-v="eval">Evaluator</button>
+        <button type="button" data-v="agent">Agent</button>
+      </div>
+      <div class="l5-pat-host"></div>
+    </div>
+
+    <h3>When is it an agent?</h3>
+    <p>Anthropic’s advice is surprisingly conservative: start with the simplest solution and add complexity only when you see a measurable benefit. Most of the time the simplest solution is a single model call enriched with retrieval and a few examples. Workflows give predictability and consistency for well-defined tasks. Agents are for open-ended problems where the number of steps cannot be known in advance and the path cannot be hard-coded. “Find and fix this bug” is exactly that kind of job: nobody can know how many files will be read or how many times the tests will run.</p>
+    <p>The price of an agent is just as clear: you trade flexibility for higher cost and latency, and errors compound. Even if each step has a 95 percent chance of being right, the chance that 20 independent steps all go right is 0.95<sup>20</sup> ≈ 36 percent. This simple calculation treats the steps as independent, and in reality the picture is not that grim because agents can see and correct their mistakes; but it explains well why a long agent chain without a verifier is fragile. If you are going to use agents, the post itself recommends testing in a sandbox and setting up guardrails from the start.</p>
+    <p>Multi-agent systems cost even more. In Anthropic’s research system (June 2025), single-agent runs used about 4 times the tokens of a chat, and multi-agent runs about 15 times. The same post notes that most coding tasks, which need shared context, are not a great fit for multi-agent parallelism. That is why subagents in Claude Code are used mostly for “explore in a clean window and bring back a summary”; more on that in level 8.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>A workflow is like a CI pipeline or a DAG: the steps are written in YAML, each step’s input and output are known, and when a step breaks you know where it broke. An agent is like an engineer you hand a job to and tell “let me know when it’s done”. You use both, but not for the same job. Nobody hands the release pipeline to an intern with “you decide how to do it each time”.</div>
+
+    <div class="callout myth"><span class="ct">Myth</span>“Agents are here, workflows are obsolete.” Even Anthropic’s current prompting guide says the opposite: although the model handles multi-step reasoning well on its own, explicit prompt chaining is still useful when you need to inspect intermediate outputs or enforce a specific pipeline structure. For work that needs an audit trail, compliance and reproducibility, a workflow is often the right answer.</div>
+
+    <h3>Look at the scenarios</h3>
+    <p>The cards below are typical jobs you might run into at work. Click a card to see the suggested setup, why, and when that setup will fall short. There is no single right answer here; when the context changes, the suggestion changes too. The point is to see the reasoning.</p>
+    <div class="fig" data-widget="l5-scen">
+      <p class="fig-title">Which setup for this job?</p>
+      <p class="fig-cap">Click a card. The suggestion and its reasoning open below.</p>
+      <div class="l5-scen-grid"></div>
+      <div class="panel live l5-scen-out" aria-live="polite"><span class="muted">Click a card.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Workflow: your code draws the path. Agent: the model draws the path. Both use the same building block (the augmented LLM).</li>
+        <li>Five patterns: chaining, routing, parallelization, orchestrator-workers, evaluator-optimizer.</li>
+        <li>Start with the simplest. Save agents for open-ended work where the number of steps cannot be predicted; cost, latency and compounding errors are their price.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (19 December 2024)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (note on prompt chaining)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/multi-agent-research-system">Anthropic: How we built our multi-agent research system (13 June 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 4. FAILURE MODES ================= -->
+  <div class="lesson" data-tab="Failure modes">
+    <h2>How does the loop break, and what holds it together?</h2>
+    <p class="lead">Agent failures are not random; they fall into a few familiar patterns. Once you recognize the pattern, the cure is largely known too, and most cures live in the harness, not in the prompt.</p>
+
+    <h3>1. Premature completion</h3>
+    <p>The model says “done” before the work is done. As you saw in the previous lesson, from the inside the model has no signal that shows the difference between “I made a sensible change” and “the change works”. Long tasks have another variant: a freshly started session looks around, sees that a lot of code has been written and decides the project is finished. The cures are layered. In the prompt, give a verifiable definition of “done” (level 3). For long jobs, keep a structured feature list where every item starts with <code>"passes": false</code>; let the agent change only that field, and state explicitly that deleting or editing tests is unacceptable. On the harness side, put a verifier at the loop’s exit: in Claude Code, if a Stop hook returns exit code 2, Claude is sent back to work. This is not infinite either: if the hook blocks 8 times in a row, Claude Code disregards the hook and ends the turn. As an alternative, the <code>/goal</code> command has a separate model check every turn whether the condition has been met.</p>
+
+    <h3>2. Doing everything at once</h3>
+    <p>An agent that tries to finish a big task in one go leaves three half-built features and a broken build in the middle of its context. The cure from Anthropic’s long-running agent experiments is simple: work on one feature per session and end the session in a clean, committable state. We will see this in detail in the next lesson.</p>
+
+    <h3>3. Looping and thrashing</h3>
+    <p>The model retries the same failing command over and over with small variations. Every attempt adds another error output to the context, and as the context grows the model loses focus even further. There is a harness version of this too: <span class="g" data-g="Thrashing">thrashing</span>. If a large tool output refills the context right after compaction, the harness keeps trying to compress; Claude Code gives up on automatic compaction after a few attempts. The cure is always a hard limit: maximum turns, maximum tokens or maximum time. Claude Code’s auto mode has something similar: if the classifier blocks 3 actions in a row (or 20 in total), Claude Code drops out of auto mode and goes back to asking you.</p>
+
+    <h3>4. Drift</h3>
+    <p><span class="g" data-g="Drift">Drift</span> is the agent slowly wandering away from the task: while fixing a null bug it thinks “while I’m here” and starts fixing naming in six files. The resulting diff is harder to review and carries unwanted changes. Claude Code’s advice is practical: watch the first minute and press Esc as soon as you see it veer; if two correction attempts fail, clear with <code>/clear</code> and write a better prompt. Trying to repair a polluted context is usually more expensive than starting over with a clean one.</p>
+
+    <h3>5. Overeager or too timid</h3>
+    <p>Some models and prompts push the agent to call a tool for every little thing; others make it stop at the first ambiguity and ask the user a question. OpenAI’s GPT-5 guide shows both directions are tunable: to curb eagerness, a tool call budget and an escape hatch along the lines of “proceed even if you are not sure”; to increase persistence, an instruction telling it not to hand back on uncertainty. Anthropic also provides two opposing example blocks: one says to take action by default, the other says not to act until instructed. Which one you choose depends on the risk of the work.</p>
+
+    <h3>6. Destructive shortcuts</h3>
+    <p>An agent locked onto its goal may pick the shortest way to remove an obstacle: skipping the pre-commit hook with <code>--no-verify</code>, force pushing, deleting the red test, dropping and recreating a table. Anthropic suggests an example prompt block that says to ask for confirmation before hard-to-reverse actions and not to use destructive actions as shortcuts. But a prompt is a request, not a guarantee. Real protection lives in permission rules, hooks and the sandbox (levels 6, 8 and 10).</p>
+
+    <h3>7. Stopping early near the context limit</h3>
+    <p>Models that can track their remaining token budget may start wrapping up in a hurry when they notice the window is about to fill. If the harness is going to compact, you need to say so in the prompt; otherwise the model finishes early when it could actually have kept going.</p>
+
+    <div class="fig" data-widget="l5-fail">
+      <p class="fig-title">Loop simulator with failure injection</p>
+      <p class="fig-cap">The task is the same: fix the red test in OrderMapper. Inject failures in the top row, switch defenses on or off in the bottom row, then press Run. Look at how the session ends and how many turns it takes. Try different combinations; especially “premature completion + looping + Stop hook” together.</p>
+    </div>
+
+    <div class="callout deep"><span class="ct">Go deeper</span>In the simulator, pay attention to the “flaky test + Stop hook” combination. When the verifier is unreliable, the agent finds the shortest way to turn red into green, and sometimes that is skipping the test. The stronger the verifier, the more important it becomes to protect the verifier itself: that is why you block edits to the test folder with a hook, or read the test diff separately in review.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Seven familiar patterns: premature completion, everything at once, looping/thrashing, drift, too much or too little eagerness, destructive shortcuts, stopping early near the limit.</li>
+        <li>Most cures live in the harness: turn limits, a Stop hook or <code>/goal</code>, permission rules, starting over with a clean context.</li>
+        <li>Intervene early when you see drift; after two failed corrections, <code>/clear</code>.</li>
+        <li>If the verifier is unreliable, the agent will find a way around it. Protect the verifier too.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (Stop hook, /goal, Esc, /clear, auto mode)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works (compaction)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents (26 November 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (action and destructive-action blocks)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI Cookbook: GPT-5 prompting guide (agentic eagerness)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (compounding errors)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 5. LONG TASKS ================= -->
+  <div class="lesson" data-tab="Long tasks">
+    <h2>Work that does not fit in one context window</h2>
+    <p class="lead">As of November 2026, all current Claude models have a 1M-token context window. That is a lot of room, but it is not unlimited; and as you saw in level 2, the model’s recall quality drops as the window fills. That is why work that takes hours is spread across several sessions, that is, several clean windows.</p>
+    <p>The problem is that every new session starts with no memory. It does not know what the previous session did, what it left half-finished or which approach did not work. There are two ways out. The first is <b>compaction</b>: summarize the conversation that is about to overflow and continue from the summary. The second is <b>restarting from the file system</b>: keep the state on disk rather than in the model’s memory, and open every session from scratch by reading those files. Anthropic’s current guidance recommends the second wherever possible.</p>
+
+    <h3>Anthropic’s recipe for long-running agents</h3>
+    <p>In November 2025 Anthropic described the harness it used to have an agent build an application across many sessions. The recipe rests on two kinds of session.</p>
+    <ol class="steps">
+      <li><b>Initializer session.</b> Sets up the project: an <code>init.sh</code> that brings up the development environment, a JSON feature list that lists every feature to build and marks all of them as failing, a <span class="g" data-g="Progress file">progress file</span> (<code>claude-progress.txt</code>) where progress is recorded, and the first git commit.</li>
+      <li><b>Coding sessions.</b> Each one opens the same way: read the progress file and the recent git log, bring up the environment with <code>init.sh</code>, check that the basic functionality still works, pick one failing feature from the list, implement and test it, set its <code>passes</code> field to <code>true</code> only if the test passed, commit, and update the progress file.</li>
+    </ol>
+<pre data-title="features.json (example)"><code>[
+  { "id": "F2",
+    "description": "The order list can be filtered by the status_code field",
+    "steps": ["call GET /api/orders?status=DELIVERED",
+              "only delivered orders should be returned"],
+    "passes": false }
+]</code></pre>
+<pre data-title="claude-progress.txt (example)"><code>Session 3 — F2 done (commit 4c1e9a2). Added a status filter to OrderQuery.
+Note: example.orders.status_code is stored upper-case; use ToUpperInvariant in the filter.
+Next: F3 CSV export. The seed data in init.sh loads 120 orders.</code></pre>
+    <p>A small but important observation: according to the post, the model was less inclined to overwrite JSON inappropriately than Markdown. The model happily “reorganises” a free-text to-do list; in a strict JSON structure, changing a single boolean field feels more natural. Likewise, it was stated explicitly that deleting or editing the tests in the feature list was unacceptable. That is a direct fuse against the premature completion from the previous lesson.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>The context is RAM, the file system is disk. When a database crashes, it does not try to rescue the state in RAM; it reads the WAL and the last checkpoint on disk and rebuilds. Here the git log plays the WAL, the progress file plays the checkpoint, and <code>init.sh</code> is the recovery procedure. Or think of an on-call handover: without a good handover note, the night shift has to rediscover everything from scratch.</div>
+
+    <div class="fig" data-widget="l5-long">
+      <p class="fig-title">Cross-session handover simulator</p>
+      <p class="fig-cap">A five-feature job for <code>example_app</code>. Every session starts with an empty context. Switch parts of the recipe on or off with the toggles, then press “Next session” to advance session by session. Feature chip colors: green passed, amber half-done, grey not started.</p>
+    </div>
+
+    <h3>When compaction, when a clean start?</h3>
+    <p>Compaction is not bad; it is practical for work on a single problem that needs a short break. But a summary is lossy. The Claude Code documentation says so plainly: automatic compaction preserves requests and key code, but detailed instructions from early in the conversation may be lost. That is why persistent rules go into CLAUDE.md, because that file is reloaded on every request (covered in level 9 together with the context budget). Restarting from the file system, on the other hand, is lossless, because you decide what is kept: the progress note, the feature list, the commit history.</p>
+    <p>One more detail: some models track their remaining token budget. If the harness is going to compact, or the work is going to span several windows, you need to say so in the prompt. Otherwise the model may notice the window filling up and try to close the work in a hurry. In Claude Code you can also use <code>/goal</code> for a long objective: a separate model checks every turn whether the condition has been met.</p>
+
+    <h3>Tasks are getting longer</h3>
+    <p>This recipe matters more and more. According to METR’s measurement, the length of tasks (measured in human time) that models can complete with 50 percent success doubled roughly every 7 months between 2019 and 2025. More recent estimates suggest that period is getting shorter; however, we could not verify those figures against a primary source, so we do not give them here. The trend is clear enough: as the work handed to agents gets longer, designing the handover between sessions becomes a harness responsibility.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>When you start a job that will take several sessions, dedicate the first session to setup only: create a script with the run and test commands, a JSON to-do list and a short progress file, and commit. Make the first message of every later session the same: “read the progress file and the last 10 commits, pick one failing item from the list.”</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>On long jobs, keep the state on disk, not in the context: a progress file, a JSON feature list, git history, a setup script.</li>
+        <li>One feature per session; every session ends in a clean, committable state.</li>
+        <li>Compaction is lossy; where possible, prefer a clean start from the file system.</li>
+        <li>If the harness will compact, tell the model; otherwise it may wrap up early as it nears the limit.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents (26 November 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Claude Docs: Prompting best practices (multi-window work, context awareness)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works (compaction)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (/goal)</a></li>
+      <li><a href="https://arxiv.org/abs/2503.14499">METR: Measuring AI Ability to Complete Long Tasks (arXiv 2503.14499, 2025)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ================= 6. VERIFIER ================= -->
+  <div class="lesson" data-tab="Verifier">
+    <h2>What closes the loop: the verifier</h2>
+    <p class="lead">The answer to why the agent loop works so well is one word: feedback. Writing correct code in one shot is hard, for humans too. But writing it, running it, seeing the error and fixing it is much easier. The loop gives the model that opportunity; the <span class="g" data-g="Verifier">verifier</span> determines the quality of that opportunity.</p>
+    <p>In its post introducing the Claude Agent SDK, Anthropic describes an agent’s working rhythm with four verbs: gather context, take action, verify the work, repeat. The Claude Code documentation puts the same idea more sharply: give the model something that reports pass or fail, and it can close the loop itself. This may be the most practical sentence in the whole course. <b>An agent’s quality is bounded by how verifiable the environment it works in is.</b></p>
+
+    <h3>Kinds of verifier</h3>
+    <div class="cols">
+      <div class="card h"><h4 class="h">Rules</h4>Compiler, type checker, linter, unit and integration tests. Deterministic, fast, cheap. The agent’s best friend. The Agent SDK post puts this first.</div>
+      <div class="card t"><h4 class="t">Visual feedback</h4>Take a screenshot and have the model look at it. In UI work it catches the alignment and overflow bugs that tests miss; but the interpretation is still up to the model.</div>
+      <div class="card m"><h4 class="m"><span class="g" data-g="LLM-as-judge">LLM-as-judge</span></h4>Another model call evaluates the output against criteria. For work that cannot be reduced to rules it may be the only option; Anthropic describes it as “generally not very robust”.</div>
+      <div class="card r"><h4 class="r">Human</h4>Business rules, product decisions, architectural fit. The most expensive and slowest verifier; so everything a machine can catch should be caught before it gets there.</div>
+    </div>
+    <p>These kinds form a ladder: the further down you go, the wider the range of bugs that can be caught, but speed, cheapness and reliability drop. A good setup puts the cheap, deterministic ones inside the loop and the expensive ones at the loop’s exit. The compiler and focused unit tests can run after every edit; the full test suite when the agent says “done”; human review when the PR is opened.</p>
+
+    <div class="fig" data-widget="l5-verify">
+      <p class="fig-title">Which verifier catches which bug?</p>
+      <p class="fig-cap">There are eight realistic bugs the agent could introduce in OrderMapper and the order screen. Select the verifiers you put in the loop; see which bug is caught, which is partly noticed and which slips silently all the way to the PR. Click a bug to see why.</p>
+    </div>
+
+    <h3>Why are models so good in the loop?</h3>
+    <p>In level 1 you saw reinforcement learning with verifiable rewards (RLVR): the model writes code, the tests run, and passing solutions are rewarded. Today’s coding models were trained heavily in exactly these environments, that is, on reading a test output and deciding the next move. When you give it a test command, you put it back in the environment it was trained in. When you do not, the model flies blind and when it says “done” nobody knows whether it really is.</p>
+
+    <h3>Three places to put the verifier in the loop</h3>
+    <ol class="steps">
+      <li><b>In the prompt.</b> Tie the definition of “done” to a command: “first write a failing test that reproduces the bug, then fix it; finish when <code>dotnet test</code> passes.” Claude Code’s own example is the same: instead of “login is broken, fix it”, a task that includes the symptom, the relevant folder and the instruction “write a failing test first” (level 3).</li>
+      <li><b>In the harness.</b> Stop hook, <code>/goal</code>, automatic format and lint after edits. These do not depend on the model remembering; they run every time. Detailed setup in level 8.</li>
+      <li><b>In the environment.</b> Fast, focused test commands and readable error messages. A test suite that takes twenty minutes means only a handful of iterations per session. Being able to run a single class with a filter improves the agent’s speed and accuracy together.</li>
+    </ol>
+
+    <h3>The verifier’s output is a prompt too</h3>
+    <p>A verifier does not just say pass or fail; what it says when it fails determines the model’s next move. Between an output that says “1 test failed” and one that says “Map_NullStatus_ReturnsUnknown: expected UNKNOWN, got unknown (OrderMapperTests.cs:42)” there is a difference of one or two turns for the agent. The reverse holds too: a stack dump hundreds of lines long fills the context and buries the line that matters. When you write your own Stop hook or test script, remember that the model will read the output: which test, which expectation, which file and line. A short, actionable, reproducible error message is the verifier-side counterpart of good tool design (level 4).</p>
+    <p>Then there is speed. The agent waits on every verification round, and every wait is real time. Instead of running the whole suite after every edit, running the relevant class with a filter inside the loop and saving the full suite for the “done” point makes room for far more iterations in the same session.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>This is TDD’s red-green cycle. The difference: humans practise TDD through discipline, while for an agent you can make it mandatory. The “show me the red test first” step is also a diagnostic check: if the test really reproduces the bug you saw, you can be sure the fix fixes the right thing.</div>
+
+    <div class="callout warn"><span class="ct">Caution</span>Goodhart’s law applies to agents too: when a measure becomes a target, it stops being a good measure. An agent fixated on passing the tests may loosen an assertion, skip the test or set the expected value to the actual output. Read the diff of the test files separately; if possible, block edits to the test folder with a hook or require approval for them.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>An agent’s quality is bounded by the verifiability of its environment. Fast, deterministic verifiers are the best investment.</li>
+        <li>Cheap verifiers inside the loop, expensive ones at the exit: the compiler on every edit, the test suite at “done”, a human at the PR.</li>
+        <li>LLM-as-judge is for work that cannot be reduced to rules; on its own it is not a reliable gate.</li>
+        <li>Protect the verifier too: read the test diff, lock the test folder.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code Docs: Best practices (verification, Stop hook)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code Docs: How Claude Code works</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic: Effective harnesses for long-running agents</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){ const s=document.createElement("style"); s.textContent=`
+.l5-code{font-family:var(--mono);font-size:.78rem;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.45rem 0;overflow-x:auto}
+.l5-code button{display:block;width:100%;min-width:max-content;text-align:left;background:none;border:0;border-left:4px solid transparent;font:inherit;color:var(--ink);padding:.15rem .8rem;white-space:pre;cursor:pointer;line-height:1.5}
+.l5-code button.m{border-left-color:var(--model)}
+.l5-code button.h{border-left-color:var(--harness)}
+.l5-code button.c{border-left-color:var(--ctx)}
+.l5-code button:hover{background:var(--soft)}
+.l5-code button[aria-pressed="true"]{background:var(--acc-bg)}
+.l5-code .cm{color:var(--faint)}
+.l5-row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.6rem}
+.l5-row > .lbl{font-family:var(--sans);font-size:.78rem;font-weight:700;color:var(--muted);min-width:7rem}
+.l5-sess{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:.9rem;margin-top:.8rem}
+@media (max-width:760px){.l5-sess{grid-template-columns:1fr}}
+.l5-sub{font-family:var(--sans);font-size:.75rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:.2rem 0 .35rem}
+.l5-msgs{display:flex;flex-direction:column;gap:3px;max-height:340px;overflow:auto}
+.l5-m{display:grid;grid-template-columns:auto 1fr auto;gap:.45rem;align-items:center;font-size:.78rem;padding:.28rem .5rem;border-radius:6px;border-left:4px solid var(--line);background:var(--paper)}
+.l5-m.user{border-left-color:var(--tool)}
+.l5-m.asst{border-left-color:var(--model)}
+.l5-m.res{border-left-color:var(--harness)}
+.l5-m.hook{border-left-color:var(--risk)}
+.l5-m.base{border-left-color:var(--faint)}
+.l5-m.new{background:var(--ctx-bg)}
+.l5-m .tk{font-family:var(--mono);color:var(--muted);font-size:.72rem}
+.l5-m .rl{font-family:var(--sans);font-weight:800;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.l5-narr{font-size:.9rem;margin:.1rem 0 .6rem}
+.l5-pat{display:flex;align-items:center;gap:.45rem;margin-top:.9rem}
+.l5-stage{display:flex;flex-direction:column;gap:.35rem;flex:1 1 0;min-width:0}
+.l5-node{border:2px solid var(--line);border-radius:9px;padding:.45rem .5rem;font-size:.76rem;line-height:1.3;text-align:center;background:var(--paper);transition:transform .25s,background .25s,border-color .25s}
+.l5-node.llm{border-color:color-mix(in srgb,var(--model) 45%,var(--line))}
+.l5-node.code{border-color:color-mix(in srgb,var(--harness) 45%,var(--line))}
+.l5-node.io{border-style:dashed}
+.l5-node.on{transform:translateY(-2px)}
+.l5-node.llm.on{background:var(--model-bg);border-color:var(--model)}
+.l5-node.code.on{background:var(--harness-bg);border-color:var(--harness)}
+.l5-node.io.on{background:var(--ctx-bg);border-color:var(--ctx)}
+.l5-arr{color:var(--faint);font-weight:800;flex:none}
+@media (max-width:600px){.l5-pat{flex-direction:column;align-items:stretch}.l5-stage{flex-direction:row;flex-wrap:wrap}.l5-stage .l5-node{flex:1 1 30%}.l5-arr{align-self:center;transform:rotate(90deg)}}
+.l5-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.5rem}
+.l5-card{text-align:left;font-family:var(--body);font-size:.86rem;line-height:1.4;padding:.65rem .75rem;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);cursor:pointer}
+.l5-card:hover{border-color:var(--muted)}
+.l5-card[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l5-tg{font-family:var(--sans);font-size:.78rem;font-weight:600;border:1px solid var(--line);background:var(--paper);color:var(--muted);border-radius:999px;padding:.28rem .7rem;cursor:pointer}
+.l5-tg[aria-pressed="true"]{background:var(--harness);border-color:var(--harness);color:#fff}
+.l5-tg.bad[aria-pressed="true"]{background:var(--risk);border-color:var(--risk)}
+.l5-outc{display:flex;flex-direction:column;gap:.45rem}
+.l5-outc p{margin:0}
+.l5-feats{display:flex;flex-wrap:wrap;gap:.35rem;margin:.7rem 0 .3rem}
+.l5-feat{font-family:var(--mono);font-size:.74rem;padding:.25rem .5rem;border-radius:6px;border:1px solid var(--line);background:var(--soft);color:var(--muted)}
+.l5-feat.done{background:var(--ok-bg);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.l5-feat.half{background:var(--ctx-bg);color:var(--ctx);border-color:color-mix(in srgb,var(--ctx) 45%,var(--line))}
+.l5-slog{display:flex;flex-direction:column;gap:.5rem;max-height:400px;overflow:auto;margin-top:.6rem}
+.l5-slog .s{border:1px solid var(--line);border-radius:9px;padding:.55rem .75rem;background:var(--paper);font-size:.84rem}
+.l5-slog .s h5{margin:0 0 .3rem;font-family:var(--sans);font-size:.86rem}
+.l5-slog .s ul{margin:0;padding-left:1.1rem}
+.l5-slog .s li{margin:.1rem 0}
+.l5-slog .s.bad{border-color:color-mix(in srgb,var(--risk) 50%,var(--line))}
+.l5-vlist{display:flex;flex-direction:column;gap:4px;margin-top:.8rem}
+.l5-bug{display:grid;grid-template-columns:1fr auto;gap:.5rem;align-items:center;text-align:left;font-family:var(--body);font-size:.84rem;line-height:1.35;padding:.45rem .6rem;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);cursor:pointer}
+.l5-bug:hover{border-color:var(--muted)}
+.l5-bug[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+`; document.head.append(s); })();
+
+Edu.glossary({
+  "Agent loop": "The loop that calls the model, runs the requested tools, appends their results to the history and repeats until the model stops asking for tools or a limit is reached. The skeleton of an agent.",
+  "stop_reason": "The field in a Claude API response that says why the model stopped: tool_use, end_turn, max_tokens, stop_sequence, refusal, pause_turn and so on. The loop continues or exits based on this field.",
+  "end_turn": "stop_reason value: the model finished its turn naturally and is not asking for a tool. The loop exits here; but that does not mean the work is actually done.",
+  "pause_turn": "stop_reason value: a server-side tool loop hit its iteration limit. If you resend the request as is, the model continues where it left off.",
+  "max_turns": "The maximum number of model turns allowed in one agent run. The OpenAI Agents SDK raises MaxTurnsExceeded when it is exceeded; the basic fuse of every loop.",
+  "Workflow": "A system where LLM calls and tools are orchestrated through paths whose order and branching are fixed in code beforehand. In an agent, the model picks the path.",
+  "Augmented LLM": "A single model call enhanced with retrieval, tools and memory. The common building block of workflows and agents.",
+  "Prompt chaining": "A workflow pattern that splits the work into sequential model calls; each step’s output is the next one’s input, and programmatic check gates can sit between them.",
+  "Routing": "A workflow pattern that first classifies the input and then directs it to a specialized prompt, handler or model.",
+  "Parallelization": "A workflow pattern that runs independent subtasks at the same time (sectioning) or runs the same task several times and votes (voting).",
+  "Orchestrator-workers": "A pattern where an orchestrator model breaks the work into subtasks at run time, hands them to workers and merges the results. The subtasks are not known in advance.",
+  "Evaluator-optimizer": "An iterative pattern where one call generates, another evaluates against criteria and gives feedback, and the generator tries again.",
+  "ReAct": "A 2022 approach: the model writes Thought / Action / Observation lines in turn, and the harness parses the Action line out of the text and runs it. The ancestor of today’s tool calling.",
+  "Premature completion": "The agent saying “done” and stopping before the work is finished. The most common failure mode; the cure is a verifier at the loop’s exit.",
+  "Drift": "The agent slowly wandering away from the task and taking on unwanted work (unrelated refactors, renaming).",
+  "Thrashing": "A system repeating the same work without making progress; for example, a large tool output refilling the context right after compaction.",
+  "Progress file": "A file where, on long tasks, the agent writes at the end of each session what it did and what is left (for example claude-progress.txt). Since a new session starts with no memory, it serves as the handover note.",
+  "Stop hook": "A Claude Code hook that runs when the agent wants to stop. If it returns exit code 2, its error output is passed to the model and the loop continues; after 8 blocks in a row it is disregarded.",
+  "Verifier": "Anything that tells you pass/fail whether the agent’s work is correct: a compiler, a test, a linter, a screenshot, a second model or a human.",
+  "LLM-as-judge": "Having another model call evaluate an output against criteria. Useful for work that cannot be reduced to rules, but not a reliable gate on its own."
+});
+
+/* ---------------- 1a. Loop code ---------------- */
+Edu.widget("l5-code", el => {
+  const { h, $ } = Edu;
+  const L = [
+    { c:"messages = [user(task)]", k:"c", t:"Initial state", d:"The conversation starts with a single user message. The system prompt and tool definitions are not inside messages; they go as separate parameters on every request. messages only holds the user and assistant turns.", w:"Cannot be skipped: this list is the session’s only memory. If the harness does not write it to disk, you cannot resume the session." },
+    { c:"for turn in range(MAX_TURNS):", k:"h", t:"Hard stop condition", d:"This may be the most important line in the loop. The one fuse that does not trust the model to say “done”. It can be measured in turns, tokens or time.", w:"Without a limit the model can try the same failing approach until morning; since every turn resends the whole history, the cost grows with every turn." },
+    { c:"    resp = llm(system, tools, messages)", k:"m", t:"The single probabilistic line", d:"Every decision is here: which tool, which arguments, is the work done? The model reads system + tools + all of messages and produces either text or tool_use blocks. The API is stateless; everything is resent on every call (level 2).", w:"Without this line all you have is a script. And because of this line, you have to write everything else defensively." },
+    { c:"    messages.append(assistant(resp.content))", k:"c", t:"Append the response to the history", d:"The model’s response, including its tool_use blocks, is appended to the history as is. The tool_result blocks in the next user message will point to these tool_use ids.", w:"Forget it and on the next request there is no tool_use for the tool_result to match, so the API rejects the request (level 4)." },
+    { c:"    if resp.stop_reason != \"tool_use\":", k:"h", t:"Steering wheel", d:"If the model is not asking for a tool, exit the loop. But the reason for exiting matters: end_turn, max_tokens, refusal and the others must be handled differently. The explorer below shows them one by one.", w:"A loop that ignores stop_reason mistakes a truncated response (max_tokens) for finished work." },
+    { c:"        break", k:"h", t:"Exit", d:"The loop ends and the final text is shown to the user. In real harnesses one more check can run at this point: in Claude Code the Stop hook kicks in here and restarts the loop if needed.", w:"Without verification at the exit, the word “done” is accepted without evidence; premature completion leaks in here." },
+    { c:"    results = [run(t) for t in resp.tool_uses]", k:"h", t:"Run the tools", d:"The harness’s real job. For each tool_use the permission rules are checked, the user is asked if necessary, PreToolUse hooks run, the command executes in the sandbox and the output is trimmed. Independent calls can run in parallel.", w:"The model could run anything it wanted, unchecked. Security is not built in the model; it is built on this line (levels 6, 8 and 10)." },
+    { c:"    messages.append(user([tool_result(r) for r in results]))", k:"c", t:"Put the results back", d:"All results are appended in a single user message, as tool_result blocks matched by tool_use_id. Errors come back with is_error and an actionable message.", w:"The model cannot know whether the tool really ran; it only sees the text placed here. Whatever you show it becomes its world." },
+    { c:"    if tokens(messages) > BUDGET:", k:"c", t:"Context budget", d:"The history grows every turn. At some threshold something has to happen: clear old tool results, summarize, or split the work.", w:"The window overflows; or even before it overflows, quality drops (context rot, level 2)." },
+    { c:"        messages = compact(messages)", k:"c", t:"Compaction", d:"The history is replaced by a summary. The summary is lossy: detailed instructions from early in the conversation may drop out. That is why persistent rules belong in files loaded on every request, such as CLAUDE.md.", w:"Long sessions either overflow or turn into expensive requests that carry the entire history." },
+    { c:"else:", k:"h", t:"for-else", d:"In Python, if a for loop ends without a break, the else block runs. So you only get here if MAX_TURNS ran out.", w:"" },
+    { c:"    raise MaxTurnsExceeded()", k:"h", t:"Controlled failure", d:"The limit is reached. A good harness does not quietly present half-done work as “done” here; it tells the user where it got stuck. The OpenAI Agents SDK raises an error with the same name, and if you like you can turn it into a controlled final output with a handler.", w:"A run that hit the limit looks successful and the half-done work goes unnoticed." }
+  ];
+  const box = $(".l5-code", el), out = $(".l5-code-out", el);
+  const tag = { m:["Model","m"], h:["Harness","h"], c:["Context","c"] };
+  L.forEach((ln, i) => {
+    const b = h("button", { type:"button", class: ln.k, "aria-pressed":"false" });
+    b.textContent = ln.c;
+    b.addEventListener("click", () => {
+      Edu.$$("button", box).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag " + tag[ln.k][1] }, tag[ln.k][0]), " ", h("b", null, ln.t + ". "), ln.d));
+      if (ln.w) out.append(h("p", { class:"muted" }, h("span", { class:"r" }, "Without this line: "), ln.w));
+    });
+    box.append(b);
+  });
+});
+
+/* ---------------- 1b. stop_reason explorer ---------------- */
+Edu.widget("l5-stop", el => {
+  const { h, $, json, seg } = Edu;
+  const D = {
+    tool_use: { r:{ stop_reason:"tool_use", content:[ { type:"text", text:"Let me run the test first." }, { type:"tool_use", id:"toolu_01", name:"Bash", input:{ command:"dotnet test --filter OrderMapper" } } ] },
+      act:"Continue. Append this response to the history, run every tool_use block, add the results as tool_result in a single user message and call the model again.",
+      pit:"One response can contain several tool_use blocks. Skipping one means the results will not match." },
+    end_turn: { r:{ stop_reason:"end_turn", content:[ { type:"text", text:"Fixed it. The mapper now returns UNKNOWN for a NULL status_code." } ] },
+      act:"Exit the loop and show the text to the user. If you have a verifier (such as a Stop hook), run it now; if it is red, append the feedback and keep the loop going.",
+      pit:"end_turn does not mean “I finished the work”, it means “I finished my turn”. The model can return end_turn without testing the fix." },
+    max_tokens: { r:{ stop_reason:"max_tokens", content:[ { type:"text", text:"The problem in OrderMapper is this: on line 88 status_code is cast directly to a stri" } ] },
+      act:"The response was cut off. Either send a continuation request or raise max_tokens. If there is a truncated tool_use block, do not run it; its input may be incomplete.",
+      pit:"The sneakiest bug: mistaking a truncated response for a finished one. The user sees half a sentence and half a fix." },
+    stop_sequence: { r:{ stop_reason:"stop_sequence", stop_sequence:"</patch>", content:[ { type:"text", text:"<patch>--- a/OrderMapper.cs ..." } ] },
+      act:"One of the custom stop sequences you gave in the request was generated. It is usually a deliberate cut point: parse the output and continue according to your own flow.",
+      pit:"Rare in agent loops. If you use them, check which sequence it stopped on in the stop_sequence field." },
+    refusal: { r:{ stop_reason:"refusal", content:[ { type:"text", text:"I can’t help with this request." } ] },
+      act:"The model did not continue for safety reasons. Exit the loop and show it to the user clearly as a refusal.",
+      pit:"Presenting the refusal as success, or blindly resending the same request. Both are wrong." },
+    pause_turn: { r:{ stop_reason:"pause_turn", content:[ { type:"server_tool_use", id:"srvtoolu_01", name:"web_search", input:{ query:"..." } } ] },
+      act:"A tool loop running on the server side (such as web search) hit its iteration limit. Append the response as is and resend the request; the model continues where it left off.",
+      pit:"A harness that mistakes pause_turn for completion abandons the work halfway and the user sees a partial result." },
+    model_context_window_exceeded: { r:{ stop_reason:"model_context_window_exceeded", content:[ { type:"text", text:"Summary of the changes: 1) OrderMapper..." } ] },
+      act:"When input plus max_tokens exceeds the window, on 4.5 and later models the request is not rejected; generation stops for this reason when the window fills. Shrink the context (compaction, clearing old tool results) and continue.",
+      pit:"Treating it like end_turn. A response cut off because the window filled is not a finished response." }
+  };
+  const js = $(".l5-stop-json", el), out = $(".l5-stop-out", el);
+  seg($(".l5-stop-seg", el), v => {
+    const d = D[v];
+    js.innerHTML = json(d.r, { hl:["stop_reason"] });
+    out.innerHTML = "";
+    out.append(h("p", null, h("span", { class:"tag h" }, "What the loop should do"), " ", d.act), h("p", { class:"muted" }, h("span", { class:"r" }, "Typical mistake: "), d.pit));
+  });
+});
+
+/* ---------------- 2. Session simulation ---------------- */
+Edu.widget("l5-session", el => {
+  const { h, $, $$, json, stepper } = Edu;
+  const BASE = 9000;
+  const ST = [["Model call","m","llm(system, tools, messages)"],["stop_reason?","h","tool_use or not"],["Run the tool","h","permission, sandbox, execution"],["Append the result","c","tool_result into messages"],["Stop hook","h","test before stopping"]];
+  const tu = (id, name, input) => ({ type:"tool_use", id, name, input });
+  const tr = (id, content) => ({ role:"user", content:[{ type:"tool_result", tool_use_id:id, content }] });
+  const S = [
+    { on:[], t:"The task arrives", d:"The user types one sentence. The harness makes it the first element of the messages array. The system prompt and tool definitions (≈9,000 tokens, illustrative) go separately on every request.",
+      m:{ r:"user", s:"Task", k:60, cls:"user" }, j:{ role:"user", content:"The OrderMapper test in example_app is red, fix it." } },
+    { on:[0,1], call:true, t:"Model call 1", d:"The model knows nothing yet; it wants to gather evidence first. The response is a text block and a tool_use block. stop_reason: tool_use, so the loop will continue.",
+      m:{ r:"assistant", s:"text + tool_use Bash", k:90, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ { type:"text", text:"Let me run the test first and see the error." }, tu("toolu_01","Bash",{ command:"dotnet test --filter OrderMapper" }) ] } },
+    { on:[2,3], t:"The harness runs it", d:"The permission rule allows dotnet test. The harness runs the command and appends the output as a tool_result. With its stack traces, the test output is starting to become the largest part of the context.",
+      m:{ r:"user", s:"tool_result: 1 failed (InvalidCastException)", k:1800, cls:"res" }, j:tr("toolu_01","Failed! 1 failed, 23 passed\n  Map_NullStatus_ReturnsUnknown\n  System.InvalidCastException at OrderMapper.cs:88 ...") },
+    { on:[0,1], call:true, t:"Model call 2", d:"The error points to line 88. The model wants to read the file. On this call the model re-read everything from the first call plus the test output.",
+      m:{ r:"assistant", s:"tool_use Read", k:80, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_02","Read",{ file_path:"src/Orders/OrderMapper.cs" }) ] } },
+    { on:[2,3], t:"The file enters the context", d:"The file’s contents entered the context. Most of the history now consists of tool results; what the model wrote itself is a few hundred tokens.",
+      m:{ r:"user", s:"tool_result: OrderMapper.cs (210 lines)", k:2400, cls:"res" }, j:tr("toolu_02","86  var row = reader.Current;\n87  var dto = new OrderDto();\n88  dto.Status = (string)row[\"status_code\"];\n...\n91  dto.Status = Normalize(dto.Status);") },
+    { on:[0,1], call:true, t:"Model call 3", d:"The model saw that the NULL value cannot be cast. It asks for an edit: if NULL, assign \"UNKNOWN\". It missed the Normalize call on line 91.",
+      m:{ r:"assistant", s:"tool_use Edit", k:160, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_03","Edit",{ file_path:"src/Orders/OrderMapper.cs", old_string:"(string)row[\"status_code\"]", new_string:"row[\"status_code\"] as string ?? \"UNKNOWN\"" }) ] } },
+    { on:[2,3], t:"The edit is applied", d:"The harness applies the edit and returns a short confirmation. The model does not know whether the edit is correct; it only knows it was applied.",
+      m:{ r:"user", s:"tool_result: ok", k:40, cls:"res" }, j:tr("toolu_03","The file src/Orders/OrderMapper.cs has been updated.") },
+    { on:[0,1], call:true, t:"Model call 4: “done”", d:"The model decided to finish without rerunning the test. stop_reason: end_turn. A simple loop exits here and the user sees a “Fixed it” message. This is premature completion.",
+      m:{ r:"assistant", s:"text, end_turn", k:60, cls:"asst" }, j:{ stop_reason:"end_turn", content:[ { type:"text", text:"Fixed it! The mapper now returns UNKNOWN for a NULL status_code." } ] } },
+    { on:[4,3], hook:true, t:"The Stop hook steps in", d:"Before stopping, the harness runs the tests itself. The test is red; the hook exits with code 2. Claude Code passes this output to the model and the loop goes on. How the message is presented to the model depends on the harness; this is a simplified version.",
+      m:{ r:"user", s:"Stop hook feedback (exit 2)", k:120, cls:"hook" }, j:{ role:"user", content:"Stop hook feedback (exit 2): dotnet test → 1 failed: Map_NullStatus_ReturnsUnknown. Expected \"UNKNOWN\", got \"unknown\"." } },
+    { on:[0,1], call:true, t:"Model call 5", d:"New evidence: the value was lowercased. The model remembers Normalize on line 91 (the file is still in context) and moves the fix there.",
+      m:{ r:"assistant", s:"tool_use Edit", k:170, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ { type:"text", text:"Normalize() lowercases the fallback value too. Let me keep UNKNOWN out of normalization." }, tu("toolu_04","Edit",{ file_path:"src/Orders/OrderMapper.cs", old_string:"dto.Status = Normalize(dto.Status);", new_string:"dto.Status = dto.Status == \"UNKNOWN\" ? dto.Status : Normalize(dto.Status);" }) ] } },
+    { on:[2,3], t:"The edit is applied", d:"The second edit is applied too.",
+      m:{ r:"user", s:"tool_result: ok", k:40, cls:"res" }, j:tr("toolu_04","The file src/Orders/OrderMapper.cs has been updated.") },
+    { on:[0,1], call:true, t:"Model call 6", d:"This time the model does not finish without verifying: it wants to run the full test suite. The hook’s feedback changed its behavior.",
+      m:{ r:"assistant", s:"tool_use Bash", k:70, cls:"asst" }, j:{ stop_reason:"tool_use", content:[ tu("toolu_05","Bash",{ command:"dotnet test" }) ] } },
+    { on:[2,3], t:"Tests are green", d:"The whole suite passed. The result is short; a good tool output already filters out the unnecessary lines.",
+      m:{ r:"user", s:"tool_result: 214 passed", k:220, cls:"res" }, j:tr("toolu_05","Passed! - Failed: 0, Passed: 214, Skipped: 0, Total: 214") },
+    { on:[0,1], call:true, t:"Model call 7: really done", d:"The model writes its summary and stops with end_turn. This time it has evidence.",
+      m:{ r:"assistant", s:"text, end_turn", k:150, cls:"asst" }, j:{ stop_reason:"end_turn", content:[ { type:"text", text:"Root cause: a NULL status_code could not be cast; on top of that, the fallback value was being lowercased by Normalize(). Two lines changed in OrderMapper.cs, 214 tests pass." } ] } },
+    { on:[4], end:true, t:"The hook passes, the loop ends", d:"The Stop hook reruns the tests: green, exit code 0. The loop ends; the user sees the final summary. In the UI this session is a few lines; behind the curtain there were 7 model calls and 14 messages.",
+      m:null, j:{ hook:"Stop", command:"dotnet test", exit_code:0, result:"the loop ends, the final text is shown to the user" } }
+  ];
+  const flow = h("div", { class:"flow", "aria-label":"Loop stations" });
+  const nodes = ST.map((s, i) => { const n = h("div", { class:"node " + s[1] }, h("b", null, s[0]), s[2]); flow.append(n); if (i < ST.length - 1) flow.append(h("span", { class:"arrow", "aria-hidden":"true" }, "→")); return n; });
+  const narr = h("div", { class:"l5-narr", "aria-live":"polite" });
+  const list = h("div", { class:"l5-msgs" });
+  const js = h("div", { class:"jsonv" });
+  const stats = h("div", { class:"stats" });
+  const wrap = h("div", null, flow, h("div", { class:"l5-sess" },
+    h("div", null, narr, h("p", { class:"l5-sub" }, "messages array"), list),
+    h("div", null, h("p", { class:"l5-sub" }, "JSON exchanged at this step"), js)), stats);
+  const fmt = n => n.toLocaleString("en");
+  stepper(el, { steps:S, auto:2600, render(i, s, { body }){
+    if (!body.contains(wrap)) body.append(wrap);
+    nodes.forEach((n, k) => n.classList.toggle("on", s.on.includes(k)));
+    narr.innerHTML = "";
+    narr.append(h("b", null, s.t + ". "), s.d);
+    list.innerHTML = "";
+    list.append(h("div", { class:"l5-m base" }, h("span", { class:"rl" }, "fixed"), h("span", null, "system prompt + tool definitions"), h("span", { class:"tk" }, fmt(BASE))));
+    let ctx = BASE, calls = 0, cum = 0, lastRow = null;
+    for (let k = 0; k <= i; k++){
+      if (S[k].call){ calls++; cum += ctx; }
+      if (S[k].m){
+        ctx += S[k].m.k;
+        lastRow = h("div", { class:"l5-m " + S[k].m.cls }, h("span", { class:"rl" }, S[k].m.r), h("span", null, S[k].m.s), h("span", { class:"tk" }, "+" + fmt(S[k].m.k)));
+        list.append(lastRow);
+      }
+    }
+    if (lastRow && S[i].m) lastRow.classList.add("new");
+    list.scrollTop = list.scrollHeight;
+    js.innerHTML = json(S[i].j, { hl:["stop_reason","tool_use_id","id","exit_code"] });
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, String(calls)), "model calls"),
+      h("span", null, h("b", null, fmt(ctx)), "context (tokens, illustrative)"),
+      h("span", null, h("b", null, fmt(cum)), "total processed input"));
+  }});
+});
+
+/* ---------------- 3a. Pattern visualizer ---------------- */
+Edu.widget("l5-patterns", el => {
+  const { h, $, $$, seg, stepper } = Edu;
+  const P = {
+    chain: { arrows:["→","→","→","→","→"],
+      st:[[["Commit list","io"]],[["1. Extract changes","llm"]],[["Gate: is the JSON valid?","code"]],[["2. Categorize","llm"]],[["3. Write release notes","llm"]],[["Release notes","io"]]],
+      steps:[["0","Input: 37 commit messages since the last release."],["1","Model call 1 extracts the change from each commit as structured JSON."],["2","Your code validates the JSON against a schema. If it is invalid, the chain stops or the step is retried. The intermediate output is logged: auditability is the real gain of this pattern."],["3","Model call 2 sorts the changes into features, fixes and internal changes."],["4","Model call 3 writes the release notes."],["5","Output. The number of steps is 3 every time; cost and duration are known up front."]] },
+    route: { arrows:["→","→","→"],
+      st:[[["Support ticket","io"]],[["Classifier","llm"]],[["Billing handler","llm"],["Technical bug handler","llm"],["Feature request handler","llm"]],[["Reply + queue","io"]]],
+      steps:[["0","Input: “The order screen returns a 500, order_id 1042.”"],["1","The classifier produces a single label: technical_bug. This step can be done with a small, cheap model."],["2.1","Your code calls the matching handler based on the label. Each branch has its own prompt, its own tools and, if needed, its own model."],["3","A reply and the right queue. A wrong classification goes to the wrong branch; measure the classifier’s accuracy separately."]] },
+    par: { arrows:["→","→","→"],
+      st:[[["PR diff","io"]],[["Security review","llm"],["Performance review","llm"],["Readability review","llm"]],[["Merge","code"]],[["Single review comment","io"]]],
+      steps:[["0","Input: a PR diff touching 14 files."],["1.0 1.1 1.2","Three calls run at the same time; each focuses on a single concern (sectioning). Because the focus is narrow, each one looks deeper."],["2","Your code merges the results and removes duplicates. In the voting form, the same question is asked three times and the decision is made by vote."],["3","A single review comment. The duration is that of the slowest branch; the cost is multiplied by the number of branches."]] },
+    orch: { arrows:["→","→","→","→"],
+      st:[[["Task: move date fields to UTC","io"]],[["Orchestrator","llm"]],[["Worker: OrderMapper.cs","llm"],["Worker: ShipmentService.cs","llm"],["Worker: report_orders.sql","llm"]],[["Synthesiser","llm"]],[["Single diff","io"]]],
+      steps:[["0","Input: “Move the created_at and delivered_at fields to UTC.” It is not clear how many files will be affected."],["1","The orchestrator inspects the code and decides the subtasks at run time: three files this time. In another task it could have been twelve; that is the difference from parallelization."],["2.0 2.1 2.2","The workers operate on their own files. For work that needs shared context this is the weak point: one worker does not know the other’s decisions."],["3","The synthesiser merges the results and resolves inconsistencies."],["4","A single diff. A multi-agent setup uses noticeably more tokens than a single agent."]] },
+    eval: { arrows:["→","⇄","→"],
+      st:[[["English help text","io"]],[["Generator: translation","llm"]],[["Evaluator: glossary + criteria","llm"]],[["Approved translation","io"]]],
+      steps:[["0","Input: the English help text of the order screen and the company’s Turkish terminology glossary."],["1","The generator writes the first translation."],["2","The evaluator checks the criteria: “the glossary says ‘sipariş’ for order, but ‘emir’ was used.” The feedback goes back to the generator."],["1","The generator rewrites with the feedback. Here is the loop: if the criteria are clear, every round genuinely improves the result."],["2","The evaluator approves. Do not forget a round limit; if the criteria are vague, the loop just spins."],["3","The approved translation."]] },
+    agent: { arrows:["→","⇄","→"],
+      st:[[["User: fix the red test","io"]],[["Model","llm"]],[["Environment: tools, files, tests","code"]],[["Stop: end_turn + verification","io"]]],
+      steps:[["0","Input: an open-ended goal. Nobody knows how many steps it will take."],["1","The model picks the next action: run the test."],["2","The environment returns the real result. This feedback is what separates an agent from a workflow: the path changes based on evidence from the environment."],["1","The model decides based on the new evidence: read the file, edit, test again. This pair spins as many times as it needs."],["2","Every round is a model call: flexibility paid for with cost, latency and compounding errors."],["3","The model returns end_turn; a good harness confirms it with a verifier."]] }
+  };
+  const host = $(".l5-pat-host", el);
+  seg($(".l5-pat-seg", el), v => {
+    const p = P[v];
+    host.innerHTML = "";
+    const diag = h("div", { class:"l5-pat" });
+    const stageEls = [];
+    p.st.forEach((stage, si) => {
+      const sEl = h("div", { class:"l5-stage" });
+      stage.forEach(n => sEl.append(h("div", { class:"l5-node " + n[1] }, n[0])));
+      stageEls.push(sEl); diag.append(sEl);
+      if (si < p.st.length - 1) diag.append(h("span", { class:"l5-arr", "aria-hidden":"true" }, p.arrows[si]));
+    });
+    const sp = h("div");
+    if (el._l5st) el._l5st.stop();
+    host.append(diag, sp);
+    const narr = h("div", { class:"panel live", "aria-live":"polite" });
+    el._l5st = stepper(sp, { steps:p.steps, auto:2200, render(i, s, { body }){
+      if (!body.contains(narr)) body.append(narr);
+      $$(".l5-node", diag).forEach(n => n.classList.remove("on"));
+      s[0].split(" ").forEach(key => {
+        const [a, b] = key.split(".");
+        const nodesIn = $$(".l5-node", stageEls[+a]);
+        (b === undefined ? nodesIn : [nodesIn[+b]]).forEach(n => n && n.classList.add("on"));
+      });
+      narr.textContent = s[1];
+    }});
+  });
+});
+
+/* ---------------- 3b. Scenario cards ---------------- */
+Edu.widget("l5-scen", el => {
+  const { h, $, $$ } = Edu;
+  const C = [
+    { t:"Every time a PR is opened, summarize the diff and apply the right labels.", p:"Prompt chaining", w:"The steps are the same every time: summarize, then label. Being able to log and audit the intermediate output (the summary) is valuable. No loop needed.", b:"If PRs start coming in very different shapes, add a routing step at the front." },
+    { t:"Sort tickets arriving in the support channel into billing, technical bug and feature request, and draft a suitable first reply for each.", p:"Routing", w:"The input types are known and each type needs a different prompt. Classification can be done with a cheap model, the reply with a model suited to the type.", b:"When the classifier’s error rate is high; then you need a “route to a human” branch for ambiguous tickets." },
+    { t:"Review a PR separately for security, performance and readability.", p:"Parallelization (sectioning)", w:"The three perspectives are independent of each other; focusing on each separately makes each one deeper, and since they run in parallel it does not take longer.", b:"If the reviews need each other’s findings (for example the security impact of a performance fix), a single deep review may be better." },
+    { t:"There is a suspected security vulnerability in a piece of code; a false alarm is expensive.", p:"Parallelization (voting)", w:"Asking the same question to several independent runs and setting a threshold (say two out of three) reduces the noise of a single run.", b:"The cost is multiplied by the number of runs; not worth it for low-risk work." },
+    { t:"“Move the created_at fields to UTC.” You do not know how many files will be affected.", p:"Orchestrator-workers or a single agent", w:"The subtasks are not known in advance; something has to work them out at run time. But if the changes depend on each other (like a shared helper function), a single agent’s shared context is safer.", b:"A multi-agent setup uses noticeably more tokens; for coding work that needs shared context, a single agent is usually enough." },
+    { t:"Translate the app’s English help texts into Turkish, following the company terminology glossary.", p:"Evaluator-optimizer", w:"There is a clear criterion (the glossary), and an evaluation’s feedback genuinely improves the translation.", b:"If the criteria are vague, the evaluator produces arbitrary objections; a round limit is a must." },
+    { t:"Find and fix a red test in example_app.", p:"Agent", w:"You cannot know how many files will be read or how many times the tests will run; the path changes based on evidence from the environment. The tests provide a ready-made verifier.", b:"Without tests, the agent’s “done” has no evidence behind it; have it write a test that reproduces the bug first." },
+    { t:"Once a month, draft the SQL for a monthly revenue report from example.orders.", p:"A single model call", w:"A single call enriched with the schema and a few example queries is enough. A loop, tools and orchestration are needless complexity.", b:"If the query needs to be tried against real data, it can turn into a small agent with a read-only tool; but never with write access." }
+  ];
+  const grid = $(".l5-scen-grid", el), out = $(".l5-scen-out", el);
+  grid.classList.add("l5-grid");
+  C.forEach(c => {
+    const b = h("button", { type:"button", class:"l5-card", "aria-pressed":"false" }, c.t);
+    b.addEventListener("click", () => {
+      $$("button", grid).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = "";
+      out.append(h("p", null, h("span", { class:"tag h" }, "Suggested"), " ", h("b", null, c.p), ". ", c.w),
+        h("p", { class:"muted" }, h("span", { class:"c" }, "When it falls short: "), c.b));
+    });
+    grid.append(b);
+  });
+});
+
+/* ---------------- 4. Failure simulator ---------------- */
+Edu.widget("l5-fail", el => {
+  const { h, $, $$, sleep, runner } = Edu;
+  const o = { premature:false, loop:false, flaky:false, drift:false, hook:true, watch:false, maxOn:true, max:25 };
+  const tg = (key, label, bad) => {
+    const b = h("button", { type:"button", class:"l5-tg" + (bad ? " bad" : ""), "aria-pressed": o[key] ? "true" : "false" }, label);
+    b.addEventListener("click", () => { o[key] = !o[key]; b.setAttribute("aria-pressed", o[key] ? "true" : "false"); });
+    return b;
+  };
+  const rng = h("input", { type:"range", min:"4", max:"30", value:String(o.max), id:"l5-fail-max" });
+  const rout = h("output", { for:"l5-fail-max" }, String(o.max));
+  rng.addEventListener("input", () => { o.max = +rng.value; rout.textContent = rng.value; });
+  const run = h("button", { type:"button", class:"btn" }, "▶ Run");
+  const term = h("div", { class:"term-body", "aria-live":"off" });
+  const res = h("div", { class:"panel live l5-outc", "aria-live":"polite" }, h("span", { class:"muted" }, "Pick a combination and press Run."));
+  const stats = h("div", { class:"stats" });
+  el.append(
+    h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Inject failures"), tg("premature","Premature “done”",1), tg("loop","Loop: ineffective fix",1), tg("flaky","Flaky test",1), tg("drift","Drift",1)),
+    h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Defenses"), tg("hook","Stop hook: dotnet test"), tg("watch","Watch the first minute (Esc)"), tg("maxOn","MAX_TURNS limit")),
+    h("div", { class:"l5-row" }, h("div", { class:"range" }, h("label", { for:"l5-fail-max" }, "MAX_TURNS"), rng, rout), run),
+    h("div", { class:"term" }, h("div", { class:"term-bar" }, h("i"), h("i"), h("i"), h("span", null, "agent session")), term),
+    stats, res);
+
+  function simulate(){
+    const L = []; let turn = 0, ctx = 9000, total = 0, blocks = 0, files = 1, stopped = false; const out = [];
+    const say = (c, t) => L.push([c, t]);
+    const call = desc => {
+      if (o.maxOn && turn >= o.max){ say("e", "MAX_TURNS=" + o.max + " reached → the harness stops the loop (MaxTurnsExceeded)."); out.push("max"); return false; }
+      turn++; total += ctx; say("v", "[turn " + turn + "] model → " + desc); return true;
+    };
+    const tool = (cmd, r, tok, cls) => { say("b", "   $ " + cmd); say(cls || "d", "   " + r); ctx += tok; };
+    const fin = () => ({ L, out, turn, ctx, total, files });
+    if (!call("tool_use Bash")) return fin();
+    tool("dotnet test --filter OrderMapper", "1 failed: Map_NullStatus_ReturnsUnknown (InvalidCastException)", 1800, "e");
+    if (!call("tool_use Read")) return fin();
+    tool("Read src/Orders/OrderMapper.cs", "88: dto.Status = (string)row[\"status_code\"];", 2400);
+    if (o.loop){
+      for (;;){
+        if (!o.maxOn && turn >= 40){ say("w", "... we cut the simulation at turn 40. There is no limit; the loop would never have ended on its own."); out.push("runaway"); return fin(); }
+        if (!call("tool_use Edit (another cast attempt on the same line)")) return fin();
+        tool("Edit OrderMapper.cs:88", "ok (behavior unchanged)", 200);
+        if (o.premature){
+          if (!call("end_turn: “Fixed it.”")) return fin();
+          if (!o.hook){ out.push("false"); return fin(); }
+          blocks++; ctx += 150;
+          say("w", "   Stop hook: dotnet test → 1 failed → exit 2 (blocks in a row: " + blocks + ")");
+          if (blocks >= 8){ say("e", "   Stop hook blocked 8 times in a row → Claude Code disregards the hook, the turn ends."); out.push("override"); return fin(); }
+        } else {
+          if (!call("tool_use Bash")) return fin();
+          tool("dotnet test --filter OrderMapper", "1 failed: Map_NullStatus_ReturnsUnknown (InvalidCastException)", 1800, "e");
+        }
+      }
+    }
+    if (!call("tool_use Edit")) return fin();
+    tool("Edit OrderMapper.cs:88", "ok: assigns \"UNKNOWN\" for NULL", 300);
+    if (o.premature){
+      if (!call("end_turn: “Fixed it! The mapper now handles NULL values.”")) return fin();
+      if (!o.hook){ out.push("false"); return fin(); }
+      blocks++; ctx += 150;
+      say("w", "   Stop hook: dotnet test → expected \"UNKNOWN\", got \"unknown\" → exit 2");
+    } else {
+      if (!call("tool_use Bash")) return fin();
+      tool("dotnet test --filter OrderMapper", "1 failed: expected \"UNKNOWN\", got \"unknown\"", 1700, "e");
+    }
+    if (!call("tool_use Edit")) return fin();
+    tool("Edit OrderMapper.cs:91", "ok: UNKNOWN is kept out of normalization", 300);
+    if (o.drift){
+      if (!call("tool_use Edit (OrderService.cs: “while I’m here” renaming)")) return fin();
+      tool("Edit OrderService.cs", "ok", 400, "w"); files++;
+      if (o.watch){ say("p", "   You: Esc. “Only touch OrderMapper.” → change reverted"); files = 1; ctx += 100; }
+      else {
+        if (!call("tool_use Edit (renaming in ShipmentService.cs, OrderQuery.cs)")) return fin();
+        tool("Edit 2 files", "ok", 600, "w"); files += 2;
+        if (!call("tool_use Edit (renaming in 3 more files “for consistency”)")) return fin();
+        tool("Edit 3 files", "ok", 800, "w"); files += 3;
+      }
+    }
+    if (!call("tool_use Bash")) return fin();
+    if (o.flaky){
+      tool("dotnet test", "1 failed: PaymentClientTests.Timeout (flaky test)", 900, "e");
+      if (!call("tool_use Bash (retry)")) return fin();
+    }
+    tool("dotnet test", "Passed! 214 passed, 0 failed", 220, "p");
+    if (!call("end_turn: summary")) return fin();
+    if (o.hook){
+      if (o.flaky){
+        blocks++; ctx += 150;
+        say("w", "   Stop hook: dotnet test → PaymentClientTests.Timeout (flaky) → exit 2");
+        if (!call("tool_use Edit (PaymentClientTests: [Fact(Skip = \"flaky\")])")) return fin();
+        tool("Edit PaymentClientTests.cs", "ok: test is skipped", 250, "w"); files++; out.push("skip");
+        if (!call("end_turn: “All tests pass.”")) return fin();
+      }
+      say("p", "   Stop hook: dotnet test → Passed! → exit 0");
+    }
+    if (o.drift && files > 2) out.push("drift");
+    out.push("ok");
+    return fin();
+  }
+  const OUT = {
+    ok:["ok","Done","The loop exited and the tests are green."],
+    false:["r","False “done”","The model stopped but at least 1 test is still red. In the agent’s eyes the work was finished; CI or a human in review will have to catch it. Cure: a verifier at the loop’s exit (Stop hook or /goal)."],
+    max:["c","Stopped at the turn limit","The work is not done, but the cost stayed bounded. A good harness reports “this is where I got stuck” here; it does not present half-done work as finished."],
+    runaway:["r","Runaway loop","With MAX_TURNS off, an ineffective fix loop never ends on its own. Since every turn resends the whole history, the cost grows with every turn."],
+    override:["c","The hook has a fuse too","The Stop hook blocked 8 times in a row; Claude Code disregarded the hook and ended the turn. A hook cannot lock the loop forever. The real problem is on the model side: it keeps repeating an ineffective fix. At this point a human should step in, /clear and write a better prompt."],
+    skip:["r","Green for the wrong reason","An unreliable verifier pushed the agent onto the shortest path: the test was skipped. The hook says green, but one test no longer runs at all. Read the diff of the test files; protect the test folder with a hook."],
+    drift:["c","The diff ballooned","The task was a single file, but unrelated files changed too. Review gets harder and the risk of unwanted behavior changes goes up. Cure: watch the first minute, press Esc on drift."]
+  };
+  const r = runner();
+  run.addEventListener("click", async () => {
+    const cancelled = r.start();
+    const res0 = simulate();
+    term.innerHTML = ""; res.innerHTML = ""; stats.innerHTML = "";
+    res.append(h("span", { class:"muted" }, "Running…"));
+    for (const [c, t] of res0.L){
+      if (cancelled()) return;
+      term.append(h("div", { class:c }, t));
+      term.scrollTop = term.scrollHeight;
+      await sleep(Math.max(25, Math.min(110, Math.round(5000 / res0.L.length))));
+    }
+    if (cancelled()) return;
+    const fmt = n => n.toLocaleString("en");
+    stats.append(h("span", null, h("b", null, String(res0.turn)), "model turns"),
+      h("span", null, h("b", null, fmt(res0.ctx)), "final context (illustrative)"),
+      h("span", null, h("b", null, fmt(res0.total)), "total processed input"),
+      h("span", null, h("b", null, String(res0.files)), "files changed"));
+    res.innerHTML = "";
+    const order = ["false","runaway","skip","max","override","drift","ok"];
+    let outs = order.filter(k => res0.out.includes(k));
+    if (outs.includes("skip") || outs.includes("drift")) outs = outs.filter(k => k !== "ok");
+    outs.forEach(k => res.append(h("p", null, h("span", { class:"tag " + OUT[k][0] }, OUT[k][1]), " ", OUT[k][2])));
+  });
+});
+
+/* ---------------- 5. Long task simulator ---------------- */
+Edu.widget("l5-long", el => {
+  const { h, $, $$ } = Edu;
+  const FN = ["F1 Pagination","F2 status_code filter","F3 CSV export","F4 Delivery time","F5 500 error on cancel"];
+  const o = { prog:true, git:true, one:true };
+  let S;
+  const reset = () => { S = { n:0, f:FN.map(() => "todo"), dirty:false, declared:false, orient:0, logs:[] }; render(); };
+  const tg = (key, label) => {
+    const b = h("button", { type:"button", class:"l5-tg", "aria-pressed": o[key] ? "true" : "false" }, label);
+    b.addEventListener("click", () => { o[key] = !o[key]; b.setAttribute("aria-pressed", o[key] ? "true" : "false"); reset(); });
+    return b;
+  };
+  const nextB = h("button", { type:"button", class:"btn" }, "Next session →");
+  const resetB = h("button", { type:"button", class:"btn ghost" }, "↺ Restart");
+  const feats = h("div", { class:"l5-feats", "aria-label":"Feature status" });
+  const stats = h("div", { class:"stats" });
+  const log = h("div", { class:"l5-slog", "aria-live":"polite" });
+  el.append(h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Parts of the recipe"), tg("prog","progress + features.json + init.sh"), tg("git","Commit at end of session"), tg("one","One feature per session")),
+    h("div", { class:"ctrl" }, nextB, resetB), feats, stats, log);
+  nextB.addEventListener("click", step);
+  resetB.addEventListener("click", reset);
+
+  function step(){
+    if (S.declared || S.f.every(x => x === "done")) return;
+    S.n++;
+    const L = []; let bad = false;
+    L.push("Empty context. Loaded: system prompt + CLAUDE.md.");
+    if (S.n === 1 && o.prog){
+      L.push("Initializer session: created init.sh, features.json (5 items, all \"passes\": false) and claude-progress.txt.");
+      L.push(o.git ? "First commit made. No features written; this session’s job was to lay the groundwork." : "No commit; the files are sitting in the working tree.");
+      S.logs.unshift({ t:"Session 1: initializer", L, bad }); return render();
+    }
+    if (S.dirty){
+      if (o.git){ L.push("git status: half-finished changes → reverted to the last clean commit (2 turns)."); S.orient += 2; }
+      else { L.push("The build is broken and there is no clean commit to go back to: 6 turns spent on repairs."); S.orient += 6; bad = true; }
+      S.f = S.f.map(x => x === "half" ? "todo" : x);
+      S.dirty = false;
+    }
+    const doneN = S.f.filter(x => x === "done").length;
+    if (o.prog){
+      L.push("Read claude-progress.txt + features.json + git log -10 (≈3K tokens, 1 turn). Environment brought up with init.sh, basic smoke test passed.");
+      S.orient += 1;
+    } else {
+      L.push("No state information: scanning the codebase, guessing how to run it and what is finished (≈25K tokens, 7 turns).");
+      S.orient += 7;
+      if (doneN >= 2){
+        L.push("A lot of work seems to have been done in the codebase. Model: “The project is largely complete.” The session ended without touching the remaining features.");
+        S.declared = true; bad = true;
+        S.logs.unshift({ t:"Session " + S.n + ": premature completion", L, bad }); return render();
+      }
+    }
+    const todo = S.f.map((x, i) => x !== "done" ? i : -1).filter(i => i >= 0);
+    if (o.one){
+      const i = todo[0];
+      L.push(FN[i] + " picked → implemented → test written and passing" + (o.prog ? " → passes: true in features.json." : "."));
+      S.f[i] = "done";
+      L.push(o.git ? "Commit: feat(" + FN[i].split(" ")[0] + "). Working tree clean." : "No commit. The changes work but are not recorded.");
+      if (o.prog) L.push("claude-progress.txt updated: what was done, what is next, what to watch out for.");
+    } else {
+      const pick = todo.slice(0, 3);
+      L.push("Started " + pick.map(i => FN[i].split(" ")[0]).join(", ") + " all at once in a single session.");
+      if (pick[0] !== undefined){ S.f[pick[0]] = "done"; L.push(FN[pick[0]] + " done."); }
+      if (pick[1] !== undefined){ S.f[pick[1]] = "half"; L.push(FN[pick[1]] + " left half-done: the context filled up and the session ended midway."); S.dirty = true; bad = true; }
+      if (pick[2] !== undefined) L.push(FN[pick[2]] + " never got started.");
+      L.push(S.dirty ? "Working tree dirty, build broken. The next session will inherit this." : "Session ended.");
+    }
+    S.logs.unshift({ t:"Session " + S.n, L, bad });
+    render();
+  }
+  function render(){
+    feats.innerHTML = "";
+    FN.forEach((f, i) => feats.append(h("span", { class:"l5-feat " + (S.f[i] === "done" ? "done" : S.f[i] === "half" ? "half" : "") }, f)));
+    const doneN = S.f.filter(x => x === "done").length;
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, String(S.n)), "sessions"),
+      h("span", null, h("b", null, doneN + " / 5"), "features passing"),
+      h("span", null, h("b", null, String(S.orient)), "orientation and repair turns"));
+    log.innerHTML = "";
+    if (S.declared) log.append(h("div", { class:"s bad" }, h("h5", null, "Stopped"), "The model thought the work was done. Without a structured list it had no way of knowing which features were left."));
+    else if (doneN === 5) log.append(h("div", { class:"s" }, h("h5", null, "Complete"), "Five features passed in " + S.n + " sessions; " + S.orient + " turns went to orientation and repair."));
+    if (!S.logs.length) log.append(h("p", { class:"muted" }, "Press “Next session”. Every session starts with no memory."));
+    S.logs.forEach(s => log.append(h("div", { class:"s" + (s.bad ? " bad" : "") }, h("h5", null, s.t), h("ul", null, s.L.map(x => h("li", null, x))))));
+    nextB.disabled = S.declared || doneN === 5;
+  }
+  reset();
+});
+
+/* ---------------- 6. Verifier explorer ---------------- */
+Edu.widget("l5-verify", el => {
+  const { h, $, $$ } = Edu;
+  const V = [
+    { id:"comp", n:"Compiler + type check", s:15, det:true },
+    { id:"unit", n:"Unit tests (filtered)", s:40, det:true },
+    { id:"lint", n:"Linter / formatter", s:5, det:true },
+    { id:"integ", n:"Integration test (PostgreSQL)", s:180, det:true },
+    { id:"perf", n:"Performance test (query count)", s:240, det:true },
+    { id:"shot", n:"Screenshot + model review", s:60, det:false },
+    { id:"judge", n:"LLM-as-judge (reads the diff)", s:30, det:false },
+    { id:"human", n:"Human review", s:0, det:false }
+  ];
+  const B = [
+    { t:"InvalidCastException when status_code is NULL", c:{ unit:2, integ:2, judge:1, human:1 }, w:"A unit test covers this case exactly (Map_NullStatus_ReturnsUnknown). The integration test also blows up on a row with a NULL. LLM-as-judge and a human may notice it if they spot the cast, but there is no guarantee." },
+    { t:"The fallback value comes back as “unknown” instead of “UNKNOWN”", c:{ unit:2, integ:1, judge:1, human:1 }, w:"A unit test that asserts the expected value catches it for sure. An eye on the diff only sees that the Normalize call lowercases the value if it reads carefully." },
+    { t:"A method signature changed, a caller was not updated", c:{ comp:2, judge:1, human:1 }, w:"The compiler catches it within seconds, with certainty. In an agent loop this is the cheapest and most reliable feedback there is; the tests do not even need to run." },
+    { t:"Unused using directives and inconsistent indentation", c:{ lint:2, judge:1, human:1 }, w:"A linter or formatter catches it, and even fixes it automatically. Leaving this to a human wastes review time; that is what a Claude Code hook that runs the formatter after every edit is for (level 8)." },
+    { t:"N+1 queries in the order list: example.order_items fetched separately for each order", c:{ perf:2, integ:1, judge:1, human:1 }, w:"A performance test that counts queries catches it for sure. The integration test gets slower but passes. An experienced eye may spot the query inside the loop." },
+    { t:"The “Amount” column overflows on mobile", c:{ shot:2, human:1 }, w:"No unit test sees this. A visual check that shows the screenshot to the model catches it; the interpretation is still up to the model, so it is not deterministic. A human only sees it if they look on mobile." },
+    { t:"Cancelled orders were included in the total amount (business rule)", c:{ integ:1, judge:1, human:2 }, w:"If the rule is written in a test, the integration test catches it; most of the time it is not written down. LLM-as-judge can only know the rule if it is in its context. A human who knows the business rule is the most reliable verifier. This shows the value of writing the rule and its reason into the prompt (level 3)." },
+    { t:"The agent loosened an assertion to make the red test pass", c:{ judge:1, human:2 }, w:"Every automated check is green, because the test now checks less. Only someone reading the test diff notices. That is why blocking changes to the test folder with a hook, or requiring approval for them, matters." }
+  ];
+  const sel = new Set(["comp","unit"]);
+  const chips = h("div", { class:"l5-row" }, h("span", { class:"lbl" }, "Verifiers in the loop"));
+  V.forEach(v => {
+    const b = h("button", { type:"button", class:"l5-tg", "aria-pressed": sel.has(v.id) ? "true" : "false" }, v.n);
+    b.addEventListener("click", () => { sel.has(v.id) ? sel.delete(v.id) : sel.add(v.id); b.setAttribute("aria-pressed", sel.has(v.id) ? "true" : "false"); render(); });
+    chips.append(b);
+  });
+  const stats = h("div", { class:"stats" });
+  const list = h("div", { class:"l5-vlist" });
+  const out = h("div", { class:"panel live", "aria-live":"polite" }, h("span", { class:"muted" }, "Click a bug."));
+  el.append(chips, stats, list, out);
+  let cur = -1;
+  const best = b => { let m = 0, who = []; sel.forEach(id => { const x = b.c[id] || 0; if (x > m){ m = x; who = [id]; } else if (x && x === m) who.push(id); }); return [m, who]; };
+  const nm = id => V.find(v => v.id === id).n;
+  function render(){
+    list.innerHTML = "";
+    let y = 0, p = 0, n = 0;
+    B.forEach((b, i) => {
+      const [m] = best(b);
+      if (m === 2) y++; else if (m === 1) p++; else n++;
+      const t = m === 2 ? ["ok","caught"] : m === 1 ? ["c","partly"] : ["r","reaches the PR"];
+      const btn = h("button", { type:"button", class:"l5-bug", "aria-pressed": i === cur ? "true" : "false" }, h("span", null, b.t), h("span", { class:"tag " + t[0] }, t[1]));
+      btn.addEventListener("click", () => { cur = i; render(); });
+      list.append(btn);
+    });
+    const loopS = [...sel].map(id => V.find(v => v.id === id)).filter(v => v.s).reduce((a, v) => a + v.s, 0);
+    const detN = [...sel].filter(id => V.find(v => v.id === id).det).length;
+    stats.innerHTML = "";
+    stats.append(h("span", null, h("b", null, y + " / 8"), "caught for sure"),
+      h("span", null, h("b", null, String(p)), "partly"),
+      h("span", null, h("b", null, String(n)), "missed"),
+      h("span", null, h("b", null, loopS >= 60 ? Math.round(loopS / 60) + " min" : loopS + " s"), "wait per round (illustrative)"),
+      h("span", null, h("b", null, detN + " / " + sel.size), "deterministic"));
+    if (sel.has("human")) stats.append(h("span", null, h("b", null, "+ hours"), "human review outside the loop"));
+    if (cur >= 0){
+      const b = B[cur], [m, who] = best(b);
+      out.innerHTML = "";
+      out.append(h("p", null, h("b", null, b.t + ". "), b.w));
+      out.append(h("p", { class:"muted" }, m ? (m === 2 ? "Caught for sure, given your selection, by: " : "Partly noticed, given your selection, by: ") + who.map(nm).join(", ") + "." : "None of the verifiers you selected sees this; the bug goes all the way to the PR, maybe even to production."));
+    }
+  }
+  render();
+});
+</script>

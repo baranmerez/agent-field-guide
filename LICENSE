@@ -1,13 +1,13 @@
-Bu depo iki lisans altındadır.
+This repository is dual-licensed.
 
-1) İçerik
-src/levels/*.html içindeki eğitim metinleri ve anlatımlar Creative Commons
-Attribution 4.0 International (CC BY 4.0) lisansı altındadır.
-Lisans metni: https://creativecommons.org/licenses/by/4.0/legalcode
+1) Content
+The course text and explanations in src/levels/ are licensed under the
+Creative Commons Attribution 4.0 International license (CC BY 4.0).
+License text: https://creativecommons.org/licenses/by/4.0/legalcode
 
-2) Kod
-build.js, check.js, serve.js, src/*.js ve seviye dosyalarındaki <script> blokları
-aşağıdaki MIT lisansı altındadır.
+2) Code
+build.js, check.js, serve.js, src/*.js and the <script> blocks in the level
+files are licensed under the MIT License below.
 
 MIT License
 

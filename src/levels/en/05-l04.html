@@ -1,0 +1,1101 @@
+<section class="level" data-no="4" data-short="Tool use" data-title="Tool use: the model has no hands, only JSON"
+  data-accent="harness" data-time="55 min"
+  data-lede="The model runs nothing; it only writes a JSON that says “run this with these arguments.” We open up the loop, the tool definition, good tool design, the scaling problem and MCP, all through raw messages.">
+
+  <!-- ============ 1. MECHANISM ============ -->
+  <div class="lesson" data-tab="Mechanism">
+    <h2>The model runs nothing</h2>
+    <p class="lead">You watch a coding agent read files, run tests, query a database. But the model does none of that. The model only produces tokens; some of those tokens form a machine-parseable piece of JSON that says “I want to run this tool with these arguments.” What actually runs it is your code, or the <span class="g" data-g="Harness">harness</span> you use.</p>
+    <p>Anthropic’s documentation says it plainly: the model executes nothing on its own; it produces a structured request, your code performs the operation, and the result flows back. Take that sentence seriously and the whole architecture of <span class="g" data-g="Tool use">tool use</span> falls into place: permissions, security, error handling, logging, all of it lives on your side. On the model’s side there is only one decision: on this turn, do I write text or do I ask for a tool?</p>
+    <p>How does the model know how to make that decision? During post-training (we saw it in level 1) it was trained to read tool definitions and emit well-formed call blocks. So tool use is as much a learned behavior of the model as it is an API feature. The API then draws a strict contract around that behavior.</p>
+
+    <h3>The four moves of the loop</h3>
+    <ol class="steps">
+      <li><b>Request.</b> Your code sends the API the system prompt, the <code>tools</code> array (<code>name</code>, <code>description</code>, <code>input_schema</code> for each tool) and the <code>messages</code> array. The API is stateless: the whole history goes out again on every request (level 2).</li>
+      <li><b>Decision.</b> If the model needs a tool, instead of plain text it emits one or more <span class="g" data-g="tool_use block">tool_use blocks</span>: <code>id</code>, <code>name</code>, <code>input</code>. The response ends with <code>stop_reason: "tool_use"</code>. That means “I’ve stopped, your turn.”</li>
+      <li><b>Execution.</b> Your code reads the block, validates the input, checks permissions and runs the tool. Whether it reads a file, runs SQL or makes an HTTP request, from here on it is ordinary software.</li>
+      <li><b>Result.</b> Your code appends the model’s response to the history as an <code>assistant</code> message, then appends a <code>user</code> message whose content starts with <span class="g" data-g="tool_result">tool_result</span> blocks, and calls the model again. Each <code>tool_result</code> says which call it answers through its <code>tool_use_id</code> field.</li>
+    </ol>
+    <p>Here is what it looks like raw. The model’s response:</p>
+<pre data-title="Response: the model asks for a tool"><code>{
+  "role": "assistant",
+  "stop_reason": "tool_use",
+  "content": [
+    { "type": "text", "text": "Let me look up the order record." },
+    { "type": "tool_use", "id": "toolu_01",
+      "name": "example_orders_get", "input": { "order_id": 1042 } }
+  ]
+}</code></pre>
+    <p>The two messages you append to the <code>messages</code> array of your next request:</p>
+<pre data-title="Next request: history + result"><code>{ "role": "assistant", "content": [ ...the content above, verbatim... ] },
+{ "role": "user", "content": [
+    { "type": "tool_result", "tool_use_id": "toolu_01",
+      "content": "{\"order_id\":1042,\"status_code\":\"DELIVERED\"}" }
+] }</code></pre>
+    <p>Note: you put the model’s response back into the history exactly as it was. The model does not “remember” its previous turn; you show it again. That is also why <code>tool_use_id</code> exists: if the model asked for three tools in the same turn, this id is the only way it can match each result to its request.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>The request-reply pattern in message queues: the client sends a message with a <em>correlation id</em>, and the reply comes back with the same id. Here the client is the model, the worker listening on the queue is your code, and the correlation id is <code>tool_use.id</code> ↔ <code>tool_result.tool_use_id</code>. Or the planner-executor split: the model writes a plan, the executor carries it out and reports back. The planner cannot know whether the executor really ran anything; it sees whatever gets reported to it.</div>
+
+    <h3>Three buckets of tools</h3>
+    <p>In Anthropic’s API, tools fall into three groups depending on who defines them and who runs them. The split matters because it tells you where the responsibility lies.</p>
+    <div class="cols">
+      <div class="card t"><h4 class="t">Your tools</h4>You write the name, the description, the schema; you also run them. Business tools like <code>example_orders_get</code> and your own MCP servers live here. The loop turns in your code.</div>
+      <div class="card h"><h4 class="h">Anthropic-schema client tools</h4><code>bash</code>, <code>text_editor</code>, <code>memory</code>, <code>computer</code>, <code>browser</code>. Anthropic defines the schema; running them is still your job. Because the model was trained on thousands of successful trajectories with exactly these signatures, it calls them more reliably. We come back to them in level 6 as “tools baked into training.”</div>
+      <div class="card m"><h4 class="m">Server tools</h4><code>web_search</code>, <code>web_fetch</code>, <code>code_execution</code>, <code>tool_search</code>. They run on Anthropic’s infrastructure; the result arrives inside the response. If the server-side loop hits an iteration limit, the response comes back with <code>pause_turn</code>, and you resend the request to let it continue.</div>
+    </div>
+
+    <h3>The strict rules of the contract</h3>
+    <p>The API checks the shape of the message history tightly. The rules are not arbitrary; they preserve the order the model saw during training. Break them and the model never runs at all; the request comes back with HTTP 400:</p>
+    <ul>
+      <li><b>Results come immediately.</b> The user message carrying the results must come right after the assistant message that contains <code>tool_use</code>. You cannot slip another message in between.</li>
+      <li><b>Results first.</b> In that user message’s <code>content</code> array, the <code>tool_result</code> blocks sit at the very start. Put a text block in front of them and you get a 400; if you need to add a note from the user, add it after the results.</li>
+      <li><b>Parallel results in one message.</b> If the model asked for two tools in the same turn, both <code>tool_result</code>s go in the same user message (topic 4).</li>
+      <li><b>Every request expects an answer.</b> For every <code>tool_use</code> block you return a <code>tool_result</code> with the right <code>tool_use_id</code>. Even if the tool blew up: in that case <code>is_error: true</code> and an explanatory message.</li>
+    </ul>
+    <p>The last rule is the one most often skipped in practice. When an exception happens inside a tool, handing the error back to the model with <code>is_error: true</code> instead of crashing the loop gives the model a chance to correct itself. According to Anthropic’s documentation, after an invalid call the model usually retries two or three times with corrections, and then apologizes and gives up. Whether those retries work depends on the quality of the error message. In the simulation below, see for yourself the difference between <em>“failed”</em> and an actionable error message.</p>
+
+    <div class="fig" data-widget="l4-cycle">
+      <p class="fig-title">The raw journey of a tool call</p>
+      <p class="fig-cap">Why was Example Co’s order 1042 delivered late? Three model calls, two parallel tools, one error and one correction. At each step, see the real-format JSON going out or coming in; the yellow lines show the <code>id</code> ↔ <code>tool_use_id</code> matching and the fields that drive the loop. Use the buttons at the top to inject a fault and watch how the loop changes.</p>
+      <div class="seg l4-mode" role="group" aria-label="Fault to inject">
+        <button type="button" data-v="ok" aria-pressed="true">Correct flow</button>
+        <button type="button" data-v="textfirst">Text first</button>
+        <button type="button" data-v="noid">No tool_use_id</button>
+        <button type="button" data-v="failed">“failed” error</button>
+      </div>
+      <div class="l4-stage"></div>
+    </div>
+
+    <h3>The OpenAI side: same idea, different field names</h3>
+    <p>OpenAI’s Responses API builds the same loop; the names differ, and so does one important detail.</p>
+    <div class="tbl"><table>
+      <thead><tr><th></th><th>Anthropic Messages</th><th>OpenAI Responses</th></tr></thead>
+      <tbody>
+        <tr><td>Definition</td><td><code>name</code>, <code>description</code>, <code>input_schema</code></td><td><code>type:"function"</code>, <code>name</code>, <code>description</code>, <code>parameters</code>, <code>strict</code></td></tr>
+        <tr><td>The model’s request</td><td><code>tool_use</code> block: <code>id</code>, <code>name</code>, <code>input</code> (object)</td><td><code>function_call</code> item: <code>call_id</code>, <code>name</code>, <code>arguments</code> (<b>JSON string</b>)</td></tr>
+        <tr><td>Your answer</td><td><code>tool_result</code>: <code>tool_use_id</code>, <code>content</code>, <code>is_error</code></td><td><code>function_call_output</code>: <code>call_id</code>, <code>output</code></td></tr>
+        <tr><td>“Your turn” signal</td><td><code>stop_reason: "tool_use"</code></td><td><code>function_call</code> items present in the output</td></tr>
+      </tbody>
+    </table></div>
+    <p>That <code>arguments</code> is a string is a small but sneaky difference: your code has to open it with <code>JSON.parse</code>, and that step can blow up. When it does, don’t bring the loop down; return a <code>function_call_output</code> that explains the parse error and let the model fix it. With strict mode on (next topic) this class of error practically disappears.</p>
+
+    <div class="callout warn"><span class="ct">Caution</span>The model sees only what you show it as a result, and it reads it. A web page, an email, an issue comment or a notes field in the <code>example.customers</code> table can contain text that looks like instructions. That is why Anthropic recommends putting untrusted content inside a <code>tool_result</code> rather than in the system prompt. But that alone is not protection; the real defense is the permission boundaries in the harness. Level 10: prompt injection.</div>
+
+    <h3>Common mistakes</h3>
+    <ul>
+      <li>Sending only the results without appending the model’s response to the history. The API rejects a <code>tool_result</code> that has nothing to answer.</li>
+      <li>Not catching the tool’s exception and letting the loop crash. The agent dies on an error it could have fixed itself.</li>
+      <li>Returning <code>"failed"</code> or an 80-line traceback as the error message. The first carries no information; the second floods the context (topic 3).</li>
+      <li>Believing the model “ran” the tool and leaving logging to the model. Only your code knows what actually ran; the audit trail belongs there.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>The model does not call the tool; it writes a <em>request</em> to call it. Your code runs it, validates it and returns the result.</li>
+        <li>The key to the loop is <code>stop_reason: "tool_use"</code>; the key to the matching is <code>tool_use.id</code> ↔ <code>tool_use_id</code>.</li>
+        <li>The contract is strict: results come immediately, sit at the start of the content, and parallel results share one message. Otherwise, 400.</li>
+        <li>A tool error is not the end of the loop; it is an <code>is_error: true</code> result. The quality of the error message decides whether the model recovers.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works">Anthropic: How tool use works</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls">Anthropic: Handle tool calls</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. TOOL DEFINITION ============ -->
+  <div class="lesson" data-tab="Tool definition">
+    <h2>A tool definition is a prompt</h2>
+    <p class="lead">The model decides when and how to use a tool by looking only at the three fields you wrote: name, description and input schema. It has no access to your source code, your tests or your wiki page. Those three fields are the only user manual the tool offers the model.</p>
+    <p>An example from the research, a tool that searches shipment events:</p>
+<pre data-title="example_shipments_search"><code>{
+  "name": "example_shipments_search",
+  "description": "Search shipment events for one order in example.shipments.
+    Use when the user asks where an order is or why it was late.
+    Returns events oldest-first. Use response_format=summary unless
+    the user needs every scan.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "order_id": { "type": "integer", "description": "example.orders.order_id" },
+      "response_format": { "type": "string", "enum": ["summary", "full"] }
+    },
+    "required": ["order_id"],
+    "additionalProperties": false
+  },
+  "strict": true
+}</code></pre>
+
+    <h3>Field by field</h3>
+    <p><b><code>name</code></b> is the tool’s identity in the model’s mind, and it sits in the same list as every other tool. A name like <code>search</code> loses its meaning when three different MCP servers bring the same name. A <span class="g" data-g="Namespacing">namespace</span> by service and resource (<code>example_shipments_search</code>) both makes selection easier and prevents collisions. In the next topic we look at its measured effect.</p>
+    <p><b><code>description</code></b> is where the real work happens. A good description answers four questions: what the tool does, when it should be used (and when not), what it returns, and what its limits and traps are. Anthropic recommends writing tool descriptions “as if you were explaining them to a new hire.” In their own SWE-bench Verified work they report that improving the tool descriptions alone took Claude Sonnet 3.5 to the best result of its time.</p>
+    <p><b><code>input_schema</code></b> is a standard <span class="g" data-g="JSON Schema">JSON Schema</span> object: <code>type</code>, <code>properties</code>, <code>required</code>, <code>enum</code>, a per-field <code>description</code>. The schema does two jobs: it tells the model what it has to send, and it gives you a contract for validating the incoming input. Two near-identical field names (<code>user</code> and <code>user_id</code>), a format field left as free text, an id with an ambiguous type: these are places where the model has to guess, and every guess is a chance of error.</p>
+
+    <div class="callout myth"><span class="ct">Myth</span>“The schema is enough; the description is decoration, keep it short to save tokens.” The schema says what is <em>valid</em>; the description says what is <em>right</em>. When the model picks between two valid tools, it looks at the description, not the schema. Anthropic’s SWE-bench result came precisely from improving descriptions. You save tokens not by trimming descriptions but by removing unnecessary tools or loading definitions lazily (topic 5).</div>
+
+    <h3>strict: true and the guaranteed schema</h3>
+    <p>By default the model “reads” the schema but is not bound by it; sometimes it skips a required field, writes a value outside the enum, puts a string where an integer belongs. You validate the input, return an error, the model fixes it; that costs a turn and a few thousand tokens. In <span class="g" data-g="strict mode">strict</span> mode the API guarantees that the generated input will conform to the schema. Anthropic describes it plainly as something that “eliminates invalid calls.” The price is a few restrictions on the schema.</p>
+    <p>On the OpenAI side the restrictions are spelled out: strict mode requires <code>additionalProperties: false</code>, and <b>every field</b> in <code>properties</code> must be in the <code>required</code> list. You express an optional field not as “may be absent” but as “may be null”:</p>
+<pre data-title="OpenAI strict: optional field"><code>"response_format": { "type": ["string", "null"], "enum": ["summary", "full", null] }
+"required": ["order_id", "response_format"]</code></pre>
+    <p>It feels odd at first, but it makes sense: the schema behaves like a grammar; instead of the ambiguity of “this field is either there or not,” saying “this field is always there, its value may be null” makes generation deterministic.</p>
+
+    <h3>input_examples: what the schema can’t say</h3>
+    <p>JSON Schema can say “a date is a string,” but it can’t say “in this API dates look like <code>2026-10-01</code>, the time zone is UTC, and in nested filters the customer comes before the status.” Anthropic’s <code>input_examples</code> field lets you add a few sample inputs to the tool definition. By Anthropic’s own measurement (November 2025, vendor data) accuracy on complex parameters rose from 72% to 90%. Examples are tokens too; add them not to every tool, only to the ones whose input is genuinely complex.</p>
+
+    <h3>The token cost of definitions</h3>
+    <p>Tool definitions don’t travel through some magic side channel; they are part of the prompt and are resent on every request. As of November 2026, according to Anthropic’s documentation, when tool use is enabled the API adds a tool-use system prompt of roughly <b>286 tokens</b> <em>before</em> your definitions (Opus, Sonnet and Haiku 5.5). When you force a tool (<code>tool_choice</code>: <code>any</code> or <code>tool</code>, topic 4) that number grows; the example given for Opus 5 is 406 versus 286. Each definition’s own tokens come on top.</p>
+    <p>There is a second, less well-known consequence: prompt caching (level 2). At Anthropic the cache prefix is built in the order <code>tools → system → messages</code>, and changing the tool definitions invalidates the <em>entire</em> cache. Adding a tool mid-session, “touching up” a description or shuffling the order of the list means the whole prefix gets written from scratch on the next request. Keep the tool list fixed for the whole session. That is also why the current MCP version recommends that the <code>tools/list</code> response be deterministic (topic 6).</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Like writing an OpenAPI document, except the reader can’t ask questions, rereads the document from the top on every request and pays by the word. OpenAI’s guide calls this the “intern test”: with the information you gave the model, could an intern use this function correctly? If not, the model can’t either.</div>
+
+    <div class="fig" data-widget="l4-designer">
+      <p class="fig-title">Tool design workbench</p>
+      <p class="fig-cap">Build the same shipment tool with different choices. On the right, see the resulting definition, an approximate token count and what each choice tells the model. If a note is red, the model has to guess at that point. Switch the provider to see the OpenAI form of the same tool and how the strict rules transform the schema.</p>
+      <div class="l4-grid2 l4-ctrls"></div>
+      <div class="l4-split" style="margin-top:.8rem">
+        <div><div class="jsonv l4-def" aria-label="Tool definition"></div><p class="hint l4-tok"></p></div>
+        <ul class="l4-lint" aria-live="polite"></ul>
+      </div>
+    </div>
+
+    <h3>Pitfalls</h3>
+    <ul>
+      <li><b>Overlapping tools.</b> If <code>search_orders</code> and <code>find_orders</code> sit in the same list, the model picks between them at random. If a human can’t say for sure which one to use, neither can the model.</li>
+      <li><b>A description that lies.</b> A tool that says “fast” but takes 40 seconds leads the model to call it again and again inside the loop. The description must describe the real behavior.</li>
+      <li><b>Shouting in capitals.</b> Phrases like “CRITICAL: You MUST use this tool when…” were written for older models to fix under-calling; on newer models they cause over-calling. Anthropic recommends toning it down: “Use this tool when…”. Details in level 3.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Name, description and schema are everything the model knows about a tool. Put as much effort into the description as into the code.</li>
+        <li>Vague name, vague parameter, free-text format field: each one is a place where the model guesses.</li>
+        <li><code>strict: true</code> closes off the class of invalid calls; on OpenAI every field is required and optionality is expressed with null.</li>
+        <li>Definitions are tokens on every request and the start of the cache prefix. Keep the list fixed within a session.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (system prompt tokens, tool_choice)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents (11 September 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/advanced-tool-use">Anthropic: Advanced tool use (input_examples, 24 November 2025)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (strict rules)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic: Prompt caching</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. GOOD TOOL DESIGN ============ -->
+  <div class="lesson" data-tab="Good tool design">
+    <h2>Designing an interface for an agent</h2>
+    <p class="lead">You know user interface design: the same function is easy with a good screen and impossible with a bad one. The same holds for agents. The SWE-agent paper calls this the <em>agent-computer interface</em> (ACI) and shows that the same model does markedly better when only the interface changes.</p>
+    <p>In the SWE-agent work (Yang et al., NeurIPS 2024), GPT-4 Turbo solved about 11% of SWE-bench Lite with a raw shell alone; with a windowed file viewer showing 100 lines, an edit command with a linter that rejects syntactically broken edits, and a search with short output, it rose to about 18%; with the edit command removed it fell to around 10%. These figures come from secondary summaries; check them against the table in the paper before quoting them. But the direction is beyond dispute: same model, different interface, different result. In level 6 we extend this idea to the whole harness.</p>
+
+    <h3>Anthropic’s seven principles</h3>
+    <p>In September 2025 Anthropic compiled its own experience of writing tools. Below I walk through each principle using Example Co’s order system.</p>
+    <ol>
+      <li><b>Don’t wrap endpoints; consolidate around the workflow.</b> Giving the agent three tools because your REST API exposes <code>list_users</code>, <code>list_events</code>, <code>create_event</code> means also loading the orchestration onto it: three turns, three results in context, three chances for an error in between. Anthropic’s example merges them into a single <code>schedule_event</code> tool, and offers <code>search_logs</code> instead of <code>read_logs</code>. On the order side: instead of “fetch the order, then fetch the shipments, then decode the status code,” one tool that returns the information needed to answer the delay question in one go.</li>
+      <li><b>Namespace.</b> <code>example_orders_search</code>, <code>example_shipments_search</code>. When several MCP servers pour tools into the same list, the namespace rescues both selection and readability. Anthropic reports that even the choice of prefix versus suffix has a measurable effect.</li>
+      <li><b>Return meaningful context.</b> Human-readable names instead of UUIDs: not <code>customer_id: "9f3c…"</code> but <code>customer: "Example Co"</code>. Let the model choose the level of detail it needs with a <code>response_format</code> enum (<code>concise</code> / <code>detailed</code>). In Anthropic’s Slack example the concise format took about a third of the tokens of the detailed one.</li>
+      <li><b>Respect tokens.</b> Pagination, filters, truncation with sensible defaults. Claude Code cuts tool responses off at <b>25,000 tokens</b>. When you truncate, tell the model so and show it how to narrow the next request: “Showing the first 200 records; use a narrower date range or a <code>status_code</code> filter.”</li>
+      <li><b>Actionable errors.</b> Not a traceback but what is wrong and what is right: the valid values and an example of correct input.</li>
+      <li><b>Write descriptions as if for a new hire.</b> Spell out implicit knowledge (internal terms, abbreviations, relationships between resources). Don’t leave parameter names ambiguous: not <code>user</code> but <code>user_id</code>.</li>
+      <li><b>Measure with realistic tasks.</b> Not single-call toy tests but real tasks that chain several tools. Have the model analyze the transcripts and rewrite the tools. In Anthropic’s multi-agent research system, a tool-testing agent rewrote tool descriptions and cut task time for subsequent agents by 40% (vendor data).</li>
+    </ol>
+
+    <div class="fig" data-widget="l4-logs">
+      <p class="fig-title">Same question, three tool designs</p>
+      <p class="fig-cap">Question: “Which errors happened in example_app last night between 02:00 and 03:00?” For each design, see what lands in the model’s context and how many tokens it takes. Token counts are illustrative; the ratio of the concise format being about a third of the detailed one comes from Anthropic’s Slack example.</p>
+      <div class="seg" role="group" aria-label="Tool design">
+        <button type="button" data-v="raw" aria-pressed="true">read_logs (raw)</button>
+        <button type="button" data-v="detailed">search, detailed</button>
+        <button type="button" data-v="concise">search, concise</button>
+      </div>
+      <div class="l4-logout"></div>
+      <div class="bars l4-logbars"></div>
+      <div class="panel l4-lognote" aria-live="polite"></div>
+    </div>
+
+    <h3>Poka-yoke: make the mistake impossible</h3>
+    <p><span class="g" data-g="Poka-yoke">Poka-yoke</span>, from Japanese manufacturing engineering, means a design that makes misuse physically impossible: like a USB plug that can’t go in upside down. In December 2024, while working on its SWE-bench agent, Anthropic saw the model make mistakes with relative file paths after it had moved out of the root directory. The fix was not to tell the model “be careful” but to make the tool require an <b>absolute path</b>; that eliminated a whole class of errors.</p>
+    <p>Poka-yoke opportunities in your own tools: require ids as integers, constrain formats with enums, add a confirmation field for dangerous operations, accept a single date format and write it in the description. Writing a rule into the prompt is a request; writing it into the schema is a guarantee. We will see the general form of this idea in level 6 under “the right place for a rule.”</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>The difference between <code>git status</code> and <code>git status --porcelain</code>. The first is designed for humans, the second for machines; same information, different consumer. The <code>response_format</code> enum is the agent version of the same idea. And an actionable tool error is to the model what a good CLI error message (“unknown option --forse; did you mean --force?”) is to you.</div>
+
+    <h3>An error message is an instruction</h3>
+    <p>When a tool returns an error, that message is the only information the model has. Say “failed” and the model, with no idea what happened, repeats the same call or tries a random variation. Return a traceback and it will most likely find the fix, but it dumps internal file paths and stack frames into the context; a long stack takes thousands of tokens. An actionable message gives the model enough information to fix things on the next turn, and no more than it needs. MCP’s 2025-11-25 version also requires input validation errors to be returned not as protocol errors but as <em>tool execution errors</em>; the goal is exactly that the model can see the error and correct itself.</p>
+
+    <div class="fig" data-widget="l4-errors">
+      <p class="fig-title">Three error messages, three different next turns</p>
+      <p class="fig-cap">The model sent the date to the <code>example_orders_search</code> tool in the wrong format. The tool can return the error in three different ways. For each one, see what the model does next (simulated) and what it costs.</p>
+      <div class="seg" role="group" aria-label="Error format">
+        <button type="button" data-v="tb" aria-pressed="true">Traceback</button>
+        <button type="button" data-v="failed">“failed”</button>
+        <button type="button" data-v="act">Actionable</button>
+      </div>
+      <div class="l4-errout" aria-live="polite"></div>
+    </div>
+
+    <h3>Pitfalls</h3>
+    <ul>
+      <li><b>One tool that does everything.</b> Taking “consolidate around the workflow” too far and writing an <code>example_do_anything</code> with 30 parameters just moves the selection problem from the tool list to the parameter list. The yardstick: a tool should map to a question the user might ask or a job they might want done.</li>
+      <li><b>Returning everything “just in case.”</b> The model does not ignore the extra fields; it reads them, reasons about them and sometimes uses the wrong one. Make the default response short and the detail optional.</li>
+      <li><b>Silent truncation.</b> Cutting the result at 200 lines without saying so leads the model to draw a confident conclusion from incomplete data. If you truncated, write the count and how to get the rest.</li>
+      <li><b>Secrets in the error message.</b> An exception text containing a connection string, an internal server name or a token goes straight into the context, from there into the logs, and maybe on to another tool. An error message is text written for the model; don’t put anything there you wouldn’t show a user.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Tools are the agent’s interface; the same model works markedly better with a good interface.</li>
+        <li>Don’t wrap endpoints; consolidate the workflow into one tool. Namespace, return meaningful names, let the model choose the level of detail.</li>
+        <li>When truncating, say how to narrow; when returning an error, give an example of the correct input.</li>
+        <li>Bake the rule into the schema where possible (poka-yoke): a guarantee, not a request.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Anthropic: Writing effective tools for agents — with agents (11 September 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building effective agents (19 December 2024, ACI and poka-yoke)</a></li>
+      <li><a href="https://arxiv.org/abs/2405.15793">Yang et al.: SWE-agent: Agent-Computer Interfaces (NeurIPS 2024)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/multi-agent-research-system">Anthropic: How we built our multi-agent research system (13 June 2025)</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/changelog">MCP 2025-11-25 changelog</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. PARALLEL AND TOOL_CHOICE ============ -->
+  <div class="lesson" data-tab="Parallel and tool_choice">
+    <h2>Several calls in one turn</h2>
+    <p class="lead">The model can emit more than one <code>tool_use</code> block in the same response. These are called <span class="g" data-g="Parallel tool call">parallel tool calls</span>, and at Anthropic they are on by default. This small feature radically changes both the duration and the cost of an agent session.</p>
+    <p>Why? Because every model turn costs two things. The first is time: the model takes time to process its input and to produce its output token by token; the tool itself is often faster than that. The second is tokens: because the API is stateless, the whole history is resent on every turn. If the model reads three files one by one, that is four turns, with a growing history in all four. If it asks for all three in the same turn, two turns. The gap widens as the number of independent reads grows.</p>
+    <p>Nothing new on the mechanism side: the model writes several blocks, each with its own <code>id</code>. Your code can run them concurrently if it wants, and sends all the results back in <b>a single</b> user message, each with its own <code>tool_use_id</code>. You saw this in the simulation in topic 1: <code>toolu_01</code> and <code>toolu_02</code> went out in the same turn, and their results came back in the same message.</p>
+
+    <div class="fig" data-widget="l4-parallel">
+      <p class="fig-title">Sequential vs parallel: the timeline</p>
+      <p class="fig-cap">Change the model turn duration and the number of independent tools. Purple blocks are model turns, blue blocks are tool execution. Below, see the number of model calls and how many times the history was resent in total. Durations and tokens are illustrative; the relationship is real.</p>
+      <div class="l4-grid2">
+        <div class="range"><label for="l4-pl-m">Model turn (s)</label><input id="l4-pl-m" type="range" min="0.5" max="4" step="0.1" value="1.6"><output>1.6</output></div>
+        <div class="range"><label for="l4-pl-n">Independent tools</label><input id="l4-pl-n" type="range" min="1" max="6" step="1" value="3"><output>3</output></div>
+      </div>
+      <div class="l4-tl"></div>
+      <div class="stats l4-plstats" aria-live="polite"></div>
+    </div>
+
+    <h3>When is parallel safe?</h3>
+    <p>On the model’s side, parallelism is a suggestion; your executor decides what actually runs concurrently. Independent reads (two files, three queries) run in parallel without trouble. Two calls that write to the same resource (two <code>edit</code>s on the same file, two requests updating the same order), however, must be serialized; just because the model wrote two blocks in the same turn doesn’t mean you have to run them at the same time. It is the same engineering decision as running independent SELECTs in parallel in a database while queueing the UPDATEs.</p>
+    <p>If you want to turn parallelism off, use <code>disable_parallel_tool_use: true</code> inside <code>tool_choice</code> at Anthropic, or <code>parallel_tool_calls: false</code> at OpenAI; OpenAI says that in that case a turn will contain zero or one call. In the other direction, you can also increase parallel calling: the <code>&lt;use_parallel_tool_calls&gt;</code> block in Anthropic’s prompting guide is said to raise doing independent operations in the same turn to “nearly 100%”. For Fable 5.1, repeating that instruction on every turn is recommended (as of November 2026).</p>
+
+    <h2>tool_choice: who picks the tool?</h2>
+    <p>By default the model decides on its own whether to use a tool. <span class="g" data-g="tool_choice">tool_choice</span> lets you narrow that decision.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Anthropic</th><th>Meaning</th><th>OpenAI equivalent</th></tr></thead>
+      <tbody>
+        <tr><td><code>auto</code></td><td>Default. The model calls a tool or answers with text.</td><td><code>auto</code></td></tr>
+        <tr><td><code>any</code></td><td>The model must call a tool; it decides which one itself.</td><td><code>required</code></td></tr>
+        <tr><td><code>tool</code> + <code>name</code></td><td>It must call one specific tool.</td><td>Forcing a specific function</td></tr>
+        <tr><td><code>none</code></td><td>No call is made even if tool definitions are sent.</td><td><code>none</code></td></tr>
+        <tr><td>(no equivalent)</td><td></td><td><code>allowed_tools</code>: restrict to a subset without changing the list</td></tr>
+      </tbody>
+    </table></div>
+    <p>When does forcing make sense? The most common use is structured data extraction: you define a “record” tool, force it with <code>tool</code>, and the <code>input</code> the model produces is exactly the JSON you wanted. This approach has gained importance: since the Claude 4.6 models, prefilling the last assistant turn returns a 400 error; the recommended ways to get JSON are structured outputs or tools (level 3). Inside a conversation, though, forcing is usually a bad idea: with <code>any</code> on, the model has to call a tool even if the user just says “thanks.”</p>
+    <p>OpenAI’s <code>allowed_tools</code> option reflects a subtle engineering decision: changing the tool list breaks the prompt cache (topic 2), but passing the allowed subset in a separate field doesn’t. So you can say “only read tools in this step” and keep the cache. A warning applies at Anthropic too: changing <code>tool_choice</code> invalidates the messages part of the cache. Don’t change it on every turn.</p>
+
+    <div class="fig" data-widget="l4-choice">
+      <p class="fig-title">Change tool_choice, watch the behavior</p>
+      <p class="fig-cap">Two different user messages, four <code>tool_choice</code> settings. See the relevant part of the request body and the model’s (simulated) behavior. Try turning off parallel calls as well.</p>
+      <div class="l4-opts"><span class="lab">tool_choice</span>
+        <div class="seg l4-tc" role="group" aria-label="tool_choice">
+          <button type="button" data-v="auto" aria-pressed="true">auto</button>
+          <button type="button" data-v="any">any</button>
+          <button type="button" data-v="tool">tool</button>
+          <button type="button" data-v="none">none</button>
+        </div></div>
+      <div class="l4-opts"><span class="lab">User</span>
+        <div class="seg l4-q" role="group" aria-label="User message">
+          <button type="button" data-v="q1" aria-pressed="true">“Where is 1042 stuck?”</button>
+          <button type="button" data-v="q2">“Thanks, that’s all.”</button>
+        </div></div>
+      <div class="l4-opts"><label><input type="checkbox" class="l4-dp"> disable_parallel_tool_use</label></div>
+      <div class="l4-split">
+        <div class="jsonv l4-tcjson"></div>
+        <div class="panel l4-tcout" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <h3>Tuning triggering through the prompt</h3>
+    <p><code>tool_choice</code> is a blunt switch; fine-tuning happens in the prompt. Anthropic’s documentation gives two extreme examples: “Use the tools to investigate before responding.” increases tool calling; a phrase in the style of “Use your judgment…” makes the model more conservative. Because newer models are far more sensitive to the system prompt, aggressive phrasing written to fix under-triggering in older models now causes over-triggering. OpenAI says the same thing: a team working with GPT-5 describes how the instruction “Be THOROUGH when gathering information” caused unnecessary searches even on small tasks, and softening the wording fixed it.</p>
+
+    <h3>Common mistakes</h3>
+    <ul>
+      <li><b>Splitting results across messages.</b> Sending the results of two parallel calls in two separate user messages breaks the contract: the first message is missing the answer to <code>toolu_02</code>. Collect all the results and send them in one message.</li>
+      <li><b>Getting stuck on the slowest tool.</b> In a parallel turn the model waits until all results arrive. If one hangs, the turn hangs. Put a timeout on every tool; when it expires, return <code>is_error: true</code> for that call with a result like “No response within 30 s, retry with a narrower filter,” and don’t hold up the others.</li>
+      <li><b>Running parallel side effects blindly.</b> The model may ask for “edit the file” and “run the tests” in the same turn. Run them at the same time and the tests run against the old file. Execute calls with side effects sequentially, in the order the model wrote them.</li>
+      <li><b>Leaving <code>tool_choice</code> pinned.</b> If you forget to switch a setting you moved to <code>tool</code> for an extraction step back to <code>auto</code> on the next conversation turn, the model answers every message by calling that same tool.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Parallel calls reduce the number of model turns and the history that gets resent. Independent reads in parallel, writes to the same resource in sequence.</li>
+        <li>All parallel results go in one user message, each with its own <code>tool_use_id</code>.</li>
+        <li><code>tool_choice</code>: <code>auto</code> for conversation, <code>tool</code> for structured extraction. <code>any</code> and <code>tool</code> enlarge the system prompt.</li>
+        <li>Don’t change the tool list or <code>tool_choice</code> on every turn; the cache breaks. If you need a subset, use <code>allowed_tools</code> on OpenAI.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (tool_choice, triggering)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Prompting best practices (parallel calls, prefill)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (parallel_tool_calls, allowed_tools)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. SCALE ============ -->
+  <div class="lesson" data-tab="Scale: tool search">
+    <h2>Tool definitions are context too</h2>
+    <p class="lead">For an agent working with five tools, the cost of the definitions is negligible. But connect three or four MCP servers and the picture changes: in Anthropic’s own example, 58 MCP tools take about <b>55,000 tokens</b> before the conversation has even started.</p>
+    <p>That creates two separate problems. The first is cost and latency: those 55 thousand tokens go out again on every request. Cache reads make it cheaper but not free; at November 2026 prices, normal input on Opus 5.5 is $4 per million tokens and a cache read is $0.20. The second, sneakier one is attention: the size of the context window (1M today) tells you its capacity, not its quality. As the window fills, recall weakens (context rot, level 2), and picking the right tool among dozens of similar ones gets harder. OpenAI’s function calling guide even gives a rough limit for this: aim for fewer than 20 functions.</p>
+
+    <h3>Tool search: load definitions on demand</h3>
+    <p>Anthropic’s answer is the <span class="g" data-g="Tool search">Tool Search Tool</span>, announced in November 2025. When you mark a tool with <span class="g" data-g="defer_loading">defer_loading</span><code>: true</code>, its definition does not enter the context up front. The model sees a small tool for searching tools; when it needs a capability it searches for it, and only the definitions of matching tools are loaded. Think of it as an application loading modules with dynamic import when needed instead of loading all of them at startup.</p>
+    <p>Results reported by Anthropic (vendor data, 24 November 2025): in the 58-tool example the definition load fell from about 55K to about <b>8.7K</b> tokens (roughly an 85% reduction). On the MCP evaluation, accuracy rose from 49% to 74% on Opus 4 and from 79.5% to 88.1% on Opus 4.5. So it is not just savings; a model that sees fewer but more relevant tools chooses better.</p>
+    <p>Claude Code makes this the default: MCP tool definitions are deferred via tool search, and only tool names and server instructions stay in context. You can see this breakdown in your own session with <code>/context</code> (levels 8 and 9). OpenAI also supports tool search and namespaces; as of November 2026 it requires gpt-5.4 or later models.</p>
+
+    <div class="fig" data-widget="l4-budget">
+      <p class="fig-title">Tool budget: what goes out on every request?</p>
+      <p class="fig-cap">Connect MCP servers, toggle tool search on and off. The bar shows the fixed load that goes out with every request before the conversation starts (scale: the first 100K tokens; the full window is 1M). The per-server breakdown is illustrative; the MCP total is scaled to Anthropic’s 58 tools ≈ 55K → ≈ 8.7K example. Costs use Opus 5.5’s November 2026 prices.</p>
+      <div class="l4-opts l4-bud-ctrls"></div>
+      <div class="l4-stack" role="img" aria-label="Fixed context load"></div>
+      <div class="legend-row l4-bud-leg"></div>
+      <div class="stats l4-bud-stats" aria-live="polite"></div>
+    </div>
+
+    <h3>Programmatic tool calling: keep intermediate results out of the context</h3>
+    <p>Tool search solves the load of the definitions; the load of the results is a separate problem. Suppose you want to find which of Example Co’s 120 orders delayed in October passed through the TST-2 hub. In the classic flow the model first fetches the orders, then calls the shipment tool for each one; all 120 results enter the context, and the model filters them “in its head.” It is both expensive and error-prone: for an LLM, missing one row in a long list is much easier than writing an <code>if</code> inside a loop.</p>
+    <p>With <span class="g" data-g="Programmatic tool calling">programmatic tool calling</span>, you say <code>allowed_callers: ["code_execution_20250825"]</code> when you define the tool. The model calls these tools not directly but from inside a program it writes in the code execution environment. The loop, the filtering and the joining happen in code; only what the program prints comes back into the context. In Anthropic’s measurement (vendor data) the average tokens per task fell from 43,588 to 27,297 (about 37%).</p>
+
+    <div class="fig" data-widget="l4-ptc">
+      <p class="fig-title">120 orders: classic vs programmatic</p>
+      <p class="fig-cap">Solve the same question with two flows. Compare the number of model calls and the amount of intermediate results that enter the context. The figures are illustrative for this scenario; the direction matches the averages Anthropic reported (43,588 → 27,297 tokens) and the MCP example below (≈150K → ≈2K).</p>
+      <div class="seg" role="group" aria-label="Flow">
+        <button type="button" data-v="classic" aria-pressed="true">Classic tool calling</button>
+        <button type="button" data-v="prog">Programmatic tool calling</button>
+      </div>
+      <div class="l4-ptcout" aria-live="polite"></div>
+    </div>
+
+    <h3>Exposing MCP as a code API</h3>
+    <p>On 4 November 2025 Anthropic published a post that takes the same idea one step further: expose MCP servers not as a tool list but as code modules sitting in a file system (like <code>./servers/google-drive/getDocument.ts</code>). The agent reads the file it needs, writes the code and filters the data inside the sandbox. In the post’s example of moving data from Google Drive to a CRM, token usage dropped from about 150K to about 2K (98.7%). Side benefits: personal data can be masked in the sandbox before it reaches anywhere the model will see it; a piece of code that works can be saved as a skill and reused. Cloudflare calls the same idea “Code Mode.”</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>“Take the computation to the data, don’t bring the data to the computation.” Instead of pulling 120 thousand rows into the application and filtering them in C#, you run the WHERE in the database. Programmatic tool calling is the LLM version of the same decision: do the filtering in code, not in the context.</div>
+
+    <h3>Which one when?</h3>
+    <p>These three techniques solve different bottlenecks; don’t substitute one for another. If the problem is “a tenth of the context is full of tool definitions before the conversation starts,” use tool search. If the problem is “tool results are large and the model reads them only to filter them,” use programmatic tool calling. If the problem is “exposing dozens of services one by one as tools has become unmanageable,” expose MCP as a code API. An agent with five tools and small results needs none of them; an extra layer is extra error surface.</p>
+    <p>They have their costs too. With tool search the model has to <em>find</em> the tool: a tool with a bad name and description is no longer merely misused, it is never found at all. That is why the design principles of topics 2 and 3 become even more important as scale grows. There is also no point deferring the few core tools used on every turn; they are needed on every request anyway. With programmatic calling, intermediate results can drop out of your sight just as they drop out of the model’s: if one of the 120 calls inside the code fails silently, the model only sees it if the program prints it. Log the calls inside the sandbox too, and ask the program to report errors explicitly.</p>
+
+    <div class="callout warn"><span class="ct">Caution</span>All of these approaches mean that code written by the model runs somewhere. Anthropic’s post states clearly that this requires a secure sandbox: resource limits, network isolation, observability. Anthropic’s server-side code execution tool provides that environment; if you are building it into your own harness, the responsibility is yours. Level 10.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Tool definitions are context sent with every request. 58 tools ≈ 55K tokens; selection quality also drops as the number of tools grows.</li>
+        <li><code>defer_loading</code> + tool search: load definitions when needed. In Anthropic’s example, about 85% fewer tokens and higher accuracy.</li>
+        <li>Programmatic tool calling and exposing MCP as a code API: intermediate results stay in the sandbox, only a summary returns to the context.</li>
+        <li>Every solution that runs code needs a sandbox.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/advanced-tool-use">Anthropic: Introducing advanced tool use (24 November 2025)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/code-execution-with-mcp">Anthropic: Code execution with MCP (4 November 2025)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (deferred MCP tools)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI: Function calling (number of tools, tool search)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Pricing</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. MCP ============ -->
+  <div class="lesson" data-tab="MCP">
+    <h2>Why a protocol?</h2>
+    <p class="lead">If every AI application writes its own integration with every service, you need N applications × M services worth of integrations. <span class="g" data-g="MCP">Model Context Protocol</span> (MCP) exists to bring that down to N + M: a service writes an MCP server once, and every MCP-capable application can use it.</p>
+    <div class="callout bridge"><span class="ct">You already know this</span>Language Server Protocol. Editors used to need a separate plugin for every language; with LSP a language writes a server once, and both VS Code and Vim speak to it. MCP makes the same move for tools and data sources; underneath, like LSP, it uses JSON-RPC 2.0.</div>
+
+    <h3>Three roles: host, client, server</h3>
+    <p>The <span class="g" data-g="MCP host">host</span> is the AI application the user works in: Claude Code, an IDE, a desktop app. It is the one that talks to the LLM API, manages user approval and makes the security decisions. The host creates a separate <b>client</b> for each server it connects to; each client holds a one-to-one connection with a single <span class="g" data-g="MCP server">server</span>. The specification’s deliberate design decision: servers must not be able to read the whole conversation, and must not see into one another. Only the host combines the context.</p>
+    <p>This also means MCP does not talk to the model directly. The model still writes a <code>tool_use</code> block as in topic 1; the host knows it belongs to an MCP tool, sends a <code>tools/call</code> to the server through the corresponding client, and hands the answer back to the model as a <code>tool_result</code>. MCP is the cable between the harness and the outside world; the contract between the model and the harness stays the same.</p>
+
+    <div class="fig" data-widget="l4-mcpmap">
+      <p class="fig-title">One host, three clients, three servers</p>
+      <p class="fig-cap">Click the boxes. See what each part knows, what it doesn’t, and which transport it connects over.</p>
+      <div class="l4-map"></div>
+      <div class="panel l4-mapout" aria-live="polite"><span class="muted">Click a box.</span></div>
+    </div>
+
+    <h3>Primitives: who controls what?</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Primitive</th><th>Side</th><th>Controlled by</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td><b>Tools</b></td><td>Server</td><td>Model (it decides whether to call)</td><td><code>example_orders_cancel</code></td></tr>
+        <tr><td><b><span class="g" data-g="Resource (MCP)">Resources</span></b></td><td>Server</td><td>Application (the host chooses what goes into context)</td><td>A schema dump addressed by URI</td></tr>
+        <tr><td><b>Prompts</b></td><td>Server</td><td>User (usually picks it as a slash command)</td><td>An “Order delay report” template</td></tr>
+        <tr><td>Sampling, Roots</td><td>Client</td><td>The server asks, the host fulfils</td><td>Deprecated in the current version (below)</td></tr>
+        <tr><td><b><span class="g" data-g="Elicitation">Elicitation</span></b></td><td>Client</td><td>The server asks the user for information/approval</td><td>“Cancel 1042?”</td></tr>
+      </tbody>
+    </table></div>
+    <p>This “who controls it” column is the least-read yet most important part of MCP. The model can call a tool on its own; that is why, when operations with side effects are exposed as tools, the approval layer must live in the host. A resource, on the other hand, enters the context only when the application or the user selects it.</p>
+
+    <h3>Transport: stdio and Streamable HTTP</h3>
+    <p>With <span class="g" data-g="stdio">stdio</span>, the host starts the server as a child process and sends JSON-RPC messages line by line over standard input/output. Simple and fast for local tools; credentials come from environment variables and the process runs with your user permissions. With <span class="g" data-g="Streamable HTTP">Streamable HTTP</span>, every message is POSTed to a single endpoint; the response comes back as plain JSON or as a request-specific SSE stream. In the current version requests carry the <code>MCP-Protocol-Version</code>, <code>Mcp-Method</code> and <code>Mcp-Name</code> headers, so a gateway can see which tool is being called without opening the body.</p>
+
+    <h3>2026-07-28: the protocol goes stateless</h3>
+    <p>As of November 2026 the current specification version is <b>2026-07-28</b>. Compared with the previous version (2025-11-25) it brings a major architectural change; if you learned MCP from an older guide, most of what follows will be new to you.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Topic</th><th>2025-11-25</th><th>2026-07-28</th></tr></thead>
+      <tbody>
+        <tr><td>Connection setup</td><td><code>initialize</code> handshake, session</td><td>No handshake. Every request carries the protocol version and client capabilities in <code>_meta</code>; new and mandatory <code>server/discover</code></td></tr>
+        <tr><td>Session</td><td><code>Mcp-Session-Id</code> header</td><td>Removed. A server that needs state issues an explicit handle and passes it around as a tool argument</td></tr>
+        <tr><td>Server asking the client</td><td>The server sends its own request (<code>elicitation/create</code>, <code>sampling/createMessage</code>, <code>roots/list</code>)</td><td><span class="g" data-g="MRTR">MRTR</span>: the server returns <code>resultType: "input_required"</code>, the client resends the request with <code>inputResponses</code></td></tr>
+        <tr><td>Deprecated</td><td></td><td>Roots, Sampling, Logging (use a tool parameter, call the LLM API directly, log to stderr/OTel), the old HTTP+SSE transport, Dynamic Client Registration</td></tr>
+        <tr><td>Long-running work</td><td>Experimental tasks</td><td>Moved to the <code>io.modelcontextprotocol/tasks</code> extension</td></tr>
+        <tr><td>Cache friendliness</td><td></td><td><code>tools/list</code> SHOULD be deterministic; <code>ttlMs</code>, <code>cacheScope</code> on list results</td></tr>
+      </tbody>
+    </table></div>
+    <p>Why statelessness? In a session-based protocol, requests from the same client have to go to the same server instance; scaling horizontally behind a load balancer gets hard. In the stateless model each request carries its own context, and any instance can answer. MRTR follows from the same logic: the server can no longer ask the client a question over an open channel; it returns a result saying “to do this I need the following information,” and the client adds the answer and repeats the request. It resembles getting a 401 over HTTP and retrying with a token.</p>
+
+    <div class="fig" data-widget="l4-mcpseq">
+      <p class="fig-title">A tool call under 2026-07-28: cancellation with user approval</p>
+      <p class="fig-cap">The model wants to cancel order 1042; the server first asks for the user’s approval. At each step, see the HTTP headers and the JSON-RPC body. Method names, <code>resultType</code>, <code>inputResponses</code>, <code>ttlMs</code> and the headers come from the specification; some field names inside <code>_meta</code> and in the approval request are simplified and illustrative. See the specification for the exact schema.</p>
+      <div class="l4-mcpstage"></div>
+    </div>
+
+    <h3>Authorization</h3>
+    <p>stdio servers take their credentials from the environment. For servers running over HTTP the specification defines OAuth 2.1, and it is quite strict:</p>
+    <ul>
+      <li>The MCP server is a <b>resource server</b> and MUST publish Protected Resource Metadata (RFC 9728); that is where the client learns which authorization server to go to.</li>
+      <li>When requesting a token the client MUST send the <code>resource</code> indicator (RFC 8707); the server MUST verify that the token was issued for it (audience).</li>
+      <li><b>Token passthrough is forbidden:</b> the server may not accept any other token, and may not forward a token it received to an API behind it. Otherwise the authority you grant one server leaks into everything it talks to.</li>
+      <li>PKCE and <code>iss</code> validation (RFC 9207) are mandatory. With insufficient scope the server returns 403 and a step-up scope flow begins.</li>
+      <li>Dynamic Client Registration is deprecated; Client ID Metadata Documents replace it.</li>
+    </ul>
+
+    <div class="callout warn"><span class="ct">Caution</span>Adding an MCP server is adding a dependency, and one that can write text straight into your context. Tool descriptions and tool results are text the model reads; a malicious or compromised server can plant instructions there. A stdio server runs with your user permissions; a remote server sees every piece of data you send in tool arguments. Who wrote it, which tools it exposes, which permissions it runs with: review these the way you would review a NuGet or npm package. Details in level 10.</div>
+    <div class="callout tip"><span class="ct">In practice</span>After connecting a new MCP server, check how much room it takes in Claude Code with <code>/context</code>; gate tools with side effects behind approval using permission rules (level 8). If you are writing your own server, the tool design principles of this level apply unchanged: namespacing, a concise response format, actionable errors, a deterministic <code>tools/list</code>.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>MCP is LSP for tools and data sources: the host opens a separate client for each server, and only the host combines the context.</li>
+        <li>Tools are under the model’s control, resources under the application’s, prompts under the user’s. Approval for tools with side effects lives in the host.</li>
+        <li>With 2026-07-28 the protocol is stateless: no handshake and no session, but there is <code>server/discover</code>; to ask a question the server returns <code>input_required</code>.</li>
+        <li>HTTP servers are protected with OAuth 2.1; token passthrough is forbidden. Every MCP server is a dependency and an attack surface.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/architecture">MCP: Architecture</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/versioning">MCP: Versioning (current version)</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">MCP 2026-07-28 changelog</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/transports">MCP 2026-07-28: Transports</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP 2026-07-28: Authorization</a></li>
+      <li><a href="https://modelcontextprotocol.io/specification/2025-11-25/changelog">MCP 2025-11-25 changelog</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+(function(){ const s=document.createElement("style"); s.textContent=`
+.l4-actors{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin:.8rem 0 .4rem}
+.l4-actor{border:2px solid var(--line);border-radius:10px;padding:.4rem .5rem;font-size:.76rem;line-height:1.3;background:var(--paper);color:var(--muted);transition:border-color .25s,background .25s,transform .25s}
+.l4-actor b{display:block;font-family:var(--sans);font-size:.84rem;color:var(--ink)}
+.l4-actor.on.h{border-color:var(--harness);background:var(--harness-bg);transform:translateY(-2px)}
+.l4-actor.on.m{border-color:var(--model);background:var(--model-bg);transform:translateY(-2px)}
+.l4-actor.on.t{border-color:var(--tool);background:var(--tool-bg);transform:translateY(-2px)}
+.l4-dir{font-family:var(--mono);font-size:.76rem;color:var(--muted);margin:.1rem 0 .4rem}
+.l4-split{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:.8rem;align-items:start}
+@media (max-width:760px){.l4-split{grid-template-columns:1fr}}
+.l4-note{background:var(--soft);border-radius:10px;padding:.75rem .9rem;font-size:.88rem;line-height:1.5}
+.l4-note h4{margin:0 0 .3rem;font-size:.98rem;font-family:var(--sans)}
+.l4-note.err{background:var(--risk-bg);border-left:4px solid var(--risk)}
+.l4-note.fin{background:var(--ok-bg);border-left:4px solid var(--ok)}
+.l4-msgs{display:flex;flex-wrap:wrap;gap:4px;margin-top:.6rem}
+.l4-msgs span{font-family:var(--mono);font-size:.7rem;padding:.1rem .45rem;border-radius:6px;border:1px solid var(--line);background:var(--surface)}
+.l4-msgs span.u{border-color:var(--tool);color:var(--tool)}
+.l4-msgs span.a{border-color:var(--model);color:var(--model)}
+.l4-msgs span.x{border-color:var(--risk);color:var(--risk)}
+.l4-msgs small{width:100%;font-size:.72rem;color:var(--muted)}
+.l4-opts{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.35rem 0}
+.l4-opts .lab{font-size:.78rem;color:var(--muted);font-weight:700;font-family:var(--sans);min-width:5.5rem}
+.l4-opts label{font-size:.85rem;display:inline-flex;gap:.35rem;align-items:center;cursor:pointer}
+.l4-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:.55rem .9rem}
+.l4-row{display:flex;flex-direction:column;gap:.25rem;font-size:.8rem}
+.l4-row > span{color:var(--muted);font-weight:700;font-family:var(--sans)}
+.l4-lint{list-style:none;padding:0;margin:0;display:grid;gap:.35rem}
+.l4-lint li{border-radius:8px;padding:.45rem .6rem;font-size:.84rem;line-height:1.45;border:1px solid var(--line);border-left:4px solid var(--line);background:var(--paper);margin:0}
+.l4-lint li.bad{border-left-color:var(--risk)} .l4-lint li.ok{border-left-color:var(--ok)} .l4-lint li.info{border-left-color:var(--tool)}
+.l4-lint li b{font-family:var(--sans)}
+.l4-tl{display:grid;gap:.55rem;margin-top:.9rem}
+.l4-lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:.5rem;align-items:center;font-size:.78rem;font-family:var(--sans);font-weight:700}
+.l4-track{position:relative;height:40px;background:var(--soft);border-radius:6px;overflow:hidden}
+.l4-blk{position:absolute;border-radius:4px;font-size:.62rem;font-family:var(--mono);color:var(--surface);display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap;transition:left .35s,width .35s}
+.l4-blk.m{background:var(--model)} .l4-blk.t{background:var(--tool)}
+.l4-axis{font-family:var(--mono);font-size:.68rem;color:var(--muted);text-align:right}
+.l4-stack{display:flex;height:28px;border-radius:7px;overflow:hidden;background:var(--soft);margin-top:.8rem}
+.l4-stack i{display:block;height:100%;transition:width .4s cubic-bezier(.2,.7,.2,1)}
+.l4-flow{display:flex;flex-wrap:wrap;gap:.4rem;align-items:stretch;margin:.7rem 0}
+.l4-flow > div{flex:1 1 130px;border:2px solid var(--line);border-radius:10px;padding:.5rem .6rem;font-size:.8rem;line-height:1.35;background:var(--paper)}
+.l4-flow > div b{display:block;font-family:var(--sans);font-size:.86rem}
+.l4-flow > div.m{border-color:var(--model);background:var(--model-bg)}
+.l4-flow > div.t{border-color:var(--tool);background:var(--tool-bg)}
+.l4-flow > div.h{border-color:var(--harness);background:var(--harness-bg)}
+.l4-flow > span{align-self:center;color:var(--faint);font-weight:800}
+.l4-map{display:grid;grid-template-columns:minmax(0,1fr) 58px minmax(0,1fr);grid-template-rows:repeat(4,auto);gap:.5rem .3rem;align-items:center;position:relative;padding:.3rem}
+.l4-hostframe{grid-column:1;grid-row:1 / 5;border:2px dashed var(--harness);border-radius:12px;align-self:stretch;margin:-.3rem}
+.l4-node{position:relative;font:inherit;font-size:.78rem;line-height:1.3;text-align:left;border:2px solid var(--line);border-radius:10px;padding:.45rem .55rem;background:var(--surface);color:var(--ink);cursor:pointer;min-width:0}
+.l4-node b{display:block;font-family:var(--sans);font-size:.84rem}
+.l4-node small{color:var(--muted)}
+.l4-node.h{border-color:color-mix(in srgb,var(--harness) 55%,var(--line))}
+.l4-node.t{border-color:color-mix(in srgb,var(--tool) 55%,var(--line))}
+.l4-node[aria-pressed="true"]{background:var(--acc-bg);border-color:var(--acc);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc) 30%,transparent)}
+.l4-wire{font-family:var(--mono);font-size:.6rem;color:var(--muted);text-align:center;border-top:2px solid var(--line);padding-top:.15rem;overflow-wrap:anywhere}
+.l4-hdr{font-family:var(--mono);font-size:.72rem;background:var(--code-bg);border:1px dashed var(--line);border-radius:8px;padding:.45rem .6rem;white-space:pre-wrap;word-break:break-word;color:var(--muted);margin:.4rem 0 0}
+.l4-out{border-radius:10px;padding:.6rem .75rem;font-family:var(--mono);font-size:.74rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;background:var(--harness-bg);border:1px solid color-mix(in srgb,var(--harness) 30%,var(--line));max-height:260px;overflow:auto;margin:.6rem 0}
+.l4-out .e{color:var(--risk)} .l4-out .d{color:var(--muted)}
+`; document.head.append(s); })();
+
+Edu.glossary({
+  "Tool use": "The model producing, instead of plain text, a structured request containing a tool’s name and arguments. The model does not run the tool; the harness or your code runs it and hands the result back to the model.",
+  "tool_use block": "The tool request in the model’s response in Anthropic’s API: id, name and input fields. The response ends with stop_reason: tool_use. The OpenAI equivalent is the function_call item.",
+  "tool_result": "The block that carries a tool’s result back to the model. It names the call it answers via tool_use_id, sits first in the user message’s content array, and takes is_error: true for errors.",
+  "JSON Schema": "A standard for describing the structure of JSON data (types, required fields, enums). A tool’s input_schema field is a JSON Schema object.",
+  "strict mode": "strict: true in a tool definition. The API guarantees the model’s generated input will conform to the schema, eliminating the class of invalid calls. On OpenAI every field must be required, and optionality is expressed with a null type.",
+  "tool_choice": "Request parameter that constrains tool use: auto (the model decides), any (some tool is required), tool (a specific tool is required), none. OpenAI also has required and allowed_tools.",
+  "Parallel tool call": "The model emitting several tool_use blocks in the same response. All results go back in a single user message. It reduces the number of model turns and the history that gets resent.",
+  "Tool search": "Instead of putting tool definitions into the context up front, the model finds and loads the definitions it needs through a search tool. In Anthropic’s example it cut a 58-tool load by about 85%.",
+  "defer_loading": "When true on a tool definition, the definition does not enter the context up front; it is loaded only once tool search finds it.",
+  "Programmatic tool calling": "The model calling tools not directly but from inside a program it writes in the code execution environment (allowed_callers). Intermediate results stay in the sandbox; only the program’s output returns to the context.",
+  "MCP": "Model Context Protocol. A JSON-RPC 2.0 based protocol that lets AI applications (hosts) connect to tool and data servers in a standard way. As of November 2026 the current version is 2026-07-28.",
+  "MCP host": "The AI application the user works in (Claude Code, an IDE). It opens a separate client for each server, talks to the LLM, and makes approval and security decisions; only the host combines the context.",
+  "MCP server": "A program or service that exposes tools, resources and prompts. It runs locally as a stdio child process or remotely as a Streamable HTTP endpoint; it cannot see the whole conversation.",
+  "Resource (MCP)": "A data source of an MCP server addressed by URI (a file, a schema dump, a record). The application, not the model, decides when it enters the context.",
+  "Elicitation": "An MCP server asking the user, through the host, for information or approval. In version 2026-07-28 it happens via MRTR, with an input_required result.",
+  "MRTR": "Multi Round-Trip Requests. In MCP 2026-07-28, instead of sending its own request to the client, the server returns an input_required result; the client adds the needed information via inputResponses and resends the request.",
+  "stdio": "MCP transport: the host starts the server as a child process, and JSON-RPC messages flow line by line over standard input/output. Credentials come from environment variables.",
+  "Streamable HTTP": "MCP’s remote transport: each message is POSTed to a single endpoint, and the response is JSON or a request-specific SSE stream. Authorization uses OAuth 2.1.",
+  "Poka-yoke": "Making misuse impossible by design. In tools: requiring absolute paths, constraining formats with enums, taking ids as integers.",
+  "Namespacing": "Prefixing tool names with service and resource (example_orders_search, example_shipments_search). Preserves selection quality and readability when several servers bring tools into the same list."
+});
+
+/* ---------- 1. Tool call stepper ---------- */
+Edu.widget("l4-cycle", el => {
+  const { h, $, json, stepper, seg } = Edu;
+  const Q = "Why was Example Co order 1042 delivered late?";
+  const TOOLS = [
+    { name:"example_orders_get", description:"Fetches a single order by order_id. Returns the customer name, status_code and the promised delivery date.",
+      input_schema:{ type:"object", properties:{ order_id:{ type:"integer" } }, required:["order_id"] } },
+    { name:"example_shipments_search", description:"Searches an order’s shipment events, oldest first. Use response_format=summary by default.",
+      input_schema:{ type:"object", properties:{ order_id:{ type:"integer" }, response_format:{ type:"string", enum:["summary","full"] } }, required:["order_id"] } }
+  ];
+  const T1 = { type:"tool_use", id:"toolu_01", name:"example_orders_get", input:{ order_id:1042 } };
+  const T2 = { type:"tool_use", id:"toolu_02", name:"example_shipments_search", input:{ order_id:1042, response_format:"concise" } };
+  const R1 = { type:"tool_result", tool_use_id:"toolu_01", content:"{\"order_id\":1042,\"customer\":\"Example Co\",\"status_code\":\"DELIVERED\",\"created_at\":\"2026-10-01T09:12:00Z\",\"promised_at\":\"2026-10-03\"}" };
+  const ERR = "Error: 'response_format' must be one of [\"summary\",\"full\"]. Example: {\"order_id\":1042,\"response_format\":\"summary\"}";
+  const EV = "2 events: 2026-10-02 PICKED; 2026-10-06 DELIVERED (event_name=CARRIER_DELAY, hub=TST-2)";
+  const MODEL = "claude-opus-5-5";
+  const H1 = "(1) user: question", H2 = "(2) assistant: Response 1’s content array, verbatim";
+
+  const actors = h("div", { class:"l4-actors" },
+    h("div", { class:"l4-actor h", "data-a":"h" }, h("b", null, "Your code"), "harness, loop, permissions"),
+    h("div", { class:"l4-actor m", "data-a":"m" }, h("b", null, "Messages API"), "the model decides"),
+    h("div", { class:"l4-actor t", "data-a":"t" }, h("b", null, "Tools"), "example_app, database"));
+  const stage = $(".l4-stage", el);
+  let sp = null;
+
+  function build(mode){
+    const S = [];
+    S.push({ on:["h","m"], dir:"your code → API", t:"Request 1: question + tool definitions",
+      obj:{ model:MODEL, max_tokens:1024, tools:TOOLS, messages:[{ role:"user", content:Q }] }, hl:["tools"],
+      msgs:[["u","user"]],
+      note:"Your code sends the question and the definitions of the two tools. All the model knows about these tools is the name, description and schema here. These definitions will go out again, unchanged, with every later request too." });
+    S.push({ on:["m","h"], dir:"API → your code", t:"Response 1: two tool requests",
+      obj:{ id:"msg_01", role:"assistant", stop_reason:"tool_use", content:[{ type:"text", text:"I’ll check the order and its shipment events at the same time." }, T1, T2] }, hl:["stop_reason","id"],
+      msgs:[["u","user"]],
+      note:"The model ran nothing; it only wrote two tool_use blocks (a parallel call). stop_reason: tool_use lets your code know it is its turn. Note: the model wrote “concise” for response_format, which is not in the enum. Strict is off in this definition; if it were on, this value could not have been generated." });
+    const r2 = mode === "failed" ? { type:"tool_result", tool_use_id:"toolu_02", is_error:true, content:"failed" }
+             : mode === "noid" ? { type:"tool_result", is_error:true, content:ERR }
+             : { type:"tool_result", tool_use_id:"toolu_02", is_error:true, content:ERR };
+    S.push({ on:["h","t"], dir:"your code → tools", t:"Execution: validate, run",
+      obj:{ toolu_01:{ handler:"OrdersRepository.Get(1042)", result:"ok", duration_ms:38 },
+            toolu_02:{ handler:"ShipmentsRepository.Search", result:"input validation failed", reason:"response_format = 'concise' is not in the enum" } },
+      hl:[], msgs:[["u","user"],["a","assistant"]],
+      note:"Your code appends the model’s response to the history and runs the two calls concurrently. The first succeeds. The second fails schema validation. Instead of crashing the loop, we will return this error to the model as a tool_result." + (mode === "failed" ? " In this scenario the error message is just “failed”." : "") });
+    const content = mode === "textfirst" ? [{ type:"text", text:"Results below:" }, R1, r2] : [R1, r2];
+    S.push({ on:["h","m"], dir:"your code → API", t:"Request 2: history + two results",
+      obj:{ model:MODEL, tools:"(the same two tools, unchanged)", messages:[H1, H2, { role:"user", content }] },
+      hl:["tool_use_id","is_error","text"],
+      msgs:[["u","user"],["a","assistant"],[mode === "textfirst" || mode === "noid" ? "x" : "u","user: tool_result ×2"]],
+      note: mode === "textfirst" ? "A text block was placed before the results. The rule: tool_result blocks sit at the start of the content array."
+          : mode === "noid" ? "The second result has no tool_use_id. The model can’t tell which call’s result it is looking at; the API also sees that toolu_02 was left unanswered."
+          : "Two results in one user message, each with its own tool_use_id. The whole history goes out again: this is the only way the model “remembers” its own previous response." });
+
+    if (mode === "textfirst" || mode === "noid"){
+      S.push({ on:["m","h"], dir:"API → your code", t:"Response: HTTP 400", err:true,
+        obj:{ type:"error", error:{ type:"invalid_request_error", message: mode === "textfirst" ? "(illustrative) tool_result blocks must be at the start of the content array" : "(illustrative) no matching tool_result found for toolu_02" } },
+        hl:["message"], msgs:[["u","user"],["a","assistant"],["x","user: invalid"]],
+        note:"The model never ran. The contract violation was caught at the API’s door; the message text is illustrative, while the 400 and the error type reflect real behavior. This is not a model bug but a bug in your code: you debug it by looking at the request body, not by saying “the model went off the rails.”" });
+      S.push({ on:["h"], dir:"your code", t:"Fix", fin:true, obj:null,
+        msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+        note: mode === "textfirst" ? "Move the text block behind the results (or leave it out), and resend the same request. You fix this once, in the helper that builds the messages, not separately for every tool." : "Write the matching tool_use.id into every tool_result. If your executor generates results from the list of calls, carrying the id comes naturally; in hand-built results it gets forgotten." });
+      return S;
+    }
+    if (mode === "failed"){
+      S.push({ on:["m","h"], dir:"API → your code", t:"Response 2: the same call, again",
+        obj:{ stop_reason:"tool_use", content:[{ type:"text", text:"The shipment search failed, trying once more." }, { type:"tool_use", id:"toolu_03", name:"example_shipments_search", input:{ order_id:1042, response_format:"concise" } }] },
+        hl:["stop_reason","id"], msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+        note:"The model doesn’t know what went wrong. “failed” could be a transient fault or an input error. The most reasonable move it has is to repeat the same call. (Simulated)" });
+      S.push({ on:["h","m"], dir:"your code → API", t:"Request 3: “failed” again",
+        obj:{ messages:[H1, H2, "(3) user: tool_result ×2", "(4) assistant: toolu_03", { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_03", is_error:true, content:"failed" }] }] },
+        hl:["tool_use_id","is_error"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user: failed"]],
+        note:"One more model turn and a bigger history, with no new information at all." });
+      S.push({ on:["m","h"], dir:"API → your code", t:"Response 3: giving up",
+        obj:{ stop_reason:"end_turn", content:[{ type:"text", text:"The order was created on 1 October with delivery promised for 3 October. Since I can’t access the shipment records, I can’t tell you the reason for the delay." }] },
+        hl:["stop_reason"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user"],["a","assistant"]],
+        note:"The loop ended (end_turn), but the question is unanswered. Had the same error come back with a message giving the valid values and a sample input, the model would have fixed it in one turn. The difference is not in the model but in the tool design (topic 3). (Simulated)" });
+      S.push({ on:["h"], dir:"summary", t:"Balance sheet", fin:true, obj:null, msgs:[],
+        note:"3 model calls, 6 messages, one unanswered question. The same flow with an actionable error message also takes 3 calls, but it ends with the right answer. An error message is an instruction the model will read on its next turn." });
+      return S;
+    }
+    S.push({ on:["m","h"], dir:"API → your code", t:"Response 2: corrected call",
+      obj:{ stop_reason:"tool_use", content:[{ type:"text", text:"The valid value for response_format is summary; fixing the search and retrying." }, { type:"tool_use", id:"toolu_03", name:"example_shipments_search", input:{ order_id:1042, response_format:"summary" } }] },
+      hl:["stop_reason","id"], msgs:[["u","user"],["a","assistant"],["u","user: tool_result ×2"]],
+      note:"Because the error message included the valid values and a sample input, the model fixed it in a single turn. It didn’t ask for the order result (toolu_01) again: that information is already in the history." });
+    S.push({ on:["h","m"], dir:"your code → tools → API", t:"Request 3: new result",
+      obj:{ messages:[H1, H2, "(3) user: tool_result ×2", "(4) assistant: toolu_03", { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_03", content:EV }] }] },
+      hl:["tool_use_id"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user: tool_result"]],
+      note:"Your code ran toolu_03 and appended the result. The short format (summary) returned one line per event; nothing more than necessary entered the context." });
+    S.push({ on:["m","h"], dir:"API → your code", t:"Response 3: end_turn",
+      obj:{ stop_reason:"end_turn", content:[{ type:"text", text:"Order 1042 was picked on 2 October; a carrier delay (CARRIER_DELAY) at the TST-2 hub pushed delivery to 6 October. The promised date was 3 October, so delivery was three days late." }] },
+      hl:["stop_reason"], msgs:[["u","user"],["a","assistant"],["u","user"],["a","assistant"],["u","user"],["a","assistant"]],
+      note:"The model asked for no tool; stop_reason: end_turn. Your loop ends here and shows the text to the user. We look at the full code of this loop in level 5." });
+    S.push({ on:["h"], dir:"summary", t:"Balance sheet", fin:true, obj:null, msgs:[],
+      note:"3 model calls, 3 tool executions (two in parallel), 1 corrected error, a 6-message history. The user sees only the final sentence and perhaps a “3 tools ran” summary; everything else was the harness’s job." });
+    return S;
+  }
+
+  function mount(mode){
+    if (sp) sp.stop();
+    stage.innerHTML = "";
+    stage.append(actors);
+    const holder = h("div");
+    stage.append(holder);
+    sp = stepper(holder, { steps: build(mode), auto: 3200, render(i, s, { body }){
+      Edu.$$(".l4-actor", actors).forEach(a => a.classList.toggle("on", s.on.includes(a.dataset.a)));
+      body.innerHTML = "";
+      const note = h("div", { class:"l4-note" + (s.err ? " err" : "") + (s.fin ? " fin" : "") },
+        h("h4", null, s.t), h("p", { style:{ margin:0 } }, s.note));
+      if (s.msgs.length){
+        const strip = h("div", { class:"l4-msgs" }, h("small", null, "messages[] after this step:"));
+        s.msgs.forEach(m => strip.append(h("span", { class:m[0] }, m[1])));
+        note.append(strip);
+      }
+      const left = h("div", null, h("p", { class:"l4-dir" }, s.dir));
+      if (s.obj) left.append(h("div", { class:"jsonv", html: json(s.obj, { hl:s.hl }) }));
+      body.append(s.obj ? h("div", { class:"l4-split" }, left, h("div", { "aria-live":"polite" }, note)) : h("div", { "aria-live":"polite" }, left, note));
+    }});
+  }
+  seg($(".l4-mode", el), v => mount(v));
+});
+
+/* ---------- 2. Tool design workbench ---------- */
+Edu.widget("l4-designer", el => {
+  const { h, $, json, tokenize, seg } = Edu;
+  const st = { name:"generic", param:"vague", desc:"short", fmt:"none", path:"rel", prov:"anthropic", strict:false, ex:false };
+  const rows = [
+    ["name", "Tool name", [["generic","search"],["ns","example_shipments_search"]]],
+    ["param", "Id parameter", [["vague","order"],["clear","order_id"]]],
+    ["desc", "Description", [["short","Short"],["rich","What, when, returns what"]]],
+    ["fmt", "Response format", [["none","None"],["free","Free string"],["enum","enum"]]],
+    ["path", "Export path", [["rel","Relative"],["abs","Absolute"]]],
+    ["prov", "Provider format", [["anthropic","Anthropic"],["openai","OpenAI"]]]
+  ];
+  const ctr = $(".l4-ctrls", el), out = $(".l4-def", el), lint = $(".l4-lint", el), tok = $(".l4-tok", el);
+  let ready = false;
+  rows.forEach(([k, lab, opts]) => {
+    const sg = h("div", { class:"seg", role:"group", "aria-label":lab });
+    opts.forEach(([v, t]) => sg.append(h("button", { type:"button", "data-v":v, "aria-pressed": st[k] === v ? "true" : "false" }, t)));
+    ctr.append(h("div", { class:"l4-row" }, h("span", null, lab), sg));
+    seg(sg, v => { st[k] = v; if (ready) render(); });
+  });
+  const cbs = h("div", { class:"l4-row" }, h("span", null, "Extra fields"),
+    h("div", { class:"l4-opts", style:{ margin:0 } },
+      h("label", null, h("input", { type:"checkbox", "data-k":"strict" }), "strict: true"),
+      h("label", null, h("input", { type:"checkbox", "data-k":"ex" }), "input_examples")));
+  ctr.append(cbs);
+  Edu.$$("input", cbs).forEach(c => c.addEventListener("change", () => { st[c.dataset.k] = c.checked; render(); }));
+
+  function build(){
+    const idName = st.param === "clear" ? "order_id" : "order";
+    const props = {};
+    props[idName] = st.param === "clear" ? { type:"integer", description:"The example.orders.order_id value, e.g. 1042" } : { type:"string" };
+    if (st.fmt === "free") props.response_format = { type:"string", description:"Format of the response" };
+    if (st.fmt === "enum") props.response_format = { type:"string", enum:["summary","full"], description:"summary: one line per event (default). full: every scan record." };
+    props.export_path = st.path === "rel"
+      ? { type:"string", description:"Output file, e.g. exports/1042.csv" }
+      : { type:"string", description:"Absolute path, e.g. /srv/example_app/exports/1042.csv. Relative paths are rejected." };
+    const name = st.name === "ns" ? "example_shipments_search" : "search";
+    let desc = st.desc === "short" ? "Searches shipments."
+      : "Searches the shipment events of a single order in the example.shipments table. Use when the user asks where an order is or why it was late. Events are returned oldest first. If export_path is given, the result is also written as CSV.";
+    if (st.desc === "rich" && st.fmt === "enum") desc += " Use response_format=summary unless the user needs every scan.";
+    const required = [idName];
+    if (st.prov === "anthropic"){
+      const schema = { type:"object", properties:props, required };
+      if (st.strict) schema.additionalProperties = false;
+      const d = { name, description:desc, input_schema:schema };
+      if (st.strict) d.strict = true;
+      if (st.ex){
+        const ex = {}; ex[idName] = st.param === "clear" ? 1042 : "1042";
+        if (st.fmt !== "none") ex.response_format = "summary";
+        d.input_examples = [ex];
+      }
+      return d;
+    }
+    const p2 = JSON.parse(JSON.stringify(props));
+    let req = required.slice();
+    if (st.strict){
+      Object.keys(p2).forEach(k => {
+        if (!required.includes(k)){
+          p2[k].type = [p2[k].type, "null"];
+          if (p2[k].enum) p2[k].enum = p2[k].enum.concat([null]);
+        }
+      });
+      req = Object.keys(p2);
+    }
+    const params = { type:"object", properties:p2, required:req };
+    if (st.strict) params.additionalProperties = false;
+    return { type:"function", name, description:desc, parameters:params, strict:st.strict };
+  }
+  function render(){
+    const d = build();
+    out.innerHTML = json(d, { hl:["strict","additionalProperties","input_examples","enum","required"] });
+    const n = tokenize(JSON.stringify(d)).length;
+    tok.textContent = "This definition ≈ " + n + " tokens (approximate count). At Anthropic, the ≈ 286-token tool system prompt (5.5 models), added once whenever tool use is on, comes on top; all of it goes out again on every request.";
+    const L = [];
+    const add = (c, t, x) => L.push([c, t, x]);
+    if (st.name === "generic") add("bad", "The name is too generic.", "If three MCP servers bring a “search,” the model can’t tell from the name which one is for shipments and which one is the wiki. Namespace it by service and resource.");
+    else add("ok", "Namespaced name.", "The service (example) and the resource (shipments) are in the name; it won’t get mixed up even if the list has another “search.”");
+    if (st.param === "vague") add("bad", "“order” is ambiguous.", "Is it an id, an object, a sort direction? Because its type is string, the model may write “#1042”, “1042” or “ORD-1042”. Use order_id and integer.");
+    else add("ok", "Parameter name and type are clear.", "order_id, integer, and the description says which table the value comes from.");
+    if (st.desc === "short") add("bad", "The description doesn’t say when to use it.", "The model can’t tell this tool apart from similar ones; it also doesn’t know what it returns or its limits. Write it as if for a new hire.");
+    else add("ok", "The description answers the four questions.", "What it does, when to use it, what it returns, what its side effect is (writing a CSV).");
+    if (st.fmt === "none") add("bad", "No parameter controls the size of the response.", "A shipment history with hundreds of scans enters the context as is. Offer a level-of-detail option such as response_format.");
+    else if (st.fmt === "free") add("bad", "The format is a free string.", "The model will try “concise”, “short”, “brief”, and you will try to parse each one. Constrain it with an enum.");
+    else add("ok", "The format is constrained by an enum.", "The valid values are in the schema; the description (if rich is selected) also states the default.");
+    if (st.path === "rel") add("bad", "Relative path.", "When the agent changes its working directory, the file gets written to the wrong place. Require an absolute path: poka-yoke (topic 3).");
+    else add("ok", "An absolute path is required.", "In Anthropic’s SWE-bench agent, requiring absolute paths eliminated a whole class of errors.");
+    if (!st.strict) add("bad", "strict is off.", "The model may produce input that doesn’t match the schema; you validate, return an error, the model fixes it. strict: true closes off this class of error.");
+    else if (st.prov === "openai") add("info", "OpenAI strict transformation.", "additionalProperties: false was added and every field became required; the types of optional fields were widened to include null. “May be null” instead of “may be absent.”");
+    else add("ok", "strict is on.", "The generated input is guaranteed to match the schema; additionalProperties: false also keeps the schema closed.");
+    if (st.ex && st.prov === "anthropic") add("info", "input_examples present.", "Shows the patterns the schema can’t express (format, typical values). Anthropic reports 72% → 90% accuracy on complex parameters (vendor data). Examples are tokens too.");
+    if (st.ex && st.prov === "openai") add("info", "input_examples is an Anthropic API field.", "It isn’t shown in this view; in the OpenAI format, writing the examples into the description is one option.");
+    lint.innerHTML = "";
+    L.forEach(([c, t, x]) => lint.append(h("li", { class:c }, h("b", null, t), " ", x)));
+  }
+  ready = true;
+  render();
+});
+
+/* ---------- 3a. Log tools ---------- */
+Edu.widget("l4-logs", el => {
+  const { h, $, json, seg } = Edu;
+  const D = {
+    raw: { tok:40000, ctx:25000, call:{ name:"read_logs", input:{ path:"/var/log/example_app/app.log" } },
+      out:"2026-11-03T00:00:01Z INFO  HealthCheck ok (12 ms)\n2026-11-03T00:00:02Z INFO  GET /api/orders?customerId=17 200 (41 ms)\n2026-11-03T00:00:02Z DEBUG Npgsql pool: 4/50 in use\n2026-11-03T00:00:03Z INFO  GET /api/orders/1031 200 (18 ms)\n… thousands of INFO/DEBUG lines up to 01:59 …\n<span class=\"d\">[harness: output truncated at 25,000 tokens]</span>",
+      note:"The whole file ≈ 40,000 tokens. Because Claude Code truncates tool responses at 25,000 tokens, the model sees the first hours after midnight; the 02:00–03:00 window you actually asked about is most likely in the part that was cut. The model either reaches a wrong conclusion or spends many turns reading the file piece by piece. The tool dumps the work on the model." },
+    detailed: { tok:2100, ctx:2100, call:{ name:"example_logs_search", input:{ level:"error", from:"2026-11-03T02:00:00Z", to:"2026-11-03T03:00:00Z", response_format:"detailed" } },
+      out:"49 records (showing the first 20; page=2 for more)\n<span class=\"e\">02:04:11 ERROR InvalidCastException at OrderMapper.cs:88</span>\n   status_code NULL, order_id=1031, GET /api/orders?customerId=42\n   at OrderMapper.Map(DbDataReader row) …\n   at OrdersController.List(Int32 customerId) …\n<span class=\"e\">02:04:13 ERROR InvalidCastException at OrderMapper.cs:88</span>\n   status_code NULL, order_id=1033 …\n… 18 more records (with stack traces)",
+      note:"Filtered, the right time window, paginated. The model reaches the right answer. But when the question is “which errors happened?”, pulling a stack trace for every record is more than needed; 41 records are repeats of the same error." },
+    concise: { tok:700, ctx:700, call:{ name:"example_logs_search", input:{ level:"error", from:"2026-11-03T02:00:00Z", to:"2026-11-03T03:00:00Z", response_format:"concise" } },
+      out:"49 errors, 3 kinds:\n<span class=\"e\">InvalidCastException ×41</span>  OrderMapper.cs:88 (status_code NULL)  first 02:04, last 02:57\n<span class=\"e\">Npgsql timeout ×6</span>         db.example.test       02:31–02:33\n<span class=\"e\">HTTP 429 ×2</span>               carrier API           02:40\n<span class=\"d\">For details: response_format=detailed, type=InvalidCastException</span>",
+      note:"The answer to the question fits on one screen, and the last line says how to narrow the next request. If the model needs detail, it asks. This is about a third of the detailed format; the same ratio was measured in Anthropic’s Slack example." }
+  };
+  const box = $(".l4-logout", el), bars = $(".l4-logbars", el), note = $(".l4-lognote", el);
+  const names = { raw:"read_logs", detailed:"detailed", concise:"concise" };
+  function render(k){
+    const d = D[k];
+    box.innerHTML = "";
+    box.append(h("div", { class:"jsonv", html: json({ type:"tool_use", name:d.call.name, input:d.call.input }, { hl:["response_format","level"] }) }),
+      h("div", { class:"l4-out", html: d.out }));
+    bars.innerHTML = "";
+    Object.keys(D).forEach(x => bars.append(h("div", { class:"bar" + (x === k ? " pick" : "") },
+      h("span", { class:"lab" }, names[x]),
+      h("span", { class:"track" }, h("span", { class:"fill", style:{ width: (D[x].ctx / 25000 * 100) + "%", display:"block" } })),
+      h("span", { class:"pct" }, (D[x].ctx / 1000).toFixed(1) + "K"))));
+    note.innerHTML = "";
+    note.append(h("b", null, "Enters the context: ≈ " + d.ctx.toLocaleString("en-US") + " tokens" + (d.tok !== d.ctx ? " (raw output ≈ " + d.tok.toLocaleString("en-US") + ")" : "") + ". "), d.note);
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 3b. Error messages ---------- */
+Edu.widget("l4-errors", el => {
+  const { h, $, json, seg } = Edu;
+  const call = { type:"tool_use", id:"toolu_07", name:"example_orders_search", input:{ customer:"Example Co", created_after:"03.11.2026" } };
+  const D = {
+    tb: { content:"Traceback (most recent call last):\n  File \"/srv/example_app/tools/orders.py\", line 57, in search\n    dt = datetime.fromisoformat(args[\"created_after\"])\nValueError: Invalid isoformat string: '03.11.2026'",
+      turns:[["asst","Looks like the date needs to be in ISO format; trying with 2026-11-03."],["tool","tool_result: 12 orders"]],
+      sum:"Probably fixed in one turn: the traceback contains a hint. But an internal file path, a line number and a line of code entered the context (a real stack has dozens of frames, thousands of tokens). On the next error the model may also start guessing at the internal code.", extra:"1 extra turn, needless internal detail" },
+    failed: { content:"failed",
+      turns:[["asst","The search failed, trying again."],["tool","tool_result: failed"],["asst","Trying again without the created_after field."],["tool","tool_result: 1,284 orders (unfiltered)"],["asst","Got all of Example Co’s orders; filtering out the ones after 3 November from the list…"]],
+      sum:"Because the model didn’t know what was wrong, it first repeated the same call, then dropped the filter, got a very large result and started filtering in the context. This time it “worked,” but it is expensive and error-prone; sometimes after 2–3 attempts it apologizes and gives up.", extra:"3+ extra turns, large result" },
+    act: { content:"Error: created_after must be an ISO 8601 date (YYYY-MM-DD). Got: '03.11.2026'. Example: {\"customer\": \"Example Co\", \"created_after\": \"2026-11-03\"}",
+      turns:[["asst","Correcting the date to 2026-11-03."],["tool","tool_result: 12 orders"]],
+      sum:"What’s wrong, what’s right, a sample input: the model fixes it in one turn and no internal detail leaks. One step further: pinning down the date format in the schema and the description from the start (poka-yoke) means this error never happens at all.", extra:"1 extra turn, short message" }
+  };
+  const out = $(".l4-errout", el);
+  function render(k){
+    const d = D[k];
+    out.innerHTML = "";
+    out.append(h("div", { class:"jsonv", html: json(call, { hl:["created_after"] }) }),
+      h("div", { class:"jsonv", html: json({ type:"tool_result", tool_use_id:"toolu_07", is_error:true, content:d.content }, { hl:["content"] }) }));
+    const chat = h("div", { class:"chat" });
+    d.turns.forEach(t => chat.append(h("div", { class:"msg " + t[0] }, h("span", { class:"who" }, t[0] === "asst" ? "Model (simulated)" : "Tool"), t[1])));
+    out.append(chat, h("div", { class:"panel" }, h("span", { class:"tag " + (k === "act" ? "ok" : "r") }, d.extra), " ", d.sum));
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 4a. Parallel timeline ---------- */
+Edu.widget("l4-parallel", el => {
+  const { h, $, $$ } = Edu;
+  const TL = [0.3, 0.9, 0.4, 0.6, 1.2, 0.5];
+  const TN = ["orders_get", "shipments", "customers", "invoices", "logs", "status"];
+  const [rm, rn] = $$("input[type=range]", el);
+  const tl = $(".l4-tl", el), stats = $(".l4-plstats", el);
+  function blk(cls, x, w, top, hh, label, scale){
+    return h("div", { class:"l4-blk " + cls, title:label, style:{ left:(x / scale * 100) + "%", width:Math.max(0.6, w / scale * 100) + "%", top:top + "px", height:hh + "px" } }, w / scale > 0.07 ? label : "");
+  }
+  function render(){
+    const m = +rm.value, n = +rn.value;
+    rm.nextElementSibling.textContent = m.toFixed(1);
+    rn.nextElementSibling.textContent = n;
+    const tools = TL.slice(0, n);
+    const seqT = (n + 1) * m + tools.reduce((a, b) => a + b, 0);
+    const parT = 2 * m + Math.max(...tools);
+    const scale = seqT;
+    const seqTrack = h("div", { class:"l4-track" });
+    let x = 0;
+    for (let i = 0; i < n; i++){
+      seqTrack.append(blk("m", x, m, 4, 32, "model", scale)); x += m;
+      seqTrack.append(blk("t", x, tools[i], 4, 32, TN[i], scale)); x += tools[i];
+    }
+    seqTrack.append(blk("m", x, m, 4, 32, "model", scale));
+    const parTrack = h("div", { class:"l4-track" });
+    parTrack.append(blk("m", 0, m, 4, 32, "model", scale));
+    const hh = Math.max(3, Math.floor(32 / n) - 1);
+    tools.forEach((t, i) => parTrack.append(blk("t", m, t, 4 + i * (hh + 1), hh, n <= 2 ? TN[i] : "", scale)));
+    parTrack.append(blk("m", m + Math.max(...tools), m, 4, 32, "model", scale));
+    tl.innerHTML = "";
+    tl.append(h("div", { class:"l4-lane" }, h("span", null, "Sequential"), seqTrack),
+      h("div", { class:"l4-lane" }, h("span", null, "Parallel"), parTrack),
+      h("div", { class:"l4-axis" }, "0 s … " + seqT.toFixed(1) + " s"));
+    const base = 6000, per = 500;
+    let seqIn = 0; for (let k = 0; k <= n; k++) seqIn += base + per * k;
+    const parIn = base + (base + per * n);
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, seqT.toFixed(1) + " s → " + parT.toFixed(1) + " s"), "total time"),
+      h("span", null, h("b", null, (n + 1) + " → 2"), "model calls"),
+      h("span", null, h("b", null, (seqIn / 1000).toFixed(1) + "K → " + (parIn / 1000).toFixed(1) + "K"), "total input tokens (6K history, +0.5K per result)"));
+  }
+  [rm, rn].forEach(r => r.addEventListener("input", render));
+  render();
+});
+
+/* ---------- 4b. tool_choice ---------- */
+Edu.widget("l4-choice", el => {
+  const { h, $, json, seg } = Edu;
+  const st = { tc:"auto", q:"q1", dp:false };
+  const jbox = $(".l4-tcjson", el), out = $(".l4-tcout", el), dp = $(".l4-dp", el);
+  const B = {
+    auto: { q1: d => d ? "The model first calls only example_orders_get(1042); after seeing the result it calls example_shipments_search on the next turn. One extra turn." : "The model calls example_orders_get and example_shipments_search in the same turn, in parallel. The right default for conversation.",
+            q2: () => "No tool call; the model says “You’re welcome” and the loop ends with end_turn." },
+    any:  { q1: d => d ? "A tool is required, and at most one per turn: the model starts with example_orders_get." : "The model was going to call tools anyway; the behavior resembles auto, but the tool system prompt is larger.",
+            q2: () => "The user only said thanks, but the model is forced to call a tool: it will probably call example_orders_get(1042) again for no reason. In conversation, any produces pointless turns." },
+    tool: { q1: () => "The model can only call example_shipments_search; without knowing the order’s promised date it needs another turn to answer. Forcing makes sense in a pipeline, to say “in this step, produce exactly this JSON.”",
+            q2: () => "Even the thank-you message produces an example_shipments_search call. Forcing a specific tool is for structured data extraction, not conversation." },
+    none: { q1: () => "Even though the tool definitions are sent, the model can’t call them. Without access to the shipment data it either says “I can’t check that” or (worst case) makes up something plausible-sounding.",
+            q2: () => "No tool call; the model replies to the thanks. Useful, for example, to turn tools off for a final summary turn." }
+  };
+  const OAI = { auto:"\"auto\"", any:"\"required\"", tool:"{\"type\":\"function\",\"name\":\"example_shipments_search\"}", none:"\"none\"" };
+  let ready = false;
+  function render(){
+    if (!ready) return;
+    const tc = { type: st.tc };
+    if (st.tc === "tool") tc.name = "example_shipments_search";
+    if (st.dp && st.tc !== "none") tc.disable_parallel_tool_use = true;
+    const msg = st.q === "q1" ? "Where is 1042 stuck?" : "Thanks, that’s all.";
+    jbox.innerHTML = json({ model:"claude-opus-5-5", tools:["example_orders_get", "example_shipments_search"], tool_choice:tc, messages:["…", { role:"user", content:msg }] }, { hl:["tool_choice"] });
+    out.innerHTML = "";
+    out.append(h("p", { style:{ marginTop:0 } }, h("b", null, "Behavior (simulated): "), B[st.tc][st.q](st.dp)),
+      h("p", null, h("b", null, "Tool system prompt: "), (st.tc === "any" || st.tc === "tool") ? "larger in forcing mode; 406 tokens instead of 286 in Anthropic’s Opus 5 example." : (st.tc === "auto" ? "≈ 286 tokens on Opus/Sonnet/Haiku 5.5." : "tool calling is off.")),
+      h("p", { class:"mono", style:{ fontSize:".78rem", marginBottom:0 } }, "OpenAI: tool_choice: " + OAI[st.tc] + (st.dp && st.tc !== "none" ? ", parallel_tool_calls: false" : "")));
+  }
+  seg($(".l4-tc", el), v => { st.tc = v; render(); });
+  seg($(".l4-q", el), v => { st.q = v; render(); });
+  dp.addEventListener("change", () => { st.dp = dp.checked; render(); });
+  ready = true;
+  render();
+});
+
+/* ---------- 5a. Tool budget ---------- */
+Edu.widget("l4-budget", el => {
+  const { h, $ } = Edu;
+  const fixed = [
+    { lab:"System prompt", tok:3200, col:"var(--harness)" },
+    { lab:"Tool system prompt", tok:286, col:"color-mix(in srgb,var(--harness) 55%,var(--surface))" },
+    { lab:"Built-in tools", tok:12000, col:"var(--tool)" }
+  ];
+  const mcp = [
+    { lab:"MCP: example_db (14 tools)", tok:9800, def:1500, col:"color-mix(in srgb,var(--tool) 60%,var(--surface))", on:true },
+    { lab:"MCP: issue tracker (31 tools)", tok:21000, def:3300, col:"color-mix(in srgb,var(--model) 75%,var(--surface))", on:true },
+    { lab:"MCP: CI (13 tools)", tok:24200, def:3900, col:"color-mix(in srgb,var(--model) 40%,var(--surface))", on:true }
+  ];
+  const mem = { lab:"CLAUDE.md", tok:1800, col:"var(--ctx)" };
+  let defer = false;
+  const ctr = $(".l4-bud-ctrls", el), bar = $(".l4-stack", el), leg = $(".l4-bud-leg", el), stats = $(".l4-bud-stats", el);
+  mcp.forEach(m => {
+    const cb = h("input", { type:"checkbox" }); cb.checked = m.on;
+    cb.addEventListener("change", () => { m.on = cb.checked; render(); });
+    ctr.append(h("label", null, cb, m.lab));
+  });
+  const dcb = h("input", { type:"checkbox" });
+  dcb.addEventListener("change", () => { defer = dcb.checked; render(); });
+  ctr.append(h("label", { style:{ fontWeight:"700" } }, dcb, "defer_loading + tool search"));
+  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n);
+  const usd = x => "$" + x.toFixed(2);
+  function render(){
+    const parts = fixed.concat(mcp.filter(m => m.on).map(m => ({ lab:m.lab + (defer ? " (deferred)" : ""), tok: defer ? m.def : m.tok, col:m.col })), [mem]);
+    const total = parts.reduce((a, p) => a + p.tok, 0);
+    const mcpTok = mcp.filter(m => m.on).reduce((a, m) => a + (defer ? m.def : m.tok), 0);
+    bar.innerHTML = ""; leg.innerHTML = "";
+    parts.forEach(p => {
+      bar.append(h("i", { title:p.lab + ": " + fmt(p.tok), style:{ width:(p.tok / 100000 * 100) + "%", background:p.col } }));
+      leg.append(h("span", null, h("i", { class:"sw", style:{ background:p.col } }), p.lab + " " + fmt(p.tok)));
+    });
+    const perCall = total / 1e6 * 4, perCached = total / 1e6 * 0.20;
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, fmt(total)), "on every request before the conversation"),
+      h("span", null, h("b", null, fmt(mcpTok)), "of which MCP"),
+      h("span", null, h("b", null, (total / 1e6 * 100).toFixed(1) + "%"), "of the 1M window"),
+      h("span", null, h("b", null, usd(perCall * 50) + " / " + usd(perCached * 50)), "this load alone over 50 turns: uncached / with cache reads"));
+  }
+  render();
+});
+
+/* ---------- 5b. Programmatic calling ---------- */
+Edu.widget("l4-ptc", el => {
+  const { h, $, seg } = Edu;
+  const out = $(".l4-ptcout", el);
+  const code = "orders = await example_orders_search(month=\"2026-10\", late=True)\nhits = []\nfor o in orders:\n    ev = await example_shipments_search(order_id=o[\"order_id\"],\n                                        response_format=\"summary\")\n    if any(e[\"hub\"] == \"TST-2\" for e in ev[\"events\"]):\n        hits.append(o[\"order_id\"])\nprint({\"count\": len(hits), \"order_ids\": hits})";
+  const D = {
+    classic: {
+      flow:[["m","Model","calls example_orders_search"],["t","Tool","returns 120 orders → ≈ 9K into context"],["m","Model ×12 turns","10 parallel example_shipments_search per turn"],["t","Tools ×120","each result ≈ 300 tokens → ≈ 36K into context"],["m","Model","reads 120 results and filters them “in its head”"]],
+      st:[["≈ 14","model calls"],["≈ 45K","intermediate results in context"],["120 results","for the model to read one by one"]],
+      note:"Every intermediate result enters the context and is resent on every later turn. The attention mechanism does the filtering: it is easy to miss one row in a long list." },
+    prog: {
+      flow:[["m","Model","writes a Python program"],["h","Code execution (sandbox)","the program makes the 121 tool calls itself"],["t","Tools","results return to the program, not the context"],["m","Model","sees only the print output: 14 orders"]],
+      st:[["2","model calls"],["≈ 0.4K","result in context"],["0 results","filtering in code, with an if"]],
+      note:"The tools were marked with allowed_callers: [\"code_execution_20250825\"]; the model calls them from inside the code. Intermediate results stay in the sandbox. The price: code written by the model runs, so a secure sandbox is a must." }
+  };
+  function render(k){
+    const d = D[k];
+    out.innerHTML = "";
+    const fl = h("div", { class:"l4-flow" });
+    d.flow.forEach((f, i) => { if (i) fl.append(h("span", null, "→")); fl.append(h("div", { class:f[0] }, h("b", null, f[1]), f[2])); });
+    out.append(fl);
+    if (k === "prog") out.append(h("pre", { "data-title":"The program the model wrote (runs in the sandbox)" }, h("code", null, code)));
+    const s = h("div", { class:"stats" });
+    d.st.forEach(x => s.append(h("span", null, h("b", null, x[0]), x[1])));
+    out.append(s, h("p", { class:"hint" }, d.note));
+  }
+  seg($(".seg", el), render);
+});
+
+/* ---------- 6a. MCP map ---------- */
+Edu.widget("l4-mcpmap", el => {
+  const { h, $, $$ } = Edu;
+  const map = $(".l4-map", el), out = $(".l4-mapout", el);
+  const N = {
+    host: ["h", "Host: Claude Code", "talks to the LLM API", "The application the user works in. It alone talks to the model (the LLM API); it routes the model’s tool_use block to the right client and returns the result as a tool_result. User approval, permission rules and which resource enters the context are decided here. Only the host sees the whole conversation."],
+    c1: ["h", "Client 1", "→ example_db", "The connection the host opened for example_db. A separate client per server: a one-to-one relationship. Other servers can’t see the messages Client 1 carries."],
+    c2: ["h", "Client 2", "→ issue tracker", "A client connecting to a remote server over Streamable HTTP. This client holds the OAuth 2.1 token, and the token is issued for this server only (audience)."],
+    c3: ["h", "Client 3", "→ docs", "For a local documentation server. Clients are isolation units inside the host; one server’s failure or malice does not leak into the others’ connections."],
+    s1: ["t", "example_db server", "stdio · local process", "A child process started by the host; JSON-RPC messages flow line by line over stdin/stdout. It takes its connection details from environment variables and runs with your user permissions. Running it with a read-only database role is the most effective security decision you can make here."],
+    s2: ["t", "Issue tracker server", "Streamable HTTP · remote", "Another team’s or company’s service. It sees every tool argument you send. It publishes Protected Resource Metadata, verifies that the incoming token was issued for it, and may not forward the token to APIs behind it (passthrough is forbidden)."],
+    s3: ["t", "Docs server", "stdio · local", "An example of a server that exposes resources: documents are addressed by URI, and the host or the user, not the model, decides which one enters the context. The server can’t see the rest of the conversation."]
+  };
+  map.append(h("div", { class:"l4-hostframe", "aria-hidden":"true" }));
+  const pos = { host:[1,1], c1:[1,2], c2:[1,3], c3:[1,4], s1:[3,2], s2:[3,3], s3:[3,4] };
+  const wires = [["stdio",2],["HTTP + OAuth",3],["stdio",4]];
+  Object.keys(N).forEach(k => {
+    const [c, t, sub, txt] = N[k];
+    const b = h("button", { type:"button", class:"l4-node " + c, "aria-pressed":"false", style:{ gridColumn:String(pos[k][0]), gridRow:String(pos[k][1]) } }, h("b", null, t), h("small", null, sub));
+    b.addEventListener("click", () => {
+      $$(".l4-node", map).forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false"));
+      out.innerHTML = ""; out.append(h("b", null, t + ". "), txt);
+    });
+    map.append(b);
+  });
+  wires.forEach(([t, r]) => map.append(h("div", { class:"l4-wire", style:{ gridColumn:"2", gridRow:String(r) } }, t)));
+  map.append(h("div", { class:"hint", style:{ gridColumn:"3", gridRow:"1", margin:0 } }, "Servers see neither each other nor the conversation."));
+});
+
+/* ---------- 6b. MCP message sequence ---------- */
+Edu.widget("l4-mcpseq", el => {
+  const { h, $, json, stepper } = Edu;
+  const META = { protocolVersion:"2026-07-28", clientCapabilities:{ elicitation:{} } };
+  const hdr = (m, n) => "POST /mcp  HTTP/1.1\nHost: mcp.example.test\nMCP-Protocol-Version: 2026-07-28\nMcp-Method: " + m + (n ? "\nMcp-Name: " + n : "") + "\nAuthorization: Bearer …";
+  const steps = [
+    { a:"Host", t:"Connection: no handshake", hdr:null, obj:null,
+      note:"In 2025-11-25 the first thing would be the initialize / initialized handshake and an Mcp-Session-Id. In 2026-07-28 that step is gone: every request carries the context it needs (_meta) itself. This server may be running as three instances behind a load balancer; it doesn’t matter which one answers." },
+    { a:"Client → Server", t:"server/discover", hdr:hdr("server/discover"),
+      obj:{ jsonrpc:"2.0", id:1, method:"server/discover", params:{ _meta:META } }, hl:["method","_meta"],
+      note:"The new, mandatory discovery call. The protocol version and client capabilities travel inside the request, without setting up a separate session." },
+    { a:"Server → Client", t:"Discovery response", hdr:null,
+      obj:{ jsonrpc:"2.0", id:1, result:{ resultType:"complete", serverInfo:{ name:"example-orders", version:"1.4.0" }, capabilities:{ tools:{}, resources:{} }, instructions:"Order and shipment queries. Write operations require user approval." } }, hl:["resultType","instructions"],
+      note:"In the current version every result carries a resultType. The host may put the instructions text into the model’s context: so this, too, is text the model reads." },
+    { a:"Client → Server", t:"tools/list", hdr:hdr("tools/list"),
+      obj:{ jsonrpc:"2.0", id:2, method:"tools/list", params:{ _meta:META } }, hl:["method"],
+      note:"The host asks for the tool list. Claude Code defers these definitions by default (topic 5): only the names enter the context." },
+    { a:"Server → Client", t:"Tool list + ttlMs", hdr:null,
+      obj:{ jsonrpc:"2.0", id:2, result:{ resultType:"complete", tools:[{ name:"example_orders_cancel", description:"Cancels an order. Nothing happens without user approval.", inputSchema:{ type:"object", properties:{ order_id:{ type:"integer" }, reason:{ type:"string", enum:["duplicate","customer_request","fraud"] } }, required:["order_id","reason"] } }], ttlMs:600000 } }, hl:["ttlMs","inputSchema"],
+      note:"ttlMs: the list may be cached for 10 minutes. The specification recommends that tools/list be deterministic; if the same list arrives in the same order, the prompt cache on the LLM side stays intact (topic 2). In MCP the schema field is called inputSchema." },
+    { a:"Model → Host", t:"The model writes tool_use", hdr:null,
+      obj:{ type:"tool_use", id:"toolu_11", name:"example_orders_cancel", input:{ order_id:1042, reason:"duplicate" } }, hl:["name"],
+      note:"This step is not MCP but the LLM API: the model produced a tool_use block just as in topic 1. The host knows the name belongs to the example-orders server and routes the request to that client. Permission rules also kick in right here, before anything reaches the server (level 8)." },
+    { a:"Client → Server", t:"tools/call", hdr:hdr("tools/call", "example_orders_cancel"),
+      obj:{ jsonrpc:"2.0", id:3, method:"tools/call", params:{ name:"example_orders_cancel", arguments:{ order_id:1042, reason:"duplicate" }, _meta:META } }, hl:["arguments"],
+      note:"Thanks to the Mcp-Method and Mcp-Name headers, a gateway can see which tool is being called and apply policy without opening the body." },
+    { a:"Server → Client", t:"input_required (MRTR)", hdr:null,
+      obj:{ jsonrpc:"2.0", id:3, result:{ resultType:"input_required", inputRequests:{ confirm:{ method:"elicitation/create", params:{ message:"Cancel Example Co order 1042?", requestedSchema:{ type:"object", properties:{ confirm:{ type:"boolean" } }, required:["confirm"] } } } } } }, hl:["resultType"],
+      note:"Before doing the work, the server asks for the user’s approval. It used to do this with a separate server→client request; now it returns a result saying “to continue I need this input.” (inputRequests and the inner field names are illustrative.)" },
+    { a:"Host ↔ User", t:"Approval dialog", hdr:null, obj:null,
+      note:"The host shows the question to the user, not to the model: “Cancel Example Co order 1042?” The user approves. Because the approval does not pass through the model, the model can’t fake it; an important security property for operations with side effects." },
+    { a:"Client → Server", t:"Same call + inputResponses", hdr:hdr("tools/call", "example_orders_cancel"),
+      obj:{ jsonrpc:"2.0", id:4, method:"tools/call", params:{ name:"example_orders_cancel", arguments:{ order_id:1042, reason:"duplicate" }, inputResponses:{ confirm:{ action:"accept", content:{ confirm:true } } }, _meta:META } }, hl:["inputResponses"],
+      note:"The client resends the request from scratch with the answer added. The server doesn’t have to remember the previous step: everything it needs is in this request. That is why the second request can even go to a different server instance." },
+    { a:"Server → Client", t:"Result: complete", hdr:null,
+      obj:{ jsonrpc:"2.0", id:4, result:{ resultType:"complete", content:[{ type:"text", text:"Order 1042 cancelled. status_code=CANCELLED" }], isError:false } }, hl:["resultType","isError"],
+      note:"Done. Had there been an input validation error, since 2025-11-25 the rules say it comes back not as a protocol error but as a tool result with isError: true, so the model can see it and fix it." },
+    { a:"Host → Model", t:"tool_result", hdr:null,
+      obj:{ type:"tool_result", tool_use_id:"toolu_11", content:"Order 1042 cancelled. status_code=CANCELLED" }, hl:["tool_use_id"],
+      note:"The host translates the MCP result into the LLM API’s language and the loop continues. The model doesn’t need to know MCP exists; what it sees is, once again, a tool_result." }
+  ];
+  stepper($(".l4-mcpstage", el), { steps, auto:3400, render(i, s, { body }){
+    body.innerHTML = "";
+    const left = h("div", null, h("p", { class:"l4-dir" }, s.a));
+    if (s.hdr) left.append(h("div", { class:"l4-hdr" }, s.hdr));
+    if (s.obj) left.append(h("div", { class:"jsonv", html: json(s.obj, { hl:s.hl || [] }) }));
+    const note = h("div", { class:"l4-note" }, h("h4", null, s.t), h("p", { style:{ margin:0 } }, s.note));
+    body.append(h("div", { class:"l4-split" }, left, h("div", { "aria-live":"polite" }, note)));
+  }});
+});
+</script>

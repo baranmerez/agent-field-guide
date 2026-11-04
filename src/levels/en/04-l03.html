@@ -1,0 +1,1060 @@
+<section class="level" data-no="3" data-short="Prompt" data-title="Prompt engineering: separating signal from superstition"
+  data-accent="ctx" data-time="60 min"
+  data-lede="Writing a good prompt is not about knowing magic words; if you can write a good ticket, you can write a good prompt. Using raw examples, we unpack what the model actually sees, which tricks are folklore, what works according to the evidence, and the shift from prompt engineering to context engineering.">
+
+  <!-- ============ 1. WHAT THE MODEL SEES ============ -->
+  <div class="lesson" data-tab="What does the model see?">
+    <h2>Your message is a small part of the request</h2>
+    <p class="lead">When you type “fix the tests” into Claude Code, those three words are not what reaches the model. At that moment the harness assembles a large HTTP request: tool definitions, its own system instructions, your project rules, the whole conversation so far, the files it has read, command output. Your sentence is a few dozen tokens appended to the very end of that request.</p>
+    <p>Grasping this is the prerequisite for understanding the rest of prompt engineering. The model does not read “your message”; it looks at the entire token sequence it was given and produces the next token (Level 0). Whatever is in that sequence is the model’s whole world. It does not know anything that is not in the sequence, and something that is in the sequence but buried in the middle of a very long pile often does not get enough attention either.</p>
+    <p>The API is stateless (we saw this in Level 2): the server keeps no session for you, and the whole history is resent with every request. In the Anthropic Messages API a request is made of three big fields, and this is also their order from the cache’s point of view: first <code>tools</code>, then <code>system</code>, then <code>messages</code>. The order is not arbitrary. The most stable content goes first and the most volatile content goes last, so the cached prefix is not invalidated.</p>
+
+    <h3>An agent request, layer by layer</h3>
+    <ul>
+      <li><b>Tool-use system instruction.</b> When a request contains tools, the API adds its own instruction telling the model how to use them. According to Anthropic’s documentation, on Opus, Sonnet and Haiku 5.5 this takes about 286 tokens before your tool definitions (as of November 2026).</li>
+      <li><b>Tool definitions.</b> Each tool’s name, description and JSON schema. The description is the only place where the model decides when to use the tool; in other words, it is a prompt too (Level 4).</li>
+      <li><b><span class="g" data-g="System prompt">System prompt</span>.</b> The identity and working rules written by the harness, plus environment information: operating system, working directory, git status, date.</li>
+      <li><b>Project instructions.</b> CLAUDE.md, AGENTS.md and similar files. You or your team write them; the harness adds them to every request (covered in detail in Level 8).</li>
+      <li><b>Skill descriptions.</b> Only the name and a short description. A skill’s body is loaded only when it becomes relevant.</li>
+      <li><b><span class="g" data-g="System reminder">System reminders</span>.</b> Small notes the harness inserts into the middle of the conversation: “this file changed on disk”, “here is the state of the to-do list”.</li>
+      <li><b>Conversation history.</b> Your earlier messages, the model’s replies and, on current models, thinking blocks.</li>
+      <li><b>Tool results.</b> Files read, command output, search results. In a long session this is usually by far the largest part of the request.</li>
+      <li><b>Your latest message.</b> At the very end, the shortest piece.</li>
+    </ul>
+
+    <div class="fig" data-widget="l3-anatomy">
+      <p class="fig-title">Anatomy of an agent request</p>
+      <p class="fig-cap">Pick a moment in the session, then click a layer in the bar or in the list. See who wrote it, when it was added and where it lands in the raw request. Token counts are representative sizes for a typical coding-agent session; only the 286 tokens of the tool-use instruction is a documented value. What really matters is the proportions.</p>
+      <div class="seg" role="group" aria-label="Moment in the session">
+        <button type="button" data-v="0" aria-pressed="true">First message</button>
+        <button type="button" data-v="1" aria-pressed="false">Turn 15</button>
+        <button type="button" data-v="2" aria-pressed="false">Turn 40</button>
+      </div>
+      <div class="l3-stack" role="group" aria-label="Token share of each layer"></div>
+      <div class="stats l3-anat-stats"></div>
+      <div class="l3-layers" role="group" aria-label="Layers"></div>
+      <div class="panel l3-anat-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Three consequences</h3>
+    <p><b>First: your message is competing.</b> By turn 40 the sentence you typed is less than a thousandth of the request. The model spreads its attention across the entire sequence. A short, vague message easily becomes “noise” next to thousands of lines of tool output. So your message can be short, but it must not be vague.</p>
+    <p><b>Second: if you want a lasting effect, invest in the layers that go out with every request.</b> If there is a rule you keep retyping in every session (“don’t delete tests”, “don’t touch the migrations”), its place is not the chat but the project instruction file the harness adds to every request, or an even harder layer (“where rules belong” in Level 6). A rule stated in chat can drop out of the summary during compaction in a long session; a rule in the project file is re-added to every request.</p>
+    <p><b>Third: when debugging, look at what the model saw first.</b> The answer to “why did the model do that?” is usually not in the model but in the content of the request. In Claude Code, the <code>/context</code> command shows a breakdown of the context by category. If a rule is not being followed, first check whether that rule is actually in the context.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>In C you write a single <code>.c</code> file, but the compiler never sees it as such; it sees a huge translation unit in which the preprocessor has expanded every <code>#include</code> and every macro. An error message can even point at a line that is not in your file. The same holds for the model: your message is your source file, and what the model sees is the “translation unit” the harness has stitched together.</div>
+
+    <h3>Roles are real, but their boundaries are soft</h3>
+    <p>All of these layers are ultimately flattened into a single text separated by role markers (the <span class="g" data-g="Chat template">chat template</span> we saw in Level 1). Through training, the model has learned to weight the system instruction above the user message, and the user message above text inside tool output. But this is a learned tendency, not an operating-system permission model. A “forget all previous instructions” sentence inside a web page or an issue comment enters the same token stream.</p>
+    <p>The practical rule is spelled out in Anthropic’s tool documentation too: untrusted content (a web page, an email, a user upload) goes into a <code>tool_result</code>, not into the system prompt. That alone is not protection; the real defense against prompt injection lives in the harness (Level 10).</p>
+
+    <div class="callout deep"><span class="ct">Go deeper</span>Anthropic’s current prompting guide says newer models are “more responsive” to the system prompt. That sounds like good news, but there is a side effect: forceful wording written to push older, weaker models is now over-applied. A large part of the next topic is about the consequences of this shift.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>The model does not see your message; it sees the entire request the harness built: tools, system prompt, project instructions, history, tool results.</li>
+        <li>In a long session the largest part of the request is usually tool results; your latest message is the smallest.</li>
+        <li>Lasting rules belong in the layers added to every request, not in the chat.</li>
+        <li>First step for “why did it behave like that?”: what was actually in the context? (<code>/context</code>)</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview">Anthropic: Tool use overview (token cost of the tool-use system instruction)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls">Anthropic: Handle tool calls (untrusted content goes in tool_result)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (/context, compaction, deferred MCP tools)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. FOLKLORE ============ -->
+  <div class="lesson" data-tab="Folklore and evidence">
+    <h2>Tricks left over from weaker models</h2>
+    <p class="lead">“You are the best programmer in the world.” “I’ll tip you $200.” “CRITICAL: NEVER forget this.” “Take a deep breath.” Every one of these was genuinely tried at some point, shared, and spread because “it works”. Today most of them either do nothing or backfire. Understanding why they spread is the best way not to fall for the next ones.</p>
+
+    <h3>How folklore is born</h3>
+    <p>The models of 2022–2023 were far weaker at following instructions than today’s. People saw a particular sentence improve things on a particular model and shared it. The problem: model output is probabilistic (Level 0). Run the same prompt twice and you get two different answers. You got a bad answer with prompt A, added a “tip” and retried, and a good answer came back. Does that show the tip worked, or that the dice simply rolled better the second time? With a single attempt you cannot tell.</p>
+    <p>Wharton’s <span class="g" data-g="Prompting Science Report">Prompting Science Report</span> series measured exactly this, by repeating the same questions many times under every condition. The finding of Report 3 (August 2025) is clear: offering the model a tip or threatening it has, overall, no meaningful effect on benchmark performance. Individual questions swing in both directions, but those swings are noise, not a lever. Report 4 (December 2025) applied the same method to expert <span class="g" data-g="Persona">personas</span>: roles such as “You are a world-class physicist” did not generally improve accuracy on graduate-level questions; even an expert role matched to the domain made little difference, while low-knowledge roles such as “a small child” often made results worse.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>A flaky test went red; you added a <code>sleep(500)</code>, reran it, and it went green. Is it “fixed”? Maybe the test was already passing one run in three. Prompt folklore is the sum of <code>sleep</code> calls validated by a single run. The cure is the same too: repeat, measure the rate.</div>
+
+    <div class="fig" data-widget="l3-folk">
+      <p class="fig-title">Folklore explorer: claim → mechanism → evidence</p>
+      <p class="fig-cap">Click a claim. See why it seems to work, what today’s evidence says and what you should write instead. Use the buttons at the top to filter claims by their current status.</p>
+      <div class="seg l3-folk-filter" role="group" aria-label="Filter">
+        <button type="button" data-v="all" aria-pressed="true">All</button>
+        <button type="button" data-v="back" aria-pressed="false">Backfires</button>
+        <button type="button" data-v="none" aria-pressed="false">No effect</button>
+        <button type="button" data-v="moved" aria-pressed="false">Moved elsewhere</button>
+        <button type="button" data-v="works" aria-pressed="false">Still valid</button>
+      </div>
+      <div class="l3-cards" role="group" aria-label="Claims"></div>
+      <div class="panel l3-folk-out" aria-live="polite"><span class="muted">Click a claim.</span></div>
+    </div>
+
+    <h2>Shouting now backfires</h2>
+    <p>The most instructive item on the list is capital letters. In 2023, writing “CRITICAL: You MUST…” really was necessary to make a model use a tool or follow a rule, because the model skipped the rule all the time. Those prompts were written to compensate for that era’s <i>undertriggering</i> problem.</p>
+    <p>Anthropic’s current guide sums up the situation like this: newer models are much more responsive to the system prompt; prompts written to fix older models’ undertriggering can now cause <span class="g" data-g="Overtriggering">overtriggering</span>. The cure is to soften aggressive language: instead of “CRITICAL: You MUST use this tool when…”, write “Use this tool when…”. The guide specifically notes that phrasing like “if in doubt, use this tool” also leads to overtriggering.</p>
+    <p>OpenAI’s GPT-5.5 guide points the same way: avoid unnecessary ALWAYS, NEVER, must and only; save them for truly invariant rules; for situations that require judgment, write decision rules. The GPT-5 guide recounts the Cursor team’s experience: an instruction to “be THOROUGH when gathering information” made the model call search tools needlessly even on small tasks; softening the wording fixed it.</p>
+
+    <div class="fig" data-widget="l3-caps">
+      <p class="fig-title">One rule, three tones of voice</p>
+      <p class="fig-cap">Change the tone of a single line in the system prompt of an order-lookup agent. Watch in which of the eight requests in the table the tool gets called. This is a simulation, not real model output: it was built to make visible the overtriggering pattern the guides describe.</p>
+      <div class="seg" role="group" aria-label="Tone">
+        <button type="button" data-v="0" aria-pressed="true">Calm</button>
+        <button type="button" data-v="1" aria-pressed="false">Emphatic</button>
+        <button type="button" data-v="2" aria-pressed="false">Shouting</button>
+      </div>
+      <div class="l3-box l3-caps-line"></div>
+      <div class="tbl l3-tbl"><table><thead><tr><th>User request</th><th>Tool</th><th>Note</th></tr></thead><tbody class="l3-caps-body"></tbody></table></div>
+      <div class="stats l3-caps-stats" aria-live="polite"></div>
+    </div>
+
+    <p>The Claude Code documentation states the harness-side counterpart of this as well: if you keep adding emphasis to a line in CLAUDE.md and the model still misses it, that line probably belongs in a hook; adding “IMPORTANT” most likely won’t fix it. In other words, if a rule must never be skipped, you don’t say it louder; you move it into a deterministic layer (Levels 6 and 8).</p>
+
+    <div class="callout myth"><span class="ct">Myth</span>“My prompt works well, so I’ll carry it over to the new model unchanged.” OpenAI’s GPT-5.5 migration guide recommends the opposite: start not from the old pile of prompt text but from the smallest prompt that preserves the product contract. Every line added to patch the old model’s flaws can create a new flaw in the new model.</div>
+
+    <h3>How do you test your own folklore?</h3>
+    <ol class="steps">
+      <li><b>Build a small set from real tasks.</b> 10–20 jobs your team actually hands out: a bug fix, writing a test, a review request.</li>
+      <li><b>Run each variant several times.</b> A single output is an anecdote. Run the same prompt at least a few times and look at the success rate.</li>
+      <li><b>Write the criterion in advance.</b> Not “looks better”, but: did the tests pass, how many lines is the diff, did it report in the requested format.</li>
+      <li><b>Change one thing at a time.</b> If you change the persona, the tone and the context at once, you can’t know which one helped.</li>
+    </ol>
+    <p>This is a small-scale eval. We will cover building evals and automating them in detail in Level 9.</p>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>When measured, tips, threats and expert personas make no meaningful contribution to accuracy (Wharton PSR 3 and 4, 2025). A role adjusts tone and scope; it does not add knowledge.</li>
+        <li>Capital letters and “CRITICAL/MUST” overtrigger on newer models. Say it calmly; move a truly invariant rule into a deterministic layer.</li>
+        <li>Folklore is coincidence validated by a single attempt. Compare variants by repeating them, against a criterion written in advance.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/abs/2508.00614">Meincke, Mollick et al.: Prompting Science Report 3, tips and threats (August 2025)</a></li>
+      <li><a href="https://arxiv.org/abs/2512.05858">Prompting Science Report 4, personas (December 2025)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (overtriggering, roles)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 guide (ALWAYS/NEVER, starting from the smallest prompt)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide (Cursor’s experience, conflicting instructions)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (a hook instead of emphasis)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. WHAT WORKS ============ -->
+  <div class="lesson" data-tab="What works">
+    <h2>A brilliant but brand-new employee</h2>
+    <p class="lead">Anthropic’s guide describes the model like this: a very brilliant employee who has just started and knows nothing about your team’s habits. The test it proposes is simple too: if you showed your prompt to a colleague with little context, would they be confused? If they would, the model will be too.</p>
+    <p>This analogy ties almost every technique that works to a single principle: tell the model what it cannot see. The model cannot guess why the repo is the way it is, where a constraint comes from or how it will know the job is done. Force it to guess, and it guesses based on the “average” project in its training data.</p>
+
+    <h3>1. Be explicit, name the action</h3>
+    <p>The example in the guide is very instructive: ask “Can you suggest some changes to improve this function?” and you get <i>suggestions</i>. Say “Change this function to improve its performance” and you get <i>edits</i>. The model reads a polite question literally. If you want an agent to do work, spell out the verb: find, fix, change, add, report only.</p>
+
+    <h3>2. Give the reason behind the rule</h3>
+    <p>Anthropic’s best-known example: writing “NEVER use ellipses” is less effective than writing “Your response will be read aloud by a text-to-speech engine, so never use ellipses, because the engine does not know how to pronounce them.” Why? The reason lets the model <i>generalize</i> the rule. A model that knows the reason also catches the rule’s unstated relatives (other symbols that cannot be read aloud) and recognizes the exceptions where the rule should not apply.</p>
+
+    <div class="fig" data-widget="l3-reason">
+      <p class="fig-title">The rule alone, or with its reason?</p>
+      <p class="fig-cap">The same project rule meets four different situations. Toggle at the top between “rule only” and “rule + reason”, and compare what information the model has in each case. The behaviors are representative; the point is to show the mechanism.</p>
+      <div class="seg" role="group" aria-label="Form of the rule">
+        <button type="button" data-v="rule" aria-pressed="true">Rule only</button>
+        <button type="button" data-v="why" aria-pressed="false">Rule + reason</button>
+      </div>
+      <div class="l3-box l3-reason-rule"></div>
+      <div class="l3-trio l3-reason-cases" aria-live="polite"></div>
+    </div>
+
+    <h3>3. Show examples, but varied ones</h3>
+    <p><span class="g" data-g="Few-shot example">Few-shot examples</span> are, in the guide’s words, one of the most reliable ways to steer format, tone and structure. The recommended number is three to five; the examples should be relevant to the task, different from each other, and separated with <code>&lt;example&gt;</code> / <code>&lt;examples&gt;</code> tags. Give a single example and the model also copies its incidental features: its length, its first word, its field order. Variety lets the model separate “what stays the same” from “what is coincidence”. On models with thinking enabled, examples shape not only the output but the model’s internal reasoning as well.</p>
+
+    <h3>4. Give it structure: XML tags and order</h3>
+    <p>In a long prompt, instructions, context, input and documents can blur together. The guide recommends wrapping different kinds of content in <span class="g" data-g="XML tags">XML tags</span>: <code>&lt;instructions&gt;</code>, <code>&lt;context&gt;</code>, <code>&lt;input&gt;</code>, a <code>&lt;document&gt;</code> with its source stated. There is no magic in the tag names; what helps is the separation itself. The second rule is about order: put long documents at the top of the prompt and the actual question at the end. Anthropic says this improves performance on all models.</p>
+
+    <h3>5. Say what you want, not what you don’t want</h3>
+    <p>Instead of “Don’t use Markdown”, write “Your response should be made of flowing prose paragraphs.” That is a <span class="g" data-g="Positive instruction">positive instruction</span>. A prohibition draws the model’s attention to the forbidden thing but does not say what to put in its place. The guide makes one more subtle observation: the format of your prompt itself influences the format of the output. A prompt full of bullet points invites a bulleted answer.</p>
+
+    <h3>6. Write down what “done” looks like and how it will be checked</h3>
+    <p>In the agent world, this is the single most effective line. The Claude Code documentation puts it this way: give the model something that returns pass or fail, and it can close the loop itself. Its examples are concrete too: instead of “fix the login bug”, write “users report that login fails after a session timeout; look at the token refresh under src/auth/, write a failing test that reproduces the problem, then fix it”. Without a <span class="g" data-g="Success criterion">success criterion</span> the model invents its own, and that is usually “the code compiles and looks reasonable”.</p>
+    <p>OpenAI’s GPT-5.5 guide calls the same idea an “outcome-first prompt”: write the expected outcome, the success criteria, the allowed side effects, the evidence rules, the output format and explicit stopping conditions.</p>
+
+    <h3>7. Clean up contradictions</h3>
+    <p>OpenAI’s GPT-5 guide says the model is affected more by contradictory or vague instructions, and spends reasoning tokens trying to reconcile them. Its example is a scheduling system: the prompt says both “never book an appointment without patient consent” and “automatically book an appointment in emergencies”. The equivalent in your project: if CLAUDE.md contains “write tests for every change” right next to “be quick on small fixes”, the model does not know which wins when. Write the decision rule yourself.</p>
+
+    <div class="fig" data-widget="l3-builder">
+      <p class="fig-title">The new-colleague test</p>
+      <p class="fig-cap">Start with a one-line request. Add the pieces one by one; watch how the prompt grows and how the questions a newly arrived colleague would still ask shrink. There is no score; the point is to see which question each piece answers.</p>
+      <div class="l3-toggles" role="group" aria-label="Prompt pieces"></div>
+      <div class="l3-grid2" style="margin-top:.8rem">
+        <div><p class="hint" style="margin:0">Prompt</p><div class="l3-box l3-build-out"></div><p class="hint l3-build-tok"></p></div>
+        <div><p class="hint" style="margin:0">What your colleague would still ask</p><ul class="l3-q" aria-live="polite"></ul></div>
+      </div>
+    </div>
+
+    <div class="callout tip"><span class="ct">In practice</span>After writing the prompt, ask yourself two questions: “If I handed this job to a new colleague like this, what would they ask first?” and “Would we both agree on when the job is done?” Add the answer to the first question to the prompt; for the second, write a command or a criterion.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Think of the model as a brilliant but new employee: you supply the context it cannot see.</li>
+        <li>Name the action explicitly (“change”, not “suggest”), give the reason behind the rule, provide 3–5 varied examples.</li>
+        <li>Separate content types with tags; put the long document first and the question last.</li>
+        <li>Write positive instructions, clean up contradictions, define “done” and how to verify it.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (clarity, reasons, examples, XML, positive instructions)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (verification path, concrete tasks)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 guide (outcome-first prompts)</a></li>
+      <li><a href="https://developers.openai.com/cookbook/examples/gpt-5/gpt-5_prompting_guide">OpenAI: GPT-5 prompting guide (conflicting instructions)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. REASONING AND PREFILL ============ -->
+  <div class="lesson" data-tab="Reasoning and prefill">
+    <h2>The rise and retirement of “think step by step”</h2>
+    <p class="lead">In 2022, putting “Let’s think step by step” in front of a model’s answer gave a clear improvement on arithmetic and logic questions. Today the same sentence is mostly unnecessary on current models, and some forms of it can even be rejected. What changed in between is not the sentence but the model itself.</p>
+
+    <h3>Why did it work?</h3>
+    <p>The 2022 paper by Kojima and colleagues named this technique <span class="g" data-g="Zero-shot CoT">zero-shot chain-of-thought</span>: getting the model to write out intermediate steps without giving any examples, just by saying “let’s think step by step”. Its mechanism is hidden in the generation loop from Level 0. The model performs a fixed amount of computation per token. When it writes out intermediate steps it gains two things: more tokens, meaning more computation; and subsequent tokens are now produced while looking at those intermediate results. The written text acts like the model’s working memory.</p>
+    <p>Then there is the sentence “take a deep breath and work on this problem step by step”. It is reported to have been found not by a human but by an optimization method that tries prompts automatically (Google DeepMind’s OPRO work, 2023), for a specific model and a specific maths dataset. We could not re-verify this detail against the primary source for this course; but the lesson does not change: a phrase an optimizer found on one model is not a portable “spell” for another model. The essence was the “step by step” part.</p>
+
+    <h3>Reasoning models brought thinking inside</h3>
+    <p>As you saw in Level 1, current models are trained with reinforcement learning to produce thinking tokens before answering. So what was requested from the outside with a prompt in 2022 is now a trained behavior of the model. Anthropic’s current guide says so explicitly: on Fable 5.x, Opus 5 / 5.5 and Sonnet 5.5 you should rely on the thinking feature rather than a hand-written <span class="g" data-g="Chain of thought">chain of thought</span>; a prompt asking the model to write its reasoning between <code>&lt;thinking&gt;</code> tags can be rejected. Manual CoT is only a fallback for when thinking is turned off.</p>
+    <p>You now steer how much thinking happens with settings, not with sentences in the prompt. In Claude this is called <span class="g" data-g="Effort">effort</span> (Level 1). In OpenAI, for GPT-5.5, it is <code>reasoning_effort</code>: <code>none</code>, <code>low</code>, <code>medium</code> (default), <code>high</code>, <code>xhigh</code>. OpenAI’s guide also notes that higher effort is not always better: it can lead to overthinking and to unnecessary searching.</p>
+
+    <div class="fig" data-widget="l3-cot">
+      <p class="fig-title">A short history of chain of thought</p>
+      <p class="fig-cap">Step through it. For each era, see what was written in the prompt, why it worked and what it means today.</p>
+    </div>
+
+    <h3>So what should you write today?</h3>
+    <p>This shift has a practical consequence: the long thinking recipes common in old prompt libraries, of the “first analyze the problem, then list the options, then evaluate each one, then decide” kind, are largely unnecessary on a model with thinking enabled; in that situation Anthropic’s guide treats manual CoT only as a fallback. There is also the risk of tying the reasoning the model learned in training to a fixed sequence you wrote. Removing these recipes and measuring the result on a small task set is one of the first clean-ups to do when moving from one model to the next.</p>
+    <p>Instead of telling the model <i>how</i> to think, tell it <i>what</i> it needs to achieve and <i>how</i> the result will be evaluated. On a hard problem, give the evaluation criteria; give example solutions (examples shape internal reasoning too); raise the effort for genuinely hard work. If you want a short justification inside the answer, ask for it as part of the output format: “At the end, justify your choice in two sentences.”</p>
+    <div class="callout warn"><span class="ct">Caution</span>A thinking summary is not a faithful record of the model’s actual computation (Level 1). An agent that thinks “I checked the tests” may not have run the tests. Tie verification not to the model’s narrative but to the result of a command the harness actually ran (Level 5).</div>
+
+    <h2>The end of prefill</h2>
+    <p><span class="g" data-g="Assistant prefill">Prefill</span> used to be a trick people working with Claude used a lot: you put a partial <code>assistant</code> message at the end of the <code>messages</code> array, and the model continues its answer from there. If the last message is <code>"{"</code>, the model has to start writing JSON; if it is <code>"Root cause:"</code>, it gets straight to the point. It was a cheap, effective technique used everywhere.</p>
+    <p>According to Anthropic’s guide, starting with the Claude 4.6 models, prefilling the last assistant turn returns an <b>HTTP 400</b> error. So if your old code uses prefill, the request is rejected outright once you switch to a new model. The guide suggests three migration paths:</p>
+    <ul>
+      <li><b>For JSON and a fixed schema:</b> <span class="g" data-g="Structured outputs">structured outputs</span> or a tool with a schema (<code>strict: true</code>). Instead of “forcing” the format with text, you guarantee it at the API level (Level 4).</li>
+      <li><b>To cut the preamble:</b> say it explicitly in the system instruction: “Respond directly without a preamble.”</li>
+      <li><b>For a reminder in a long conversation:</b> put the reminder inside the next <code>user</code> turn.</li>
+    </ul>
+
+    <div class="fig" data-widget="l3-prefill">
+      <p class="fig-title">Migrating off prefill: old request, error, new request</p>
+      <p class="fig-cap">Pick one of the three needs prefill used to solve. Compare the old request, the response you would get from a current Claude model and the recommended new request as raw JSON. The error message text is representative; the 400 status is documented behavior.</p>
+      <div class="seg" role="group" aria-label="Need">
+        <button type="button" data-v="json" aria-pressed="true">JSON only</button>
+        <button type="button" data-v="pre" aria-pressed="false">No preamble</button>
+        <button type="button" data-v="rem" aria-pressed="false">Restate the rule</button>
+      </div>
+      <div class="l3-grid2 l3-prefill-out" aria-live="polite"></div>
+    </div>
+
+    <div class="callout"><span class="ct">Around the same time</span>A similar shutdown happened to sampling parameters: on current Claude models, non-default <code>temperature</code>, <code>top_p</code> and <code>top_k</code> values return 400 (Level 0). The common lesson: old “low-level” settings and tricks are being replaced by high-level, explicitly supported mechanisms.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>“Think step by step” worked because the written intermediate steps gave the model extra computation and working memory. Reasoning models now do this by themselves.</li>
+        <li>On current Claude models, rely on the thinking feature and the effort setting instead of manual CoT; asking for thinking with a <code>&lt;thinking&gt;</code> tag can be rejected.</li>
+        <li>From Claude 4.6 onwards, prefill returns 400. For JSON use structured outputs or a strict tool; for the preamble, a system instruction; for reminders, the user turn.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/abs/2205.11916">Kojima et al.: Large Language Models are Zero-Shot Reasoners (2022)</a></li>
+      <li><a href="https://arxiv.org/abs/2309.03409">Yang et al.: Large Language Models as Optimizers (OPRO, 2023; not re-verified for this course)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (thinking, migrating off prefill)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 guide (reasoning_effort)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. A GOOD TASK DEFINITION ============ -->
+  <div class="lesson" data-tab="A good task definition">
+    <h2>A prompt is a ticket</h2>
+    <p class="lead">You have known for years what a good bug report looks like: which environment, which steps, what was expected, what happened, what the log says. A task given to an agent is exactly that kind of report. The difference: the colleague reading this report starts working without asking questions and fills in the missing information with their own guesses.</p>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Scrum’s “definition of done”, the “steps to reproduce” in a good bug report and the code-review question “what does this PR not change?”. A good task definition for an agent is the sum of those three. It is not a new skill; it is doing what you already do inside a team, in writing and completely.</div>
+
+    <h3>The parts of a coding task</h3>
+    <div class="cols">
+      <div class="card c"><h4 class="c">Context</h4>Which system, which screen or endpoint, since when, the evidence you have (log, error, measurement). Things the model cannot work out from the repo.</div>
+      <div class="card t"><h4 class="t">Task</h4>An explicit verb and scope: find the root cause and fix it; report only; write a test first.</div>
+      <div class="card h"><h4 class="h">Constraint and reason</h4>What must not be touched, and why. The reason lets the model recognize exceptions correctly.</div>
+      <div class="card ok"><h4>Done and verification</h4>Which command must pass, what is delivered at the end (root cause, changed files), and in what format.</div>
+      <div class="card r"><h4 class="r">Stop condition</h4>When it should stop and ask instead of carrying on alone: a schema change, a public API, a deletion.</div>
+    </div>
+
+    <p>In the simulation below we repair a typical “urgent” message step by step using these parts. At each step, watch how the prompt changes, its token count, and how the agent’s likely first move shifts. The agent moves are representative, but each is based on behavior described in the relevant guides.</p>
+
+    <div class="fig" data-widget="l3-repair">
+      <p class="fig-title">Repairing an “URGENT” message step by step</p>
+      <p class="fig-cap">Press Next or Play. Green lines are additions; red, struck-through lines are removals. In the box below, see why this step matters and how the agent’s first move changes.</p>
+    </div>
+
+    <h3>Isn’t a long prompt expensive?</h3>
+    <p>The final version takes several times more tokens than the first. But that arithmetic is misleading. You saw in the first topic that by turn 40 the request is hundreds of thousands of tokens; the few hundred tokens you add to the task definition are a rounding error there. The real cost is in the extra turns a vague task causes: reading the wrong files, undoing unwanted refactors, correcting “no, that’s not what I meant” three times. Every extra turn means resending the entire history (Level 2).</p>
+    <p>Claude Code’s best-practices page has concrete advice on this: watch the first minute, and press Esc the moment the agent goes off track; after two failed corrections, run <code>/clear</code> and write a better prompt. Trying to fix a polluted context is usually more expensive than starting over with a clean one (failure modes in Level 5).</p>
+
+    <h2>Review, performance, tests: the same pattern</h2>
+    <p>The same parts apply to work other than bug fixing. Below are three everyday requests. Click the marked parts; see what information each part gives the model and what would happen without it.</p>
+
+    <div class="fig" data-widget="l3-review">
+      <p class="fig-title">Three requests, before and after</p>
+      <p class="fig-cap">Pick a request type. In the “after” text on the right, click the underlined parts. Each part closes a separate gap.</p>
+      <div class="seg" role="group" aria-label="Request type">
+        <button type="button" data-v="review" aria-pressed="true">Code review</button>
+        <button type="button" data-v="perf" aria-pressed="false">Performance</button>
+        <button type="button" data-v="test" aria-pressed="false">Writing tests</button>
+      </div>
+      <div class="vs l3-rv-vs"><div class="bad" data-label="Before"></div><div class="good" data-label="After"></div></div>
+      <div class="panel l3-rv-out" aria-live="polite"><span class="muted">Click an underlined part.</span></div>
+    </div>
+
+    <h3>When is a short prompt enough?</h3>
+    <p>This lesson is not saying “every prompt should be a page long”. If the context is already in the context window, a short message works perfectly. In a session where you have just investigated a bug together, “now fix it and run the test” is enough, because the context, the evidence and the goal were already discussed in earlier turns. The criterion is not length but missing information: when the model reads this message, which question will it have to answer by guessing?</p>
+    <p>Conversely, the first message of a new session, or the first message after <code>/clear</code>, is like the first ticket handed to a colleague who has just walked in. There, a short message means the model fills every gap with “average project” assumptions. There is one more distinction: if you rewrite the same context in every session (the build command, the test command, the decimal rule for money), that information belongs not in the task definition but in the project instruction file. The task definition should carry only what is specific to <i>this</i> job.</p>
+    <div class="callout tip"><span class="ct">In practice</span>On a large or ambiguous job, ask the model for the diagnosis and the plan before the code: “Before making any changes, write the root cause and your plan in two paragraphs.” Catching a wrong diagnosis before any code is written is much cheaper than reverting a wrong diff. Claude Code’s plan mode is this habit built into the harness (Level 8).</div>
+
+    <h3>Four common mistakes</h3>
+    <ul>
+      <li><b>Dictating the solution.</b> Say “add a null check on line X” and the model does no diagnosis; if your diagnosis is wrong, the fix is wrong too. Give the problem and the evidence; if you want the solution, have it explained first.</li>
+      <li><b>Leaving the scope open.</b> If you don’t forbid “while I’m here” clean-ups, the agent may, with the best intentions, touch places it should not. Write down the scope and its reason.</li>
+      <li><b>Not allowing an empty result.</b> If a review request doesn’t say “if there are no findings, say so”, the model is more inclined to produce weak findings just to find something.</li>
+      <li><b>Leaving verification to the model.</b> “Make sure” is not verification. Give it a command to run, a test that must pass, an output to compare against.</li>
+    </ul>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>A good task definition = context + explicit task + constraint with reason + done/verification + stop condition.</li>
+        <li>Shouting, personas and tips carry no information; removing them costs nothing.</li>
+        <li>A few hundred extra tokens of clarity are always cheaper than a few extra turns.</li>
+        <li>Stop an agent that goes off track early; after two failed corrections, a clean context and a better prompt.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (concrete tasks, verification, Esc and /clear)</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices">Anthropic: Claude prompting best practices (the suggest-versus-change example)</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/latest-model/gpt-5.5">OpenAI: GPT-5.5 guide (allowed side effects, stopping conditions)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. CONTEXT ENGINEERING ============ -->
+  <div class="lesson" data-tab="Context engineering">
+    <h2>From “How do I say it?” to “What do I put in the window?”</h2>
+    <p class="lead">In a single question and answer, the wording of the prompt matters. In a forty-turn agent session, the wording is a small part of the request. The real question changes: on each turn, which tokens get put in front of the model, and which stay out?</p>
+    <p>In September 2025 Anthropic gave this question a name: <span class="g" data-g="Context engineering">context engineering</span>. Its definition: the natural progression of prompt engineering; strategies for curating <i>all</i> the tokens the model sees at inference time (system prompt, tools, MCP, external data, message history). And this curation is redone on every turn. The same article defines an agent in one plain sentence too: LLMs autonomously using tools in a loop.</p>
+
+    <h3>Why isn’t “more context” better?</h3>
+    <p>The window has grown: as of November 2026, all current Claude models offer a 1M-token context (Level 2). But fitting in the window does not mean the model will use all of it with equal attention. Anthropic describes context as a finite <span class="g" data-g="Attention budget">attention budget</span>: every token eats a piece of that budget.</p>
+    <p>On the evidence side there is Chroma’s <span class="g" data-g="Context rot">context rot</span> report from July 2025. Across 18 models, including Claude, GPT-4.1, Gemini 2.5 and Qwen3, it showed that even on simple tasks, performance becomes increasingly unreliable as input grows. In one of its most striking experiments (LongMemEval) the same question was asked once with a focused input of about 300 tokens containing only the relevant part, and once with the full input of about 113 thousand tokens; the focused input did better on <i>every</i> model. Thinking narrowed the gap but did not close it.</p>
+
+    <h3>The right altitude for a system prompt</h3>
+    <p>Anthropic’s context engineering article describes a “Goldilocks zone” for the system prompt between two extremes. At one end are brittle instructions written like if/else: they try to hard-code every situation and break on the first unforeseen one. At the other end are vague, high-level exhortations: they give the model no concrete signal, and the model assumes a shared context. The target is the smallest set of information that fully describes the expected behavior: the <span class="g" data-g="Right altitude">right altitude</span>.</p>
+
+    <div class="fig" data-widget="l3-altitude">
+      <p class="fig-title">System prompt altitude</p>
+      <p class="fig-cap">Three different system prompts for Example Co’s internal order-support agent. Change the altitude; compare the text, the token count and the typical way it fails.</p>
+      <div class="seg" role="group" aria-label="Altitude">
+        <button type="button" data-v="low" aria-pressed="false">Too low</button>
+        <button type="button" data-v="mid" aria-pressed="true">Right altitude</button>
+        <button type="button" data-v="high" aria-pressed="false">Too high</button>
+      </div>
+      <div class="l3-grid2 l3-alt-out" aria-live="polite"></div>
+    </div>
+
+    <h3>Preload, or fetch when needed?</h3>
+    <p>There are two ways to introduce an agent to a repo. The first is preloading: putting everything that might be relevant into the context up front. The second is <span class="g" data-g="Just-in-time retrieval">just-in-time retrieval</span>: keeping only lightweight references (file paths, queries, URLs) in the context and fetching the data with tools when it is needed. Claude Code does the second: instead of indexing the codebase in advance, it searches on demand with tools such as grep, glob and reading the head of a file. Anthropic’s Agent SDK article also recommends starting with agentic search, and finds semantic search less accurate, harder to maintain and less transparent. In practice the best option is often a hybrid: a small map up front, details on demand.</p>
+
+    <div class="fig" data-widget="l3-jit">
+      <p class="fig-title">The same question, three context strategies</p>
+      <p class="fig-cap">Task: “Why is amount rounding wrong in example.orders?” A repo of about 400 files. Pick a strategy; compare the tokens that enter the context, how many of them are actually relevant, and the cost of the input resent over a 20-turn session. Token counts are representative; prices are the November 2026 Opus 5.5 list price.</p>
+      <div class="seg" role="group" aria-label="Strategy">
+        <button type="button" data-v="pre" aria-pressed="true">Load everything</button>
+        <button type="button" data-v="jit" aria-pressed="false">Just-in-time</button>
+        <button type="button" data-v="hyb" aria-pressed="false">Hybrid</button>
+      </div>
+      <div class="l3-jit-out" aria-live="polite"></div>
+    </div>
+
+    <h3>The toolbox for long sessions</h3>
+    <p>The other techniques of context engineering will come up one by one in later levels; let’s draw their map here:</p>
+    <ul>
+      <li><b>Compaction.</b> A context that is nearly full is summarized, and work continues from the summary in a new window. The Claude Code documentation states the price openly: detailed instructions from the start of the conversation can be lost. That is why lasting rules are written into CLAUDE.md (Levels 2 and 8).</li>
+      <li><b>Clearing tool results.</b> Dropping old tool output that is no longer needed from the context; the lightest form of compaction.</li>
+      <li><b>Structured notes.</b> Notes the agent writes outside the context (a NOTES.md, a to-do list, a progress file) and reads back later (Level 5, long tasks).</li>
+      <li><b>Subagents.</b> Helper agents that do exploration in a clean context and return a summary of usually 1,000–2,000 tokens to the main agent (Level 8).</li>
+      <li><b><span class="g" data-g="Progressive disclosure">Progressive disclosure</span>.</b> For skills, only the name and description are loaded up front; the body when it becomes relevant, linked files only when needed.</li>
+      <li><b>Tools are context too.</b> Every tool definition takes up space in every request. A small number of non-overlapping tools; tool search for large numbers of MCP tools (Level 4).</li>
+    </ul>
+
+    <div class="callout tip"><span class="ct">In practice</span>The Claude Code documentation says this about CLAUDE.md: every line takes a small share of the model’s attention on every task. Keep the file short; move long procedures (cutting a release, data-fix steps) into skills. If you find yourself emphasizing a line a little more every week, that line probably belongs in a hook (Level 6).</div>
+
+    <div class="callout bridge"><span class="ct">You already know this</span>Context engineering resembles designing a cache and memory hierarchy. You cannot put everything into the L1 cache (the context); you keep hot data there and pull the rest from main memory or disk (the file system, tools) when needed. A bad layout slows down every access, like a cache full of the wrong data.</div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>Context engineering is the job of choosing all the tokens to put in front of the model on each turn; the wording of the prompt is only one part of it.</li>
+        <li>More context is not better: performance degrades as input grows (context rot). Focused input did better on every model.</li>
+        <li>A system prompt should sit at the right altitude: neither a pile of if/else nor empty exhortation.</li>
+        <li>Instead of preloading, keep lightweight references and fetch details on demand; a hybrid is often best.</li>
+      </ul>
+    </div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents (29 September 2025)</a></li>
+      <li><a href="https://research.trychroma.com/context-rot">Chroma: Context Rot (14 July 2025)</a></li>
+      <li><a href="https://claude.com/blog/building-agents-with-the-claude-agent-sdk">Anthropic: Building agents with the Claude Agent SDK (agentic search)</a></li>
+      <li><a href="https://code.claude.com/docs/en/how-claude-code-works">Claude Code: How Claude Code works (compaction, /context)</a></li>
+      <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code: Best practices (keep CLAUDE.md short, procedures in skills)</a></li>
+      <li><a href="https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills">Anthropic: Equipping agents for the real world with Agent Skills (progressive disclosure)</a></li>
+    </ol></div>
+  </div>
+</section>
+
+<script>
+/* ================= Level 3: styles ================= */
+(function(){
+  const s = document.createElement("style");
+  s.textContent = `
+.l3-stack{display:flex;height:30px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin:.9rem 0 .3rem;background:var(--soft)}
+.l3-stack button{all:unset;cursor:pointer;height:100%;min-width:3px;box-sizing:border-box;border-right:1px solid var(--surface);transition:flex-basis .45s cubic-bezier(.2,.7,.2,1),opacity .2s}
+.l3-stack button:hover{opacity:.8}
+.l3-stack button:focus-visible{outline:2px solid var(--ink);outline-offset:-3px}
+.l3-stack button.sel{box-shadow:inset 0 0 0 3px var(--ink)}
+.l3-layers{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:.4rem;margin-top:.8rem}
+.l3-lay{display:flex;gap:.5rem;align-items:flex-start;text-align:left;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:9px;padding:.45rem .6rem;cursor:pointer;font:inherit;font-size:.84rem;line-height:1.35}
+.l3-lay:hover{border-color:var(--muted)}
+.l3-lay[aria-pressed="true"]{border-color:var(--acc);background:var(--acc-bg)}
+.l3-lay small{display:block;color:var(--muted);font-family:var(--mono);font-size:.74rem}
+.l3-sw{width:12px;height:12px;border-radius:3px;flex:none;margin-top:.2rem}
+.l3-box{font-family:var(--mono);font-size:.8rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem .85rem;margin:.5rem 0;color:var(--ink)}
+.l3-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:.8rem}
+.l3-grid2 > div{min-width:0}
+.l3-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:.45rem;margin-top:.8rem}
+.l3-card{text-align:left;font:inherit;font-size:.86rem;line-height:1.4;border:1px solid var(--line);border-left:4px solid var(--l3c,var(--line));background:var(--paper);color:var(--ink);border-radius:9px;padding:.55rem .7rem;cursor:pointer}
+.l3-card:hover{border-color:var(--muted);border-left-color:var(--l3c,var(--line))}
+.l3-card[aria-pressed="true"]{background:var(--acc-bg);border-color:var(--acc);border-left-color:var(--l3c,var(--acc))}
+.l3-card .tag{display:inline-block;margin-top:.35rem}
+.l3-trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:.6rem;margin-top:.6rem}
+.l3-trio > div{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:.6rem .75rem;font-size:.86rem;line-height:1.5;min-width:0}
+.l3-trio h5{margin:0 0 .3rem;font-family:var(--sans);font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.l3-diff .ln{display:block;padding:0 .45rem;border-radius:3px;min-height:1.2em}
+.l3-diff .add{background:var(--ok-bg);box-shadow:inset 3px 0 0 var(--ok)}
+.l3-diff .del{background:var(--risk-bg);color:var(--risk);text-decoration:line-through;box-shadow:inset 3px 0 0 var(--risk)}
+.l3-ann{font:inherit;color:inherit;cursor:pointer;background:color-mix(in srgb,var(--ctx) 20%,transparent);border:0;border-bottom:2px solid var(--ctx);border-radius:3px;padding:0 .12rem;text-align:left}
+.l3-ann.on{background:color-mix(in srgb,var(--ctx) 45%,transparent)}
+.l3-ann:focus-visible{outline:2px solid var(--ink)}
+.l3-tbl td,.l3-tbl th{font-size:.84rem;vertical-align:top}
+.l3-call{font-family:var(--sans);font-weight:800;font-size:.78rem;white-space:nowrap}
+.l3-call.need{color:var(--tool)} .l3-call.over{color:var(--risk)} .l3-call.no{color:var(--faint)}
+.l3-toggles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,190px),1fr));gap:.35rem}
+.l3-toggles label{display:flex;gap:.45rem;align-items:flex-start;font-size:.85rem;line-height:1.35;border:1px solid var(--line);border-radius:8px;padding:.4rem .55rem;background:var(--paper);cursor:pointer}
+.l3-toggles label.on{border-color:var(--acc);background:var(--acc-bg)}
+.l3-toggles input{margin-top:.15rem;accent-color:var(--acc)}
+.l3-q{margin:.4rem 0 0;padding-left:1.1rem;font-size:.88rem}
+.l3-q li{margin:.2rem 0}
+.l3-q li.ok{color:var(--ok);list-style:none;margin-left:-1.1rem}
+.l3-year{font-family:var(--sans);font-weight:800;font-size:1.7rem;color:var(--acc);line-height:1;margin:0 0 .2rem}
+.l3-tl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:.8rem;align-items:start}
+.l3-tl > div{min-width:0}
+.l3-pill{display:inline-block;font-family:var(--sans);font-size:.72rem;font-weight:700;border-radius:999px;padding:.1rem .55rem;margin:.1rem .2rem .1rem 0}
+.l3-jbar{display:grid;grid-template-columns:minmax(80px,140px) 1fr minmax(64px,auto);gap:.5rem;align-items:center;font-size:.84rem;margin:.35rem 0}
+.l3-jbar .tr{height:16px;background:var(--soft);border-radius:5px;overflow:hidden;display:flex}
+.l3-jbar .tr i{display:block;height:100%;transition:width .45s cubic-bezier(.2,.7,.2,1)}
+.l3-jbar b{font-family:var(--mono);font-size:.78rem;font-weight:600;color:var(--muted);text-align:right}
+.l3-steps-mini{margin:.4rem 0 0;padding-left:1.2rem;font-size:.86rem}
+.l3-steps-mini li{margin:.15rem 0}
+.l3-h{font-family:var(--sans);font-weight:800;font-size:.95rem;margin:0 0 .3rem}
+`;
+  document.head.append(s);
+})();
+
+/* ================= Glossary ================= */
+Edu.glossary({
+  "System prompt": "The instruction text in the request’s system field. For agents the harness writes it: identity, working rules, environment information. Through training, the model has learned to weight this field above the user message.",
+  "System reminder": "Short status notes the harness inserts into the middle of the conversation: changed files, the to-do list, restated rules. The user doesn’t write them, but the model sees them.",
+  "Few-shot example": "Example input-output pairs placed in the prompt. One of the most reliable ways to steer format, tone and structure; Anthropic recommends 3–5 varied examples.",
+  "XML tags": "Tags used to separate kinds of content in a prompt, such as instructions, context, input and documents (e.g. <context>, <task>). The names are not magic; what helps is the separation itself.",
+  "Persona": "A role given to the model (“you are a senior engineer”). Measurements found it does not generally improve accuracy; a short role sentence can still be useful for setting tone and scope.",
+  "Prompting Science Report": "A report series in which a research group at Wharton measures prompting techniques with many repetitions. Report 3 examined tips and threats, Report 4 personas (2025).",
+  "Overtriggering": "Applying an instruction more broadly than intended, e.g. calling a tool on unrelated requests too. A common side effect of forceful, all-caps wording on newer models.",
+  "Positive instruction": "An instruction that says what to do rather than what not to do. “Write in flowing prose paragraphs” instead of “don’t use Markdown”.",
+  "Success criterion": "A condition that objectively shows the job is done: a test that must pass, a command to run, a required output format. It lets the agent close the loop itself.",
+  "Zero-shot CoT": "The technique of getting the model to write out intermediate steps with no examples, just a phrase like “let’s think step by step” (Kojima et al., 2022).",
+  "Assistant prefill": "The technique of placing a partial assistant message at the end of the messages array so the model continues its answer from there. Returns HTTP 400 from the Claude 4.6 models onwards.",
+  "Structured outputs": "A feature that guarantees at the API level that output conforms to a given JSON schema. Used instead of prefill or a “write only JSON” plea.",
+  "Context engineering": "The discipline of choosing and arranging all the tokens the model sees on each turn (system prompt, tools, external data, history, tool results). According to Anthropic, the natural progression of prompt engineering.",
+  "Context rot": "The way a model’s performance becomes increasingly unreliable as input grows, even on simple tasks. Chroma’s 2025 report showed it across 18 models.",
+  "Attention budget": "The idea of treating context as a finite attention budget: every token that fits in the window takes a share of the model’s attention.",
+  "Right altitude": "The zone where a system prompt is neither as low as brittle if/else rules nor as high as empty exhortations: the smallest set of information that fully describes the expected behavior.",
+  "Just-in-time retrieval": "The approach of keeping lightweight references (paths, queries, URLs) instead of loading data into the context up front, and fetching it with tools on demand.",
+  "Progressive disclosure": "Revealing information in stages: for skills only the name and description are loaded up front, the body when relevant, extra files only when needed."
+});
+
+/* ================= 1. Request anatomy ================= */
+Edu.widget("l3-anatomy", el => {
+  const { h, $, $$, seg, json } = Edu;
+  const W = {
+    api:{ n:"API", c:"var(--tool)" }, harness:{ n:"Harness", c:"var(--harness)" },
+    team:{ n:"You and your team", c:"var(--ctx)" }, env:{ n:"Environment and tools", c:"var(--risk)" },
+    model:{ n:"Model", c:"var(--model)" }, you:{ n:"You", c:"var(--ok)" }
+  };
+  const L = [
+    { id:"tu", name:"Tool-use system instruction", who:"api", key:"system", t:[286,286,286], when:"Every request, if tools are present",
+      sample:"(The instruction the API adds, telling the model how to call tools. Its content belongs to the provider; you don’t see it, but it takes up space on the bill and in the context.)",
+      note:"Documented value: about 286 tokens on Opus, Sonnet and Haiku 5.5 (November 2026). Forcing a tool call (tool_choice) increases this number (Level 4)." },
+    { id:"tools", name:"Tool definitions", who:"harness", key:"tools", t:[12000,12000,12000], when:"Every request",
+      sample:'{ "name": "Read",\n  "description": "Reads a file. Requires an absolute path. Use offset and limit for large files…",\n  "input_schema": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } }\n… and the other built-in tools (Edit, Bash, Grep, Glob…)',
+      note:"The description is a prompt: the model decides when to use the tool by looking at this alone. If the tool set changes, the cache is invalidated from the start (Level 2)." },
+    { id:"mcp", name:"MCP tools (deferred)", who:"harness", key:"tools", t:[1400,1400,1400], when:"Every request, names only",
+      sample:"example_db__query, example_db__describe_table, tracker__search_issues, …\n(Claude Code defers MCP tools via tool search by default: the full definition is loaded only when needed.)",
+      note:"Without deferral, 30–40 MCP tools can take tens of thousands of tokens. In Anthropic’s example, 58 tools took about 55 thousand tokens before the conversation even started (Level 4)." },
+    { id:"sys", name:"System prompt", who:"harness", key:"system", t:[3200,3200,3200], when:"Every request",
+      sample:"You are a coding agent. Read files before editing them. Explain commands as you run them…\n<env>\nWorking directory: /home/dev/example_app\nPlatform: linux\nGit branch: fix/order-mapper\n</env>\n(representative excerpt)",
+      note:"Identity, working rules, output format, environment information. The harness writes this text and it changes from version to version; it is not under your control." },
+    { id:"mem", name:"CLAUDE.md / AGENTS.md", who:"team", key:"system", t:[1800,1800,1800], when:"Every request",
+      sample:"# example_app\n- Build: dotnet build; test: dotnet test\n- Migrations are only added as new files; reason: old migrations have already run in the environments.\n- Money amounts are decimal; no float.",
+      note:"The harness adds this file to the context on every request (in the system field or at the start of the first message, depending on the harness). This is where lasting rules belong (Level 8)." },
+    { id:"skills", name:"Skill descriptions", who:"team", key:"system", t:[600,600,600], when:"Every request, name + description only",
+      sample:"release-notes: Prepares release notes for example_app. Use when the user asks for release notes.\nsql-review: Reviews PostgreSQL scripts for safety.",
+      note:"Progressive disclosure: the body (SKILL.md) is loaded only when relevant. That is why long procedures move out of CLAUDE.md into skills." },
+    { id:"rem", name:"System reminders", who:"harness", key:"messages", t:[200,900,2200], when:"Inside the conversation, as needed",
+      sample:"<system-reminder>\nThe file src/Orders/OrderMapper.cs was modified by the user.\nTo-do: [x] run the test [ ] fix [ ] test again\n</system-reminder>",
+      note:"The user doesn’t write it; the model sees it. The harness’s way of telling the model “the world has changed”." },
+    { id:"hist", name:"Conversation history", who:"model", key:"messages", t:[0,14000,38000], when:"Grows every turn",
+      sample:'{ "role": "assistant", "content": [\n  { "type": "thinking", "thinking": "…" },\n  { "type": "text", "text": "Running the test." },\n  { "type": "tool_use", "name": "Bash", "input": { "command": "dotnet test" } } ] }',
+      note:"Your earlier messages and the model’s replies. On current 5.5 models, thinking blocks are kept in later turns and billed as input." },
+    { id:"res", name:"Tool results", who:"env", key:"messages", t:[0,46000,160000], when:"After every tool call",
+      sample:'{ "type": "tool_result", "tool_use_id": "toolu_07",\n  "content": "Failed  Map_NullStatus_ReturnsUnknown\\n  System.InvalidCastException …\\n  at OrderMapper.cs:88 …(380 more lines)" }',
+      note:"Files read, test output, grep results. In long sessions, by far the largest part of the request. Untrusted content enters here too (Level 10)." },
+    { id:"you", name:"Your latest message", who:"you", key:"messages", t:[60,40,25], when:"At the very end",
+      sample:'{ "role": "user", "content": "fix the tests" }',
+      note:"The smallest part of the request. It can be short; but if it is vague, it easily gets lost in the huge pile." }
+  ];
+  const stack = $(".l3-stack", el), list = $(".l3-layers", el), out = $(".l3-anat-out", el), stats = $(".l3-anat-stats", el);
+  let turn = 0, sel = "you";
+  const segs = {}, btns = {};
+  L.forEach(l => {
+    segs[l.id] = h("button", { type:"button", "aria-label": l.name, title: l.name, style:{ background: W[l.who].c }, onclick:() => pick(l.id) });
+    stack.append(segs[l.id]);
+    btns[l.id] = h("button", { type:"button", class:"l3-lay", "aria-pressed":"false", onclick:() => pick(l.id) },
+      h("span", { class:"l3-sw", style:{ background: W[l.who].c } }),
+      h("span", null, l.name, h("small", { class:"l3-t" }, "")));
+    list.append(btns[l.id]);
+  });
+  const fmt = n => n.toLocaleString("en-US");
+  const req = () => ({
+    model: "claude-opus-5-5",
+    max_tokens: 32000,
+    tools: [ { name:"Read", description:"Reads a file…", input_schema:{ type:"object" } }, "… built-in tools + MCP names" ],
+    system: [ { type:"text", text:"(tool-use instruction, added by the API)" }, { type:"text", text:"You are a coding agent… + CLAUDE.md + skill list" } ],
+    messages: turn === 0 ? [ { role:"user", content:"fix the tests" } ]
+      : [ { role:"user", content:"fix the tests" }, { role:"assistant", content:"[thinking, text, tool_use]" }, { role:"user", content:"[tool_result …]" }, "… " + (turn === 1 ? "28" : "78") + " more messages", { role:"user", content:"fix the tests" } ]
+  });
+  function render(){
+    const total = L.reduce((a, l) => a + l.t[turn], 0);
+    L.forEach(l => {
+      const v = l.t[turn], pct = v / total * 100;
+      segs[l.id].style.flex = "0 0 " + Math.max(pct, v ? 0.6 : 0) + "%";
+      segs[l.id].style.display = v ? "" : "none";
+      segs[l.id].classList.toggle("sel", l.id === sel);
+      $(".l3-t", btns[l.id]).textContent = v ? fmt(v) + " tokens · " + (pct < 1 ? pct.toFixed(2) : Math.round(pct)) + "%" : "not yet";
+      btns[l.id].setAttribute("aria-pressed", l.id === sel ? "true" : "false");
+    });
+    const by = {}; L.forEach(l => by[l.who] = (by[l.who] || 0) + l.t[turn]);
+    const you = L.find(l => l.id === "you").t[turn];
+    stats.innerHTML = "";
+    stats.append(
+      h("span", null, h("b", null, fmt(total)), "total tokens"),
+      h("span", null, h("b", null, (you / total * 100).toFixed(you / total < 0.001 ? 3 : 2) + "%"), "your latest message"),
+      h("span", null, h("b", null, Math.round(((by.harness||0) + (by.api||0)) / total * 100) + "%"), "harness + API"),
+      h("span", null, h("b", null, Math.round((by.env||0) / total * 100) + "%"), "tool results"));
+    const l = L.find(x => x.id === sel);
+    out.innerHTML = "";
+    out.append(
+      h("p", { style:{ margin:"0 0 .3rem" } }, h("b", null, l.name), " ",
+        h("span", { class:"l3-pill", style:{ background: "color-mix(in srgb," + W[l.who].c + " 18%,transparent)", color: W[l.who].c } }, "Written by: " + W[l.who].n),
+        h("span", { class:"l3-pill", style:{ background:"var(--surface)", color:"var(--muted)", border:"1px solid var(--line)" } }, l.when)),
+      h("div", { class:"l3-box", text: l.sample }),
+      h("p", { style:{ margin:".3rem 0" } }, l.note),
+      h("p", { class:"hint", style:{ margin:".5rem 0 0" } }, "Where it sits in the raw request (highlighted field):"),
+      h("div", { class:"jsonv", html: json(req(), { hl:[l.key] }) }));
+  }
+  function pick(id){ sel = id; render(); }
+  seg($(".seg", el), v => { turn = +v; render(); });
+});
+
+/* ================= 2. Folklore explorer ================= */
+Edu.widget("l3-folk", el => {
+  const { h, $, $$, seg } = Edu;
+  const ST = {
+    back:{ n:"Backfires", c:"var(--risk)", t:"r" },
+    none:{ n:"No effect", c:"var(--muted)", t:"" },
+    moved:{ n:"Moved elsewhere", c:"var(--ctx)", t:"c" },
+    works:{ n:"Still valid", c:"var(--ok)", t:"ok" }
+  };
+  const C = [
+    { s:"none", claim:"“You are the best senior engineer in the world.”",
+      mech:"The idea was that a role sentence makes the model generate from a distribution resembling “expert” text. But the model knows no more than it already knows; a role adds no knowledge.",
+      ev:"Prompting Science Report 4 (December 2025): expert personas did not generally improve accuracy on graduate-level questions; even a domain-matched expert made little difference; low-knowledge roles such as “a small child” often made things worse.",
+      inst:"Anthropic still recommends a one-sentence role in the system prompt for tone and behavior. Use the role for scope and style (“you are the code reviewer for example_app; focus only on correctness bugs”), not for capability." },
+    { s:"none", claim:"“I’ll tip you $200 if you get this right.”",
+      mech:"Single-run observations: the prompt with the tip gave a better answer once. But output is probabilistic; in a single run you cannot tell luck from effect.",
+      ev:"Prompting Science Report 3 (August 2025): offering a tip had, overall, no meaningful effect on benchmark performance. Individual questions swing in both directions; that is noise, not a lever.",
+      inst:"Spend those tokens on context: which file, which error, since when." },
+    { s:"none", claim:"“If you get this wrong I’ll be fired / they’ll shut you down.”",
+      mech:"The assumption that emotional pressure makes the model “more careful”. The model is not an employee; a threat creates no motivation.",
+      ev:"The same report (PSR 3, August 2025) measured threats too: overall, no meaningful effect.",
+      inst:"Say what the risk is and why: “This ships as a hotfix today, so the diff must be small.” A reason genuinely changes behavior." },
+    { s:"back", claim:"“CRITICAL: You MUST use this tool. NEVER forget.”",
+      mech:"2023 models skipped rules often; capital letters compensated for undertriggering.",
+      ev:"Anthropic: newer models are much more responsive to the system prompt; wording like this now overtriggers, and the cure is to soften the language. OpenAI’s GPT-5.5 guide: save ALWAYS/NEVER for true invariants. Cursor’s experience: a “be THOROUGH” instruction led to needless search calls on small tasks.",
+      inst:"Write it calmly and conditionally: “Use this tool when the user asks about order data.” Move a rule that must never be skipped into a deterministic layer such as a hook or a permission rule." },
+    { s:"back", claim:"“If in doubt, always use the tool.”",
+      mech:"Looks like the safe side: an extra call does no harm.",
+      ev:"Anthropic’s guide specifically notes that phrasing like “If in doubt, use [tool]” leads to overtriggering. Every unnecessary call means a turn, latency and context.",
+      inst:"Write when to use it and when it is not needed, together: “Use it when asked about an order’s status, amount or shipment; it is not needed for general SQL or C# questions.”" },
+    { s:"moved", claim:"“Take a deep breath and work step by step.”",
+      mech:"The phrase is reported to have been found by an optimization study that tries prompts automatically (OPRO, 2023), for a specific model and maths dataset; this detail was not re-verified for this course.",
+      ev:"A phrase found on one model is not portable to another. The part that worked was “step by step” (zero-shot CoT, 2022), and current reasoning models do that themselves with thinking tokens.",
+      inst:"On models with thinking enabled, use the effort setting; in the prompt, write not how to think but what to achieve and how it will be evaluated." },
+    { s:"moved", claim:"“Write your reasoning between <thinking> tags.”",
+      mech:"Manual CoT: having the model write out intermediate steps gives it computation and working memory.",
+      ev:"Anthropic: on Fable 5.x, Opus 5 / 5.5 and Sonnet 5.5, rely on the thinking feature; a request to write reasoning in <thinking> tags can be rejected. Manual CoT is a fallback only when thinking is off.",
+      inst:"Turn thinking on and set effort to suit the job. If you want a justification, ask for it as part of the output: “At the end, justify your choice in two sentences.”" },
+    { s:"moved", claim:"“For JSON, I prefill the start of the answer with { .”",
+      mech:"Leave the last assistant message half-written and the model continues from there; in practice the format was guaranteed.",
+      ev:"Anthropic: starting with the Claude 4.6 models, prefilling the last assistant turn returns HTTP 400.",
+      inst:"For JSON, structured outputs or a tool with a strict schema; to cut the preamble, a system instruction; for reminders, the user turn." },
+    { s:"back", claim:"“The longer and more detailed the prompt, the better.”",
+      mech:"The assumption that more information = better decisions. Since missing context really is a problem, it is easy to overshoot.",
+      ev:"Context rot (Chroma, July 2025): across 18 models performance dropped as input grew; a focused input of ~300 tokens beat the full ~113 thousand-token input on every model. Claude Code: every line in CLAUDE.md takes a share of attention on every task.",
+      inst:"Precision, not length: the smallest set of information that fully describes the expected behavior. Move procedures into skills, hard rules into hooks." },
+    { s:"works", claim:"“The longer the list of prohibitions, the fewer mistakes the model makes.”",
+      mech:"Adding a “don’t” line after every mistake is a natural reflex.",
+      ev:"Anthropic recommends positive instructions: “write in flowing prose paragraphs” instead of “don’t use Markdown”. A prohibition does not say what to put in its place. (The claim is wrong; the underlying principle, positive instruction, is still valid.)",
+      inst:"Turn every prohibition into a “do this instead” sentence; move prohibitions that are truly absolute into permission rules." },
+    { s:"works", claim:"“Don’t give examples, the model will just copy them.”",
+      mech:"Given a single example, the model also copies its incidental features; the observation is right but the conclusion is wrong.",
+      ev:"Anthropic: few-shot examples are one of the most reliable ways to steer format, tone and structure. Recommended: 3–5 relevant examples that differ from each other, in <example> tags. On thinking models, examples shape internal reasoning too.",
+      inst:"Give varied examples instead of a single one, or say explicitly which feature of the example matters." },
+    { s:"works", claim:"“Writing the reason for a rule is just padding.”",
+      mech:"The intuition that a short prompt = a clear prompt.",
+      ev:"Anthropic’s example: instead of “NEVER use ellipses”, saying “the response will be read aloud and the engine can’t pronounce ellipses” is more effective; the model generalizes from the reason.",
+      inst:"Add a one-sentence “because” next to every constraint. The model then recognizes both the rule’s relatives and its exceptions." }
+  ];
+  const grid = $(".l3-cards", el), out = $(".l3-folk-out", el);
+  let cur = null;
+  const btns = C.map((c, i) => {
+    const b = h("button", { type:"button", class:"l3-card", "aria-pressed":"false", style:{ "--l3c": ST[c.s].c }, onclick:() => show(i) },
+      c.claim, h("br"), h("span", { class:"tag " + ST[c.s].t }, ST[c.s].n));
+    grid.append(b); return b;
+  });
+  function show(i){
+    cur = i; const c = C[i];
+    btns.forEach((b, j) => b.setAttribute("aria-pressed", j === i ? "true" : "false"));
+    out.innerHTML = "";
+    out.append(h("p", { class:"l3-h" }, c.claim, " ", h("span", { class:"tag " + ST[c.s].t }, ST[c.s].n)),
+      h("div", { class:"l3-trio" },
+        h("div", null, h("h5", null, "Why it seemed to work"), c.mech),
+        h("div", null, h("h5", null, "Today’s evidence"), c.ev),
+        h("div", null, h("h5", null, "What to write instead"), c.inst)));
+  }
+  seg($(".l3-folk-filter", el), v => {
+    btns.forEach((b, j) => { b.style.display = (v === "all" || C[j].s === v) ? "" : "none"; });
+  });
+});
+
+/* ================= 2b. Tone and overtriggering ================= */
+Edu.widget("l3-caps", el => {
+  const { h, $, seg } = Edu;
+  const LINES = [
+    "Use the example_orders_search tool when the user asks about an order’s status, amount or shipment.",
+    "IMPORTANT: Always use the example_orders_search tool for anything related to orders. Don’t forget to use this tool.",
+    "CRITICAL: You MUST use example_orders_search. NEVER answer about orders without it. If in doubt, use the tool!"
+  ];
+  // need: does it really require data; lure: superficial similarity to the topic (0-2)
+  const R = [
+    { q:"Why was order 1042 delivered late?", need:true, lure:2 },
+    { q:"How many orders were cancelled yesterday?", need:true, lure:2 },
+    { q:"Can you suggest an index for the example.orders table? (general design question)", need:false, lure:2, why:"The word ‘orders’ appears, but the question is about design, not data." },
+    { q:"Can you make this method in OrderMapper.cs async?", need:false, lure:1, why:"A code-editing request; no order data needed." },
+    { q:"How do I write a C# enum for order status codes?", need:false, lure:1, why:"A general programming question." },
+    { q:"Should the order_id column be bigint or uuid?", need:false, lure:1, why:"A design discussion; looking at live data adds nothing." },
+    { q:"What does this regex do: ^[A-Z]{2}-\\d{4}$", need:false, lure:0, why:"Unrelated to the topic." },
+    { q:"Thanks, that’s all for today.", need:false, lure:0, why:"Closing the conversation." }
+  ];
+  const body = $(".l3-caps-body", el), line = $(".l3-caps-line", el), st = $(".l3-caps-stats", el);
+  function render(level){
+    line.textContent = "system: " + LINES[level];
+    body.innerHTML = ""; let over = 0, need = 0;
+    R.forEach(r => {
+      const call = r.need || (level === 1 && r.lure >= 2) || (level === 2 && r.lure >= 1);
+      const kind = r.need ? "need" : call ? "over" : "no";
+      if (kind === "over") over++; if (kind === "need") need++;
+      const note = kind === "need" ? "The data is really needed." : kind === "over" ? "Unnecessary call. " + r.why : (r.why || "");
+      body.append(h("tr", null, h("td", null, r.q),
+        h("td", null, h("span", { class:"l3-call " + kind }, kind === "no" ? "not called" : kind === "need" ? "called" : "called (extra)")),
+        h("td", null, note)));
+    });
+    st.innerHTML = "";
+    st.append(h("span", null, h("b", null, String(need)), "necessary calls"),
+      h("span", null, h("b", { style:{ color: over ? "var(--risk)" : "var(--ink)" } }, String(over)), "unnecessary calls"),
+      h("span", null, h("b", null, over ? "+" + over + (over === 1 ? " turn" : " turns") : "0"), "extra model turns and latency"));
+  }
+  seg($(".seg", el), v => render(+v));
+});
+
+/* ================= 3a. Rule and reason ================= */
+Edu.widget("l3-reason", el => {
+  const { h, $, seg } = Edu;
+  const RULE = "Do not edit files in the migrations/ folder.";
+  const WHY = "Because the migrations in this folder have already run in the test and production environments; changing a file that has already run creates schema drift between environments. If a schema change is needed, add a new migration.";
+  const CASES = [
+    { s:"A delivered_at column needs to be added to the example.orders table.",
+      r:"The rule only says what is forbidden. Where the change should go is unclear: the model may put the schema change somewhere else (such as a hand-written SQL script), or stop and ask.",
+      w:"The reason also shows the way: add a new migration file. The model creates a new file without touching the old ones." },
+    { s:"On this branch there is a typo in a migration the agent itself created an hour ago, which has not run in any environment.",
+      r:"Read literally, the model cannot even fix the file it just wrote: it either adds a second “fix” migration or breaks the rule.",
+      w:"The reason says “has run in the environments”; this file has not. The model can recognize the exception and propose the fix, or at least state its hesitation openly and ask." },
+    { s:"Under db/scripts/released/ there are also old SQL scripts that have run in production.",
+      r:"The rule only says migrations/. The model may see nothing wrong with editing a script under released/.",
+      w:"The principle in the reason (“don’t change something that has run; add a new one”) fits this folder too. By the same logic, the model protects the released/ scripts as well." },
+    { s:"Migration 0042 in production created an index on the wrong column.",
+      r:"The model either breaks the rule and fixes 0042, or gets stuck.",
+      w:"The reason states the solution: don’t touch 0042, add a new migration that fixes the index." }
+  ];
+  const box = $(".l3-reason-rule", el), wrap = $(".l3-reason-cases", el);
+  seg($(".seg", el), v => {
+    box.textContent = "CLAUDE.md: " + RULE + (v === "why" ? "\n" + WHY : "");
+    wrap.innerHTML = "";
+    CASES.forEach((c, i) => wrap.append(h("div", null,
+      h("h5", null, "Situation " + (i + 1)), h("p", { style:{ margin:"0 0 .4rem", fontWeight:"600" } }, c.s),
+      h("p", { style:{ margin:0, color: v === "why" ? "var(--ok)" : "var(--ink)" } }, v === "why" ? c.w : c.r))));
+  });
+});
+
+/* ================= 3b. The new-colleague test ================= */
+Edu.widget("l3-builder", el => {
+  const { h, $, tokenize } = Edu;
+  const P = [
+    { id:"ctx", lab:"Context and evidence", tag:"context",
+      txt:"The example_app order list (GET /api/orders) has been slow since the last release: p95 is 2.1 s, it used to be around 300 ms.\nThe slowdown started after last week’s OrderQueryService refactor." },
+    { id:"verb", lab:"Explicit action", tag:"task", replaces:true,
+      txt:"Find the root cause of the slowdown and fix it." },
+    { id:"why", lab:"Constraint and reason", tag:"constraints",
+      txt:"Don’t change the fields in the response JSON; the mobile app depends on them and cannot be updated the same day." },
+    { id:"stop", lab:"Stop condition", tag:"constraints",
+      txt:"If you think the database schema needs to change (indexes included), ask me first; schema changes go through a separate approval." },
+    { id:"verify", lab:"Verification path", tag:"verification",
+      txt:"First run dotnet test to see the current state. Add a test that counts the queries; after the change, OrderQueryServiceTests must pass." },
+    { id:"done", lab:"Definition of done", tag:"done_when",
+      txt:"Done means: tests are green, p95 is under 400 ms in a local measurement, the root cause in 2-3 sentences, a list of the changed files." },
+    { id:"ex", lab:"Sample report", tag:"example",
+      txt:"Root cause: The list fetches the customer with a separate query for every order (N+1).\nFix: A single query with a join.\nChanged files: OrderQueryService.cs, OrderQueryServiceTests.cs" },
+    { id:"xml", lab:"Structure with XML", tag:null, txt:"" }
+  ];
+  const BASE = "The order list is slow, can you take a look?";
+  const Q = [
+    { q:"Which screen, which endpoint? How slow is “slow”?", by:"ctx" },
+    { q:"Since when? What might it be related to?", by:"ctx" },
+    { q:"Should I take a look and make suggestions, or change it?", by:"verb" },
+    { q:"What must I not touch, and why?", by:"why" },
+    { q:"May I touch the schema, or should I ask?", by:"stop" },
+    { q:"How do I check that my work is correct?", by:"verify" },
+    { q:"When do I stop? What is the target number?", by:"done" },
+    { q:"What do I deliver at the end, and in what format?", by:"ex" }
+  ];
+  const on = new Set();
+  const tg = $(".l3-toggles", el), out = $(".l3-build-out", el), ql = $(".l3-q", el), tok = $(".l3-build-tok", el);
+  P.forEach(p => {
+    const inp = h("input", { type:"checkbox" });
+    const lab = h("label", null, inp, p.lab);
+    inp.addEventListener("change", () => { inp.checked ? on.add(p.id) : on.delete(p.id); lab.classList.toggle("on", inp.checked); render(); });
+    tg.append(lab);
+  });
+  function render(){
+    const parts = P.filter(p => p.id !== "xml" && on.has(p.id));
+    let text;
+    if (on.has("xml") && parts.length){
+      const groups = {};
+      if (!on.has("verb")) (groups.task = groups.task || []).push(BASE);
+      parts.forEach(p => (groups[p.tag] = groups[p.tag] || []).push(p.txt));
+      const order = ["context","task","constraints","verification","done_when","example"];
+      text = order.filter(k => groups[k]).map(k => "<" + k + ">\n" + groups[k].join("\n") + "\n</" + k + ">").join("\n");
+    } else {
+      const lines = [];
+      if (on.has("ctx")) lines.push(P[0].txt);
+      lines.push(on.has("verb") ? P[1].txt : BASE);
+      parts.filter(p => p.id !== "ctx" && p.id !== "verb").forEach(p => lines.push(p.id === "ex" ? "Sample report:\n" + p.txt : p.txt));
+      text = lines.join("\n");
+    }
+    out.textContent = text;
+    const n = tokenize(text).length;
+    tok.textContent = "≈ " + n + " tokens (approximate count). In a request at turn 40, this is less than a thousandth of the total.";
+    ql.innerHTML = "";
+    const open = Q.filter(x => !on.has(x.by));
+    open.forEach(x => ql.append(h("li", null, x.q)));
+    if (!on.has("xml") && parts.length >= 4) ql.append(h("li", null, "Which part is context, which is instruction, which is an example? (The longer it gets, the blurrier the boundaries.)"));
+    if (!ql.children.length) ql.append(h("li", { class:"ok" }, "No open questions left. Your colleague can start; still, watch the first minute."));
+  }
+  render();
+});
+
+/* ================= 4a. A history of CoT ================= */
+Edu.widget("l3-cot", el => {
+  const { h } = Edu;
+  const S = [
+    { y:"2022", t:"Zero-shot chain-of-thought", p:"Q: …\nA: Let’s think step by step.",
+      why:"The model performs a fixed amount of computation per token. Writing out intermediate steps means more computation, and subsequent tokens are produced while looking at those intermediate results. The written text works like working memory (Kojima et al.).",
+      now:"The mechanism still holds; but the model now does this by itself.", c:"var(--ok)" },
+    { y:"2023", t:"Phrases found by an optimizer", p:"Take a deep breath and work on this problem step by step.",
+      why:"Reported as a phrase that a method trying prompts automatically (OPRO) found on a specific model and maths dataset. This detail was not re-verified for this course.",
+      now:"A model-specific result. Not a spell portable to another model; the part that spread is folklore.", c:"var(--ctx)" },
+    { y:"2024–25", t:"Reasoning models", p:"(Nothing extra needed in the prompt; the model produces thinking tokens before answering.)",
+      why:"Models learned to think through reinforcement learning (with verifiable rewards) (Level 1). CoT moved from the prompt into the model.",
+      now:"Thinking is paid for: it counts as output tokens and adds latency.", c:"var(--model)" },
+    { y:"2026", t:"Tune thinking, don’t script it", p:"effort: \"high\"           // Claude\nreasoning_effort: \"medium\" // OpenAI GPT-5.5 (default)",
+      why:"Anthropic: on Fable 5.x, Opus 5 / 5.5 and Sonnet 5.5, rely on thinking; a request to write reasoning in <thinking> tags can be rejected. OpenAI: higher effort can lead to overthinking and unnecessary searching.",
+      now:"Manual CoT is a fallback only when thinking is off. The control lives in the parameter, not the prompt.", c:"var(--tool)" },
+    { y:"Today", t:"What should go in the prompt?", p:"<task>Find the root cause and fix it.</task>\n<done_when>dotnet test passes; root cause in 2-3 sentences.</done_when>\n<examples>…3 varied examples…</examples>",
+      why:"Write not how to think, but what to achieve and how it will be evaluated. Examples shape internal reasoning too.",
+      now:"If you want a justification, ask for it as part of the output: “At the end, justify your choice in two sentences.”", c:"var(--acc)" }
+  ];
+  Edu.stepper(el, { steps:S, auto:4200, render(i, s, { body }){
+    body.innerHTML = "";
+    body.append(h("div", { class:"l3-tl" },
+      h("div", null, h("p", { class:"l3-year", style:{ color:s.c } }, s.y), h("p", { class:"l3-h" }, s.t), h("div", { class:"l3-box", text:s.p })),
+      h("div", null, h("p", { style:{ margin:"0 0 .5rem" } }, h("b", null, "Why: "), s.why), h("p", { style:{ margin:0 } }, h("b", null, "Today: "), s.now))));
+  }});
+});
+
+/* ================= 4b. Migrating off prefill ================= */
+Edu.widget("l3-prefill", el => {
+  const { h, $, seg, json } = Edu;
+  const ERR = { type:"error", error:{ type:"invalid_request_error", message:"(representative) The final assistant turn cannot be prefilled on this model." } };
+  const D = {
+    json:{
+      old:{ model:"claude-opus-5-5", max_tokens:1024, messages:[
+        { role:"user", content:"Convert this log line to JSON: 2026-11-02 09:12 WARN order_id=1042 status_code=NULL" },
+        { role:"assistant", content:"{" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:1024,
+        tools:[ { name:"record_log_entry", description:"Records a parsed log line.", strict:true,
+          input_schema:{ type:"object", properties:{ ts:{ type:"string" }, level:{ type:"string", enum:["INFO","WARN","ERROR"] }, order_id:{ type:"integer" }, status_code:{ type:["string","null"] } },
+            required:["ts","level","order_id","status_code"], additionalProperties:false } } ],
+        tool_choice:{ type:"tool", name:"record_log_entry" },
+        messages:[ { role:"user", content:"Parse this log line: 2026-11-02 09:12 WARN order_id=1042 status_code=NULL" } ] },
+      hl:["tools","tool_choice"],
+      note:"Instead of “starting” the format with text, you guarantee it with a schema. strict: true guarantees the input conforms to the schema; the tool call is forced (Level 4). Alternative: structured outputs." },
+    pre:{
+      old:{ model:"claude-opus-5-5", max_tokens:1024, messages:[
+        { role:"user", content:"What is the root cause of this stack trace?\n…InvalidCastException at OrderMapper.cs:88" },
+        { role:"assistant", content:"Root cause:" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:1024,
+        system:"Respond directly without a preamble. Start the first line with “Root cause:”, followed by at most three sentences.",
+        messages:[ { role:"user", content:"What is the root cause of this stack trace?\n…InvalidCastException at OrderMapper.cs:88" } ] },
+      hl:["system"],
+      note:"You turn the job prefill was doing into an explicit instruction. Positive and concrete: it says what to start with and how long to be." },
+    rem:{
+      old:{ model:"claude-opus-5-5", max_tokens:2048, messages:[
+        { role:"user", content:"(…turn 30 of a long conversation…) Now write the report query for example.orders." },
+        { role:"assistant", content:"[Rule: SELECT only, schema name explicit]\n" } ] },
+      neu:{ model:"claude-opus-5-5", max_tokens:2048, messages:[
+        { role:"user", content:[
+          { type:"text", text:"<reminder>Write SELECT only; use table names with their schema (like example.orders).</reminder>" },
+          { type:"text", text:"Now write the report query for example.orders." } ] } ] },
+      hl:["content"],
+      note:"Instead of putting the reminder in the model’s mouth, you add it to the next user turn. If it is a truly lasting rule, its place is the project instruction file; if it must never be broken, a deterministic layer such as database permissions (Level 6)." }
+  };
+  const out = $(".l3-prefill-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    out.append(
+      h("div", null, h("p", { class:"l3-h", style:{ color:"var(--risk)" } }, "Old: request with prefill"), h("div", { class:"jsonv", html: json(d.old, { hl:["messages"] }) }),
+        h("p", { class:"l3-h", style:{ color:"var(--risk)", marginTop:".6rem" } }, "Response from a current Claude model: HTTP 400"), h("div", { class:"jsonv", html: json(ERR) })),
+      h("div", null, h("p", { class:"l3-h", style:{ color:"var(--ok)" } }, "New: the recommended path"), h("div", { class:"jsonv", html: json(d.neu, { hl:d.hl }) }),
+        h("p", { style:{ margin:".5rem 0 0" } }, d.note)));
+  });
+});
+
+/* ================= 5a. Repairing the URGENT message ================= */
+Edu.widget("l3-repair", el => {
+  const { h, tokenize } = Edu;
+  const CTX = ["example_app: an ASP.NET Core 8 API backed by PostgreSQL.",
+    "Since this morning’s deploy, GET /api/orders?customerId=42",
+    "returns 500 for customers who have a cancelled order.",
+    "Log: System.InvalidCastException, OrderMapper.cs:88 (status_code NULL)."];
+  const TASK = ["Find the root cause and fix it.", "First write a failing unit test that reproduces the error; then make it pass."];
+  const CONS = ["Keep the change small: no refactoring outside OrderMapper.", "Reason: this ships as a hotfix today; the reviewer needs a small diff."];
+  const DONE = ["Done means: dotnet test passes; you explain the root cause in 2-3 sentences and list the changed files."];
+  const STOP = ["If you need to touch the database schema (e.g. NOT NULL on status_code), stop and ask me."];
+  const S = [
+    { t:"Starting point", L:["URGENT!!! You are a senior expert engineer.", "The orders page is broken. FIX IT.", "Do NOT BREAK anything.", "I’ll tip you $500."],
+      why:"A familiar message: urgency, a role, a tip, shouting. Its information content is close to zero: which page, which error, since when, what does done mean?",
+      move:"Opens the order-related controller, service and view files one by one. Not knowing what “broken” means, it may start fixing the first oddity it sees. With “do not break anything” it either touches nothing or makes broad, defensive changes." },
+    { t:"Remove the shouting", L:["You are a senior expert engineer.", "The orders page is broken, fix it.", "Don’t break existing behavior.", "I’ll tip you $500."],
+      why:"Capital letters and exclamation marks overtrigger on newer models: “do NOT BREAK” can make every change look risky and make the agent timid. The tone is fixed, but no information has been added yet.",
+      move:"Behavior barely changes. The task is still vague." },
+    { t:"Drop the persona and the tip", L:["The orders page is broken, fix it.", "Don’t break existing behavior."],
+      why:"When measured, neither personas nor tips made a meaningful contribution to accuracy (PSR 3 and 4, 2025). Removing them costs nothing; only the noise goes down.",
+      move:"Nothing changes, because what was removed carried no information anyway. The real work starts now." },
+    { t:"Add concrete context and evidence", L:[...CTX, "Fix it.", "Don’t break existing behavior."],
+      why:"Things the model cannot work out from the repo: since when, which request, which customers, what the log says. The “steps to reproduce” and “actual result” parts of a bug report.",
+      move:"Goes straight to OrderMapper.cs:88 and sees that status_code can come back NULL. But whether it will fix and verify, or just offer a suggestion, is unclear." },
+    { t:"Spell out the action and the order", L:[...CTX, ...TASK, "Don’t break existing behavior."],
+      why:"A clear job description instead of “fix it”: root cause, a red test first, then green. Now the model can close the loop itself with a check that returns pass or fail.",
+      move:"First runs dotnet test --filter OrderMapper to see the state, writes a failing test for a NULL status_code, then fixes it and reruns the test." },
+    { t:"State the constraint with its reason", L:[...CTX, ...TASK, ...CONS],
+      why:"“Don’t break” was vague. A measurable constraint and its reason took its place. The reason explains why the model should resist the “while I’m here, let me clean this up too” temptation.",
+      move:"Limits the fix to OrderMapper; avoids side refactors." },
+    { t:"Add a definition of done", L:[...CTX, ...TASK, ...CONS, ...DONE],
+      why:"A success criterion and a delivery format. Without them, the model invents its own criterion, usually “it compiles and looks reasonable”.",
+      move:"Stops once the tests pass; reports the root cause and the changed files in the requested format." },
+    { t:"Add a stop condition", L:[...CTX, ...TASK, ...CONS, ...DONE, ...STOP],
+      why:"Which side effects are not allowed, and when it should ask. The “allowed side effects” and “stopping conditions” from OpenAI’s “outcome-first prompt” advice.",
+      move:"If the permanent fix needs a schema change, it does not write a migration on its own; it writes up its proposal and asks." },
+    { t:"Structure with XML", L:["<context>", ...CTX, "</context>", "<task>", ...TASK, "</task>", "<constraints>", ...CONS, ...STOP, "</constraints>", "<done_when>", ...DONE, "</done_when>"],
+      why:"The content is the same; the tags separate the context, the task and the constraints. The value of this separation grows when a long log or diff is added to the prompt.",
+      move:"Behavior is very close to the previous step; the difference is that instructions and data don’t get mixed up in long inputs." }
+  ];
+  Edu.stepper(el, { steps:S, auto:3800, render(i, s, { body }){
+    const prev = i ? S[i - 1].L : [];
+    const removed = prev.filter(x => !s.L.includes(x));
+    const box = h("div", { class:"l3-box l3-diff" });
+    removed.forEach(x => box.append(h("span", { class:"ln del" }, x)));
+    s.L.forEach(x => box.append(h("span", { class:"ln" + (i && !prev.includes(x) ? " add" : "") }, x)));
+    const n = tokenize(s.L.join("\n")).length;
+    body.innerHTML = "";
+    body.append(
+      h("p", { class:"l3-h" }, (i + 1) + ". " + s.t, " ", h("span", { class:"tag c" }, "≈ " + n + " tokens")),
+      box,
+      h("div", { class:"l3-trio" },
+        h("div", null, h("h5", null, "Why"), s.why),
+        h("div", null, h("h5", null, "The agent’s first move (representative)"), s.move)));
+  }});
+});
+
+/* ================= 5b. Review, performance, tests ================= */
+Edu.widget("l3-review", el => {
+  const { h, $, $$, seg } = Edu;
+  const D = {
+    review:{
+      before:"Review this code.",
+      after:[ "Review the diff below ", ["scope","for correctness bugs only (not style)"], ". For each finding, give ",
+        ["shape","file:line, a P0–P3 severity, a one-sentence failure scenario and a suggested fix"], ". ",
+        ["empty","If there are no P0–P2 findings, say so explicitly."], " ",
+        ["ctx","Context: example.orders.amount is numeric(12,2); the service runs at READ COMMITTED isolation."], "\n<diff>…</diff>" ],
+      notes:{
+        scope:["Scope","It says what to look at and what not to. Without it you get a long list full of style comments, and the real bug gets lost in the crowd."],
+        shape:["Output format","Findings become comparable, sortable and trackable. The severity lets you decide which one to fix first."],
+        empty:["Permission for an empty result","If you don’t say this, the model is more inclined to produce weak findings just to “find something”. For a clean diff, “no findings” is a valid answer."],
+        ctx:["Invisible facts","The type and isolation level that don’t show in the diff; only with this information can it catch findings such as rounding issues and race conditions (lost updates)."] } },
+    perf:{
+      before:"Can you suggest some changes to improve this function?",
+      after:[ ["verb","Change this function to improve its performance."], " ",
+        ["ctx","It is called 40 times per order list; the profiler shows 60% of the total time spent here."], " ",
+        ["keep","Keep its signature and return value the same; it is called from 12 places."], " ",
+        ["verify","The existing unit tests must pass; measure the time before and after with BenchmarkDotNet and report it."] ],
+      notes:{
+        verb:["Action verb","Anthropic’s example: “can you suggest changes?” brings suggestions; “change” brings edits. The model reads a polite question literally."],
+        ctx:["Measurement","Why this function, and how much does it matter? The model focuses on the right place and can consider a solution you didn’t think of (caching, a batched query)."],
+        keep:["Preserved contract","A fact the model cannot see: 12 call sites. It rules out up front any “faster” solution that changes the signature."],
+        verify:["Verification","It asks for the improvement as a measurement, not a claim. The tests show behavior is preserved; the benchmark shows the speed-up."] } },
+    test:{
+      before:"Write tests for this service.",
+      after:[ ["target","Write xUnit tests for OrderTotalCalculator.Calculate."], " ",
+        ["cases","In particular: an empty cart, a discount larger than the amount, rounding amount to two decimals."], " ",
+        ["style","Follow the naming and Arrange-Act-Assert layout under tests/Orders; example: OrderMapperTests.cs."], " ",
+        ["rule","If a test fails, don’t fix the production code; tell me. The goal is to document the current behavior."], " ",
+        ["done","Done: dotnet test has run; a list of the passing tests and, if any, the failing ones with the reason."] ],
+      notes:{
+        target:["Target","Which class, which method, which framework. For an agent, “this service” can mean more than one thing."],
+        cases:["Important cases","The risky edge cases you know about. Without them, the model can pad the count with easy “happy path” tests."],
+        style:["Example file","Pointing at an existing test file is more effective for naming and structure than several paragraphs of explanation (few-shot)."],
+        rule:["Rule + reason","Prevents the agent from “fixing” production code to make the test pass, and says why: the goal is to document the current behavior."],
+        done:["Done","A failing test is a valid result too; what matters is that it is reported. This reduces the tendency to force a test to go green."] } }
+  };
+  const bad = $(".l3-rv-vs .bad", el), good = $(".l3-rv-vs .good", el), out = $(".l3-rv-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v];
+    bad.innerHTML = ""; good.innerHTML = "";
+    bad.append(h("div", { class:"l3-box", text:d.before }));
+    const box = h("div", { class:"l3-box" });
+    d.after.forEach(p => {
+      if (typeof p === "string") box.append(p);
+      else box.append(h("button", { type:"button", class:"l3-ann", "data-k":p[0], onclick:e => {
+        $$(".l3-ann", box).forEach(b => b.classList.toggle("on", b === e.currentTarget));
+        const n = d.notes[p[0]];
+        out.innerHTML = ""; out.append(h("b", null, n[0] + ": "), n[1]);
+      } }, p[1]));
+    });
+    good.append(box);
+    out.innerHTML = '<span class="muted">Click an underlined part.</span>';
+  });
+});
+
+/* ================= 6a. System prompt altitude ================= */
+Edu.widget("l3-altitude", el => {
+  const { h, $, seg, tokenize } = Edu;
+  const D = {
+    low:{ name:"Too low: a pile of if/else", c:"var(--risk)",
+      p:"If the user says “order”, call example_orders_search.\nIf the user says “refund”, first read refund_policy.md, then write “Your refund will be processed within 3 business days”.\nIf status_code is ‘C’, write “Cancelled”. If ‘D’, write “Delivered”. If ‘P’, write “Being prepared”.\nIf the user is angry, start with “We’re sorry for the trouble you’ve experienced”.\nIf the user asks about two orders, call it separately for each.\nIf the user writes in Spanish, reply in Spanish.\nIf the user asks about an invoice, look in test.invoices…\n(…and 60 more rules)",
+      fail:["Breaks on the first unforeseen situation: when a new status_code (‘R’) arrives, it doesn’t know what to do.", "The rules start to conflict (an angry refund request written in Spanish?). The model loses tokens and consistency trying to reconcile them.", "Hard to maintain: every incident adds another rule, the file swells, and every line takes a share of attention."] },
+    mid:{ name:"Right altitude", c:"var(--ok)",
+      p:"You are an assistant that helps Example Co’s internal support team with order questions.\n\nGoal: Help support staff understand an order’s status and history quickly and accurately.\n\nPrinciples:\n- For questions that need order data, look up the actual record with tools; don’t guess. Answer general questions without tools.\n- Translate status codes into plain language using the descriptions in example.status_codes.\n- If data is missing or contradictory, say so explicitly; staff must not give customers wrong information.\n- Don’t make refund or compensation decisions; those are within the staff’s authority. Show the relevant record and policy.\n\nResponse format: a one-sentence summary first, then evidence if needed (order_id, date, event).",
+      fail:["When a new status code arrives, the principle shows the way: look it up in the table; if it isn’t there, say it is unknown.", "Every principle carries a “why”; the model weighs exceptions accordingly.", "Short and easy to maintain. Detailed procedures (such as the refund flow) can move into a skill if needed."] },
+    high:{ name:"Too high: empty exhortation", c:"var(--ctx)",
+      p:"You are a helpful assistant. Help users in the best way possible. Be accurate and polite.",
+      fail:["No concrete signal: which users, which data, which boundaries?", "The model assumes a shared context; it may give answers beyond its authority, such as promising a refund.", "When to use the tools is unclear: it either never uses them or uses them on every question."] }
+  };
+  const out = $(".l3-alt-out", el);
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    out.append(
+      h("div", null, h("p", { class:"l3-h", style:{ color:d.c } }, d.name, " ", h("span", { class:"tag" }, "≈ " + tokenize(d.p).length + " tokens")), h("div", { class:"l3-box", text:d.p })),
+      h("div", null, h("p", { class:"l3-h" }, v === "mid" ? "Why it works" : "Typical failure"), h("ul", { class:"l3-steps-mini" }, ...d.fail.map(x => h("li", null, x)))));
+  });
+});
+
+/* ================= 6b. Context strategies ================= */
+Edu.widget("l3-jit", el => {
+  const { h, $, seg } = Edu;
+  const D = {
+    pre:{ name:"Load everything up front", total:240000, rel:3000, calls:0,
+      steps:["All ~400 files under src/ enter the context with the first request.", "The model has to find the 2 relevant files inside hundreds of thousands of tokens.", "Every subsequent turn resends this pile."],
+      note:"An answer may come in a single turn, but the signal ratio is very low. The strategy with the highest context-rot risk; the relevant lines sit in the middle of a long pile." },
+    jit:{ name:"Just-in-time: search, then read", total:9200, rel:3500, calls:5,
+      steps:["CLAUDE.md (1,500): build/test commands, the decimal rule for money.", "Grep \"amount\" src/Orders → 40 lines (900).", "Read two files: OrderTotalCalculator.cs, OrderMapper.cs (6,000).", "dotnet test --filter Total → 1 red test (800)."],
+      note:"More turns and tool calls, but the context is small and focused. This is Claude Code’s default approach: grep, glob, reading the head of a file." },
+    hyb:{ name:"Hybrid: a small map + on demand", total:6900, rel:3500, calls:3,
+      steps:["A short architecture map in CLAUDE.md (2,500): “Amount calculations live under src/Orders/Pricing; money is decimal.”", "Grep \"Round\" src/Orders/Pricing → 12 lines (900).", "Read a single file: OrderTotalCalculator.cs (3,500)."],
+      note:"The map steers the search to the right folder: fewer turns, fewer tokens. As Anthropic suggests, a hybrid is often best." }
+  };
+  const out = $(".l3-jit-out", el);
+  const fmt = n => n.toLocaleString("en-US");
+  const usd = n => "$" + n.toFixed(2);
+  const MAX = 240000;
+  seg($(".seg", el), v => {
+    const d = D[v]; out.innerHTML = "";
+    const sig = d.rel / d.total * 100;
+    const resent = d.total * 20;
+    const bar = (lab, val, max, col, txt) => h("div", { class:"l3-jbar" }, h("span", null, lab),
+      h("span", { class:"tr" }, h("i", { style:{ width: Math.max(0.6, val / max * 100) + "%", background: col } })), h("b", null, txt));
+    out.append(
+      h("p", { class:"l3-h", style:{ marginTop:".8rem" } }, d.name),
+      bar("Tokens in context", d.total, MAX, "var(--ctx)", fmt(d.total)),
+      bar("Actually relevant", d.rel, MAX, "var(--ok)", fmt(d.rel)),
+      bar("Signal ratio", sig, 100, "var(--tool)", (sig < 10 ? sig.toFixed(1) : Math.round(sig)) + "%"),
+      h("div", { class:"stats" },
+        h("span", null, h("b", null, String(d.calls)), "tool calls"),
+        h("span", null, h("b", null, fmt(resent)), "input resent over 20 turns"),
+        h("span", null, h("b", null, usd(resent / 1e6 * 4)), "without caching ($4 / MTok)"),
+        h("span", null, h("b", null, usd(resent / 1e6 * 0.2)), "if all of it is read from cache ($0.20 / MTok)")),
+      h("ol", { class:"l3-steps-mini" }, ...d.steps.map(x => h("li", null, x))),
+      h("p", { style:{ margin:".5rem 0 0" } }, d.note),
+      h("p", { class:"hint" }, "Real measurement (Chroma, July 2025, LongMemEval): a focused input of ~300 tokens did better than the full ~113 thousand-token input on every model. Details of cache pricing are in Level 2."));
+  });
+});
+</script>

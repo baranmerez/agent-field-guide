@@ -2,11 +2,11 @@
 
 The training set is ONE static HTML page assembled by `node build.js` from
 `src/shell.html` + `src/shell.css` + `src/core.js` + `src/app.js` + every
-`src/levels/*.html` (sorted by file name). Each level file contains exactly one
+`src/levels/<lang>/*.html` (sorted by file name; one folder per language, e.g. `tr`, `en`). Each level file contains exactly one
 `<section class="level">` plus `<script>` blocks. Do not edit shell/core/app files;
 if you need a new shared helper, write it inside your own level file.
 
-Reference example: `src/levels/00-giris.html` (read it first).
+Reference example: `src/levels/tr/00-giris.html` (read it first).
 
 ## Audience, language, tone
 

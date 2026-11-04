@@ -1,0 +1,719 @@
+<section class="level" data-no="2" data-short="Context" data-title="The context window: the model’s only reality"
+  data-accent="ctx" data-time="80 min"
+  data-lede="The model doesn’t remember you. Everything you think it remembers is text sent again from scratch with every request. This level shows how that text grows, why it rots, how it gets compacted, and why your bill depends on the cache.">
+<style>
+.l2-rows{display:flex;flex-direction:column;gap:3px;margin-top:.6rem;max-height:340px;overflow-y:auto}
+.l2-row{display:grid;grid-template-columns:76px 1fr auto;gap:.5rem;align-items:center;font-size:.8rem;padding:.3rem .5rem;border-radius:7px;background:var(--paper);border:1px solid var(--line);border-left:4px solid var(--line)}
+.l2-row .r{font-family:var(--sans);font-weight:800;font-size:.68rem;letter-spacing:.04em;text-transform:uppercase}
+.l2-row .x{font-family:var(--mono);font-size:.76rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.l2-row .n{font-family:var(--mono);font-size:.74rem;color:var(--muted)}
+.l2-row.new{animation:l2in .5s ease;box-shadow:0 0 0 2px color-mix(in srgb,var(--ctx) 55%,transparent)}
+.l2-row.out{border-style:dashed}
+@keyframes l2in{from{opacity:0;transform:translateX(-8px)}}
+.l2-stack{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--soft);margin-top:.7rem}
+.l2-stack > i{display:block;height:100%;min-width:2px;border-right:1px solid var(--surface);transition:width .4s,background .3s}
+.l2-tbl table{min-width:520px}
+.l2-tbl td,.l2-tbl th{padding:.3rem .5rem;font-size:.78rem;font-family:var(--mono)}
+.l2-tbl th{font-family:var(--sans)}
+.l2-chart{width:100%;height:auto;display:block;background:var(--paper);border:1px solid var(--line);border-radius:10px;margin-top:.7rem}
+.l2-items{display:grid;gap:5px;margin-top:.6rem}
+.l2-item{display:grid;grid-template-columns:1fr auto;gap:.6rem;align-items:center;padding:.45rem .65rem;border-radius:8px;border:1px solid var(--line);background:var(--paper);font-size:.84rem;border-left:5px solid var(--line);transition:background .3s,border-color .3s}
+.l2-item .n{font-family:var(--mono);font-size:.75rem;color:var(--muted);white-space:nowrap}
+.l2-item.kept{border-left-color:var(--ok);background:var(--ok-bg)}
+.l2-item.cond{border-left-color:var(--ctx);background:var(--ctx-bg)}
+.l2-item.lost{border-left-color:var(--risk);background:var(--risk-bg)}
+.l2-item.lost .t{text-decoration:line-through;text-decoration-color:var(--risk)}
+.l2-item small{display:block;color:var(--muted);font-size:.76rem}
+.l2-tog{display:flex;flex-wrap:wrap;gap:.45rem}
+.l2-tog .btn{font-weight:600}
+.l2-big{font-family:var(--sans);font-weight:800;font-size:1.5rem;line-height:1.1}
+</style>
+
+  <!-- ============ 1. STATELESS ============ -->
+  <div class="lesson" data-tab="Stateless API">
+    <h2>The model doesn’t remember you</h2>
+    <p class="lead">LLM APIs are <span class="g" data-g="Stateless">stateless</span>. With every request, the entire conversation is sent to the model again: the system prompt, tool definitions, all previous messages, tool results, images and your latest message. The model carries nothing over from the previous call, and the server keeps no session for you.</p>
+    <div class="callout bridge"><span class="ct">You already know this</span>This is a stateless HTTP service. Picture a client that keeps no session on the server and carries the whole state with every request: a shopping client that resends every item in the cart with each request, or a token that carries all its claims on every call. The server stays simple; the price is paid by a payload that grows with every request.</div>
+
+    <h3>What is inside a request?</h3>
+    <p>The entire text the model sees at that moment is called the <span class="g" data-g="Context window">context</span>. A coding agent’s request typically contains:</p>
+    <div class="cols">
+      <div class="card h"><h4>System prompt</h4>The harness’s own instructions: role, rules, how to use tools. Often thousands of tokens.</div>
+      <div class="card t"><h4>Tool definitions</h4>Each tool’s name, description and JSON schema. With many MCP tools connected, this can reach tens of thousands of tokens.</div>
+      <div class="card ok"><h4>Project context</h4>Rule files such as CLAUDE.md and AGENTS.md; loaded again in every session.</div>
+      <div class="card c"><h4>Messages</h4>User messages, the model’s answers, tool calls and tool results. The fastest-growing part: a single test output or file read can be thousands of tokens.</div>
+      <div class="card m"><h4>Thinking blocks</h4>On Opus, Sonnet and Haiku 5.5, thinking blocks from earlier turns are kept in later turns and billed as input. On older models the API stripped them out.</div>
+    </div>
+    <p>The output the model produces becomes part of the input on the next turn. That is why an agent session is a <span class="g" data-g="Transcript">transcript</span> that grows at every step. A 30-turn session rereads turn 1 thirty times.</p>
+
+    <div class="fig" data-widget="l2-replay">
+      <p class="fig-title">What actually goes out with each request?</p>
+      <p class="fig-cap">A realistic Claude Code session: three user messages, six model calls. Step through it. Each step is <em>one request</em> to the API; the dashed row is the output the model produced in that request, and rows with a yellow outline are newly added in this request. Compare the counters at the bottom: the difference between what you typed and what was sent.</p>
+    </div>
+
+    <h3>“Memory” is always the harness’s job</h3>
+    <p>There is no magical persistence on the model side. Every feature offered as “memory” is the harness putting some text back into the next request:</p>
+    <ul>
+      <li>The rules file (CLAUDE.md, AGENTS.md) is read from disk at the start of every session and added to the context.</li>
+      <li>“Resuming” a session means loading the old transcript from disk and sending it again.</li>
+      <li>In long conversations, summarizing the old parts and sending the summary (compaction) is also a text operation; topic 4.</li>
+      <li>Saying “write your notes to a file” moves information outside the context and has it read back when needed.</li>
+    </ul>
+
+    <div class="callout myth"><span class="ct">Myth</span>“Claude Code knows my project; I explained the architecture to it yesterday.” What you explained in yesterday’s session lived in yesterday’s transcript. Today’s session doesn’t see it unless you or the harness load that information again. If you want knowledge to carry over to the next session, write it to a file and make sure the harness loads that file.</div>
+
+    <div class="callout tip"><span class="ct">In practice</span>Start a new session for each new task. Continuing with unrelated work in an old session means resending the whole transcript of the previous work with every request: it costs money and scatters attention (topic 3). Give the new session the information it needs as a short note.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>The API is stateless: every request carries the system prompt, the tools and the whole history again.</li>
+      <li>Output is the next turn’s input; the transcript grows at every step.</li>
+      <li>Memory is the harness putting text back; there is no persistence in the model.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 2. BUDGET ============ -->
+  <div class="lesson" data-tab="Size and budget">
+    <h2>How big is the window?</h2>
+    <p>The <span class="g" data-g="Context window">context window</span> is the maximum number of tokens the model can process in a single request. The input and the output to be generated count towards this limit together. As of November 2026, the picture for the major providers’ current models looks like this:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Provider</th><th>Models</th><th>Context</th><th>Max output</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Anthropic</td><td>Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5</td><td>1M</td><td>128K</td><td>1M by default, no extra header, standard price. 300K output in Batch with a beta header. On Haiku 5.5, prompts above 100K fall into a higher price tier.</td></tr>
+        <tr><td>OpenAI</td><td>GPT-6 family</td><td>1.05M</td><td>128K</td><td>For prompts above 272K, ~2× input and ~1.5× output price.</td></tr>
+        <tr><td>Google</td><td>Gemini 4 Argon</td><td>1M</td><td>—</td><td>Gemini 3.1 Pro also has 1M; above 200K is a more expensive tier.</td></tr>
+      </tbody>
+    </table></div>
+    <p>A rough measure from Anthropic’s documentation: with the current Claude tokenizer, 1M tokens ≈ 555K English words. Because text in non-English languages such as Turkish takes more tokens, fewer of its words fit in the same window (level 0).</p>
+
+    <h3>What happens when you exceed the limit?</h3>
+    <ul>
+      <li><b>If the input alone exceeds the limit:</b> the request is rejected with HTTP 400 “prompt is too long”.</li>
+      <li><b>If input + <code>max_tokens</code> exceeds the limit:</b> on 4.5 and later models the request is accepted; the model stops when the window is full and <code>stop_reason</code> is <code>model_context_window_exceeded</code>. Your code has to handle the possibility that the answer was cut off.</li>
+    </ul>
+    <p>Some models can see for themselves how much of the window is left: models such as Sonnet 5, Sonnet 4.6 and Haiku 4.5 get the total budget injected, plus a “this many tokens left” note after every tool call. Newer Opus and Sonnet 5.5 have optional task budgets instead.</p>
+
+    <h3>Where do the tokens go in an agent?</h3>
+    <p>The idea “1M tokens, I’ll just put the whole repo in” is wrong on two counts. First, the window fills with a fixed load before you type a single line: the system prompt, tool definitions, the rules file. Second, the agent’s own work (reading files, running tests, inspecting logs) is the biggest consumer of the window. The output of a single failed test run can be longer than your entire conversation.</p>
+
+    <div class="fig" data-widget="l2-budget">
+      <p class="fig-title">Context budget planner</p>
+      <p class="fig-cap">Build a session’s context item by item. The defaults are an illustrative example for a medium-sized coding session; change them to match the breakdown of your own session. The <code>max_tokens</code> reserve counts towards the window too.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">In practice</span>In Claude Code, the <code>/context</code> command shows the current breakdown of the context: system prompt, tools, MCP servers, rule files, messages. Turning off MCP servers you don’t use directly reduces the fixed load on every request. If you are writing your own agent, log the <code>usage</code> field in the response; don’t guess, measure.</div>
+
+    <div class="callout warn"><span class="ct">Caution</span>A big window doesn’t mean everything you put in it is read with equal attention. “It fits” and “it works well” are different things. The next topic is the measurement of that.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>In November 2026, the major providers’ current models have a window of ~1M tokens and an output limit of 128K.</li>
+      <li>Input and max_tokens count together; exceeding the limit means a 400 error or an answer cut off halfway.</li>
+      <li>The fixed load (system, tools, rules) and tool outputs eat most of the window; measure and prune.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/models/overview">Anthropic: Models overview</a></li>
+      <li><a href="https://developers.openai.com/api/docs/models">OpenAI: Models</a> · <a href="https://developers.openai.com/api/docs/pricing">Pricing</a></li>
+      <li><a href="https://aistudio.google.com/docs/models">Google: Gemini models</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 3. CONTEXT ROT ============ -->
+  <div class="lesson" data-tab="Context rot">
+    <h2>More context is not better</h2>
+    <p>Remember the attention intuition from level 0: every token looks at every previous token, and that “looking” is shared out through a softmax. Every token added to the context takes a share of a limited attention budget. Irrelevant tokens dilute the signal of the relevant ones. There are two strong measurements of this intuition.</p>
+
+    <h3>Lost in the middle</h3>
+    <p>In the study by Liu and colleagues (TACL 2024), models were given 20 documents with the answer to the question placed in one of them. Accuracy came out U-shaped: highest when the answer was in the first or last document, lowest when it was in the middle. The effect showed up in base models too, so it is not just a side effect of chat training. Raising the number of documents from 20 to 50 brought almost no benefit. This phenomenon is called <span class="g" data-g="Lost in the middle">lost in the middle</span>.</p>
+
+    <h3>Context rot</h3>
+    <p>Chroma’s July 2025 study tested 18 models, including Claude Opus 4, Sonnet 4, GPT-4.1, Gemini 2.5 and Qwen3. The findings:</p>
+    <ul>
+      <li>Performance drops as the input gets longer, even when the task is simple, and the drop is not smooth.</li>
+      <li>The drop accelerates as the semantic similarity between the sought information (the needle) and the question decreases.</li>
+      <li>Even a single distractor hurts; four hurt more. Some distractors are far more harmful than others.</li>
+      <li>A surprise: randomly shuffled haystacks gave better results than logically coherent ones across all 18 models.</li>
+      <li>On LongMemEval (306 prompts), focused input (~300 tokens) beat the full input (~113K tokens) on <b>every model</b>. With thinking on, the gap narrowed but did not disappear.</li>
+      <li>Even on a trivial task such as copying repeated words, accuracy fell with length; some models started producing random words after a few hundred words.</li>
+    </ul>
+    <p>Anthropic’s own documentation adopts the term as well: more context is not automatically better; as the token count grows, accuracy and recall fall. This is called <span class="g" data-g="Context rot">context rot</span>.</p>
+
+    <div class="fig" data-widget="l2-needle">
+      <p class="fig-title">Where is the needle, and how big is the haystack?</p>
+      <p class="fig-cap"><b>Illustrative curve:</b> the numbers below are not a real measurement; they come from a teaching model that combines the <em>directions</em> of the two studies above (the U shape, the drop with length, the effects of distractors and similarity). Exact values vary a lot by model and task. Change the needle’s position, the context length and the number of distractors.</p>
+    </div>
+
+    <div class="callout myth"><span class="ct">Myth</span>“Context is 1M now, so there’s no need for RAG or selective file reading; I’ll put everything in.” The window got bigger, but the attention budget is shared out by the same logic. Measurements show that a few thousand relevant tokens give better results than the same information buried among hundreds of thousands of irrelevant tokens. And every token costs money too.</div>
+
+    <h3>The engineering consequences</h3>
+    <ol class="steps">
+      <li><b>Less, but relevant.</b> Instead of having it read fifty files and saying “now fix it”, have it read the three relevant ones. Giving the agent a file path and a line range beats telling it to “search everywhere”.</li>
+      <li><b>Critical instructions at the start or the end.</b> A constraint buried in the middle of a long context is the easiest thing to lose. Persistent rules go in the rules file (at the start), the essence of the task in the last message.</li>
+      <li><b>Prune noisy tool output.</b> Instead of putting a 4,000-line test log into the context in full, filter for the failing tests. Log lines that look similar but are irrelevant fit the definition of a “distractor” exactly.</li>
+      <li><b>New job, new session.</b> The leftovers of the previous task are distractors for the next one.</li>
+      <li><b>Hand exploration to a sub-agent.</b> Running a broad search in a separate context and bringing only its summary back to the main session keeps the main context clean (topic 4).</li>
+    </ol>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>Accuracy falls as the context gets longer; information in the middle gets lost more easily than at the ends.</li>
+      <li>Distractors and low semantic similarity speed up the drop.</li>
+      <li>A focused context is almost always better than the full one: more accurate, faster, cheaper.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://arxiv.org/abs/2307.03172">Liu et al., Lost in the Middle (TACL 2024)</a></li>
+      <li><a href="https://www.trychroma.com/research/context-rot">Chroma: Context Rot (July 2025)</a> · <a href="https://github.com/chroma-core/context-rot">code</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 4. COMPACTION ============ -->
+  <div class="lesson" data-tab="Compaction">
+    <h2>When the window fills: compact, prune, distribute</h2>
+    <p>Sooner or later a long agent session reaches the limit of the window, or at least the zone where context rot becomes noticeable. The harness has to do something. Anthropic’s context engineering post and documentation describe a few techniques:</p>
+    <div class="cols">
+      <div class="card c"><h4><span class="g" data-g="Compaction">Compaction</span></h4>A model summarizes the history; the summary replaces the original messages and the session continues from the summary.</div>
+      <div class="card c"><h4>Clearing tool results</h4>Old tool results (files read, test outputs) are removed from the context. Anthropic describes this as “the safest, lightest-touch form of compaction”: if needed, the tool is simply called again.</div>
+      <div class="card ok"><h4>Structured notes</h4>The agent writes progress, decisions and open items to a file outside the window and reads it back when needed.</div>
+      <div class="card h"><h4><span class="g" data-g="Sub-agent">Sub-agents</span></h4>Exploration happens in a separate context, spending tens of thousands of tokens; only a 1,000–2,000-token summary comes back to the main session.</div>
+      <div class="card t"><h4><span class="g" data-g="Just-in-time retrieval">Just-in-time retrieval</span></h4>The context holds file paths and identifiers instead of content; content is loaded when needed. Claude Code loads the rules file up front and searches the rest with glob and grep.</div>
+    </div>
+
+    <h3>Compaction in Claude Code</h3>
+    <p>Claude Code’s compaction summarizes the history: it tries to keep architectural decisions, open bugs and implementation details, and it drops repeated tool output. The session then continues with the summary and <b>the 5 most recently accessed files</b>. <code>/compact</code> triggers this manually; it also runs automatically as the window nears full. There are similar tools on the API side: server-side compaction in beta for Claude 4.6 and later, and <span class="g" data-g="Context editing">context editing</span>, which clears old tool results or thinking blocks.</p>
+
+    <h3>Summarization is lossy</h3>
+    <p>A model writes the summary, and it decides what matters. An exact error message, the precise line number in a file, a small but critical constraint you mentioned at the start of the conversation: any of these can get lost in the summary. Most of what an agent “forgets” at the end of a long session comes from here. The problem is that the loss is silent: the agent won’t tell you “I forgot that rule”; it acts as if it never heard it.</p>
+
+    <div class="fig" data-widget="l2-compact">
+      <p class="fig-title">What survives compaction?</p>
+      <p class="fig-cap">The contents of a 156K-token session. Press “Compact” and see what happens to each piece. Then turn on the safeguards and try again. <b>Illustrative:</b> because a model writes the summary, what survives can differ each time; a typical outcome is shown here.</p>
+    </div>
+
+    <div class="callout tip"><span class="ct">In practice</span>Put everything that must not be lost outside the conversation. Persistent rules go in the rules file (CLAUDE.md, AGENTS.md): the harness reloads them from disk. For exact error texts, decisions and to-dos, ask the agent to keep a notes file. When compacting manually, say what it must keep (in Claude Code you can add instructions to the <code>/compact</code> command). And if possible, move to a new session when the work is done, so compaction is never needed at all.</div>
+
+    <div class="callout warn"><span class="ct">Caution</span>Compaction has a hidden cost: because the message history changes completely, the message part of the prompt cache is invalidated and the next request rewrites it. You will see this, with its price, in the simulation in the next topic.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>Techniques against a filling window: compaction, clearing tool results, notes, sub-agents, just-in-time retrieval.</li>
+      <li>Compaction is lossy and silent; exact values and early constraints are the first to go.</li>
+      <li>Write persistent knowledge to a file, not into the conversation; the harness loads it back every time.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/context-windows">Anthropic: Context windows (compaction and context editing)</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 5. PROMPT CACHING ============ -->
+  <div class="lesson" data-tab="Prompt caching">
+    <h2>Never compute the same prefix twice</h2>
+    <p>The price of a stateless API is that the whole history is reprocessed on every request. <span class="g" data-g="Prompt caching">Prompt caching</span> largely erases that price. The mechanism is familiar from level 0: the provider stores the processed KV cache of a prompt prefix. If a later request starts with a byte-for-byte identical prefix, the prefill of that part is skipped. The result is both cheaper and faster (TTFT drops).</p>
+    <p>The key word is <span class="g" data-g="Prefix">prefix</span>. The cache uses the part that matches from the start of the request. If a single character changes near the start of the prefix, everything after it is invalidated. Hence the golden rule: <b>static content first, variable content last</b>.</p>
+
+    <h3>How does it work at Anthropic? (November 2026)</h3>
+    <ul>
+      <li><b>Prefix order:</b> tools → system → messages. A change in the tools invalidates everything; a change in the system invalidates the system and the messages.</li>
+      <li><b>Two ways to use it:</b> automatic caching (a single top-level <code>cache_control</code> in the request; the <span class="g" data-g="Cache breakpoint">breakpoint</span> moves forward as the conversation grows) or up to 4 explicit breakpoints.</li>
+      <li><b>Lookback:</b> if no match is found, the system goes back up to 20 blocks looking for an earlier cache write.</li>
+      <li><b>Minimum prefix:</b> 512 tokens on 5.x models (1,024–4,096 on older models). Below that, nothing is cached, silently.</li>
+      <li><b><span class="g" data-g="TTL">TTL</span>:</b> 5 minutes by default, refreshed for free on every hit; 1 hour if you want.</li>
+      <li><b>Warm-up:</b> a cache entry exists only after the first response has started. Cold parallel requests sent at the same moment all miss.</li>
+      <li><b>Isolation:</b> the cache is separate per organization or workspace.</li>
+      <li><b>Window:</b> cached tokens take up space in the context window too. Caching lowers the price; it doesn’t enlarge the window.</li>
+    </ul>
+    <div class="tbl"><table>
+      <thead><tr><th>Price (relative to base input)</th><th>Multiplier</th><th>Opus 5.5 example ($/MTok)</th></tr></thead>
+      <tbody>
+        <tr><td>Regular input</td><td>1×</td><td>4</td></tr>
+        <tr><td><span class="g" data-g="Cache write">Cache write</span>, 5 min TTL</td><td>1.25×</td><td>5</td></tr>
+        <tr><td>Cache write, 1 h TTL</td><td>2×</td><td>8</td></tr>
+        <tr><td><span class="g" data-g="Cache read">Cache read</span></td><td>0.1× in general; 0.05× on Opus 5.5 and Sonnet 5.5; 0.025× on Fable 5.1</td><td>0.20</td></tr>
+        <tr><td>Output</td><td>—</td><td>20</td></tr>
+      </tbody>
+    </table></div>
+    <p>Knowing what breaks the cache matters more than knowing how to use it:</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Change</th><th>Invalidated</th></tr></thead>
+      <tbody>
+        <tr><td>Tool definitions (an MCP server connected or disconnected, a tool’s description changed)</td><td>Everything</td></tr>
+        <tr><td>System prompt (including a timestamp written into it), web search or citation settings</td><td>System + messages</td></tr>
+        <tr><td><code>tool_choice</code>, images, thinking setting, effort</td><td>Messages</td></tr>
+      </tbody>
+    </table></div>
+<pre data-title="Request with explicit breakpoints (abridged)"><code>{
+  "model": "claude-opus-5-5",
+  "max_tokens": 4096,
+  "tools": [ ...tool definitions... ],
+  "system": [
+    { "type": "text", "text": "You are a coding assistant working in the example_app repository...",
+      "cache_control": { "type": "ephemeral" } }
+  ],
+  "messages": [ ...previous messages...,
+    { "role": "user", "content": [
+      { "type": "text", "text": "Run the tests.",
+        "cache_control": { "type": "ephemeral", "ttl": "1h" } } ] }
+  ]
+}
+
+// the usage field in the response: this is where you confirm the cache works
+"usage": { "input_tokens": 212, "cache_creation_input_tokens": 1840,
+           "cache_read_input_tokens": 48210, "output_tokens": 377 }</code></pre>
+
+    <div class="fig" data-widget="l2-cache">
+      <p class="fig-title">Cache simulator: the context and the bill, turn by turn</p>
+      <p class="fig-cap">An agent session: each turn is a user message, a tool call and tool result, and an answer (two requests). The bar shows the blocks of the last request: green was read from the cache, yellow was written to the cache, red was processed uncached, blue is output. Breakpoints sit after the tools, after the system, and at the end of each request. Advance the turns, then try the cache breakers one by one: timestamp, tool change, break, compaction. Token sizes were chosen from realistic ranges; prices are the official list as of November 2026.</p>
+    </div>
+
+    <h3>The picture at OpenAI and Google</h3>
+    <p>Same mechanism, different details. At OpenAI, caching is automatic and on by default; the whole processed prefix has to match. On GPT-5.6 and later the minimum prefix is 1,024 tokens, and explicit breakpoints with a 30-minute (default) or 12-hour TTL are supported; writes cost 1.25× (30 min) or 2.5× (12 h), reads 0.1× (0.05× on GPT-6.1 Sol and Terra). Because caches live on individual machines, <code>prompt_cache_key</code>, which influences routing, and the first tokens of the prefix affect the hit rate. At Google, implicit caching is on by default for 2.5 and later models; on Gemini 4 Argon and 3.x the minimum prefix is 4,096 tokens.</p>
+
+    <div class="callout tip"><span class="ct">In practice</span>If you are writing your own agent: keep the tool list fixed for the whole session, don’t put a clock or a request ID into the system prompt (put it in the last message if you need it), don’t change effort or the thinking setting mid-session, and warm the cache with a single request before a parallel fan-out. And always watch <code>cache_read_input_tokens</code> and <code>cache_creation_input_tokens</code>: if the prefix is under 512 tokens or something changes on every request, the cache is silently not working.</div>
+
+    <div class="keep"><h3>Key takeaways</h3><ul>
+      <li>Prompt caching stores the KV cache of a byte-for-byte identical prefix: a change in the prefix invalidates everything after it.</li>
+      <li>The order is tools → system → messages; static first, variable last.</li>
+      <li>On 5.5 models a read costs 0.05× the base price; a write 1.25× (5 min) or 2× (1 h). The TTL is refreshed on a hit.</li>
+      <li>Timestamps, tool changes, effort changes, long breaks and compaction break the cache.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic: Prompt caching</a> · <a href="https://platform.claude.com/docs/en/about-claude/pricing">Pricing</a></li>
+      <li><a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI: Prompt caching</a> · <a href="https://developers.openai.com/api/docs/pricing">Pricing</a></li>
+      <li><a href="https://aistudio.google.com/docs/caching">Google: Context caching</a></li>
+    </ol></div>
+  </div>
+
+  <!-- ============ 6. COST ============ -->
+  <div class="lesson" data-tab="Cost and speed">
+    <h2>Working out the bill and the wait</h2>
+    <p>You now have all the pieces: the token (the unit), statelessness (every turn resends everything), the prefill/decode asymmetry (output is expensive and slow), caching (a repeated prefix is cheap). Put them together and you can build a realistic model of cost and latency.</p>
+
+    <h3>Price list (November 2026)</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Model</th><th>Input $/MTok</th><th>Output $/MTok</th><th>Cache read</th></tr></thead>
+      <tbody>
+        <tr><td>Claude Fable 5.1</td><td>10</td><td>50</td><td>0.025× → 0.25</td></tr>
+        <tr><td>Claude Opus 5.5</td><td>4</td><td>20</td><td>0.05× → 0.20</td></tr>
+        <tr><td>Claude Sonnet 5.5</td><td>2</td><td>10</td><td>0.05× → 0.10</td></tr>
+        <tr><td>GPT-6 Astra</td><td>10</td><td>50</td><td>1 (0.1×)</td></tr>
+        <tr><td>GPT-6.1 Sol</td><td>2</td><td>10</td><td>0.05×</td></tr>
+        <tr><td>Gemini 4 Argon</td><td>2 (promotional; 4 from 1 December)</td><td>10 (promotional; 20 from 1 December)</td><td>0.10 (until 30 November)</td></tr>
+      </tbody>
+    </table></div>
+    <p>Everywhere, output costs about 5 times as much as input. For non-interactive work, Anthropic’s and OpenAI’s Batch options offer a 50% discount. Prices change often, so check the pricing page before you do the maths.</p>
+
+    <h3>A cost model for a session</h3>
+    <p>Let P be a fixed prefix (system + tools), a the new input added each turn, and o the output each turn. The request on turn t is roughly <code>P + (t−1)·(a+o) + a</code> tokens. Without caching, the total input sent over N turns grows with the square of N: the transcript is read once more every turn. With caching, the earlier prefix is paid at the read price (a small fraction of the base price) and only the newly added part at the write price. In long sessions the difference is measured in multiples.</p>
+
+    <div class="fig" data-widget="l2-cost">
+      <p class="fig-title">Session cost calculator</p>
+      <p class="fig-cap">Set the model and the session profile. The calculation assumes the previous prefix is read from the cache within the TTL on every turn (in reality, breaks and cache breakers reduce this). The non-English multiplier (Turkish, for example) is an <b>assumption</b>: enter the ratio you measured on your own texts.</p>
+    </div>
+
+    <h3>A latency model</h3>
+    <p>Total time ≈ TTFT + output tokens / decode speed. TTFT grows with the length of the uncached input; caching shortens it. The decode part is proportional to the output length, and caching doesn’t affect it. Thinking tokens add to the output side even when invisible. In Claude, leaving the thinking display <code>omitted</code> makes the first text token arrive sooner, because the thinking isn’t streamed. Absolute decode speeds vary a lot by model, tier and load; measure them in your own environment. Anthropic also offers a higher-priced “fast mode” for Opus.</p>
+
+    <div class="cols">
+      <div class="card ok"><h4>Makes it cheaper</h4>A fixed prefix and a high cache hit rate, focused context, a short output format, the smallest model that does the job, the right effort, Batch for non-interactive work.</div>
+      <div class="card r"><h4>Makes it pricier</h4>Cache breakers, noisy tool output, unrelated work in one session, needlessly high effort, long explanations, prompts that spill into higher window tiers.</div>
+      <div class="card t"><h4>Measure</h4><code>usage</code> in every response: input, cache read, cache write, output. Log them and track the cost per turn; most surprises are a cache breaker.</div>
+    </div>
+
+    <div class="keep"><h3>Level 2: key takeaways</h3><ul>
+      <li>The API is stateless; every request carries the whole transcript again, and without caching the cost grows with the square of the number of turns.</li>
+      <li>Even with a ~1M window, context rot is real: focused context is more accurate, faster and cheaper.</li>
+      <li>Compaction is lossy; persistent knowledge must live in a file.</li>
+      <li>Prompt caching is prefix matching: static first, variable last; learn to recognize the breakers.</li>
+      <li>Output costs ~5 times as much as input; decode time grows with output length, TTFT with uncached input.</li>
+    </ul></div>
+    <div class="src"><b>Sources</b><ol>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic: Pricing</a></li>
+      <li><a href="https://developers.openai.com/api/docs/pricing">OpenAI: Pricing</a></li>
+      <li><a href="https://aistudio.google.com/docs/pricing">Google: Gemini pricing</a></li>
+      <li><a href="https://platform.claude.com/docs/en/build-with-claude/thinking">Anthropic: Thinking (display and latency)</a></li>
+    </ol></div>
+  </div>
+</section>
+<script>
+(() => {
+Edu.glossary({
+  "Stateless": "An API style in which the server keeps no session between requests; with LLM APIs every request carries the whole conversation again.",
+  "Context window": "The maximum number of tokens the model can process in a single request. The input and the output to be generated count together. Context, for short: the entire text the model sees at that moment.",
+  "Transcript": "A session’s full message history: user messages, model answers, tool calls and results. It is sent again with every request.",
+  "Lost in the middle": "Information in the middle of a long context being missed more easily than information at the start or end; accuracy varies with position in a U shape.",
+  "Context rot": "The drop in a model’s accuracy and recall as the input grows longer, even when the task is simple.",
+  "Compaction": "Having a model summarize a growing history and replacing the original messages with the summary. It is lossy.",
+  "Context editing": "Making room by clearing old tool results or thinking blocks from the context.",
+  "Sub-agent": "An agent that runs in a separate context, does exploration or a side task, and returns only a short summary to the main session.",
+  "Just-in-time retrieval": "Keeping file paths and identifiers in the context instead of content, and loading the content only when needed.",
+  "Prompt caching": "The provider storing the processed form (KV cache) of a prompt prefix; later requests with the same prefix process that part cheaply and quickly.",
+  "Prefix": "The part of a request, from its start, that is byte-for-byte identical to the previous request. The cache only works through prefix matching.",
+  "Cache breakpoint": "The point where the prefix to be cached ends. At Anthropic it is marked with cache_control; in automatic mode it moves to the end of the conversation.",
+  "TTL": "Time to live. How long a cache entry lives without being used; at Anthropic 5 minutes by default, refreshed on a hit, 1 hour if requested.",
+  "Cache write": "Writing a prefix to the cache for the first time. 1.25× the base input price (5 min TTL) or 2× (1 h TTL).",
+  "Cache read": "Reusing a prefix from the cache. A small fraction of the base input price (0.05× on Opus and Sonnet 5.5)."
+});
+
+const L2 = {
+  fmt(n, d=0){ return Number(n).toLocaleString("en-US", { maximumFractionDigits:d, minimumFractionDigits:d }); },
+  k(n){ return n >= 1e6 ? (n/1e6).toFixed(n % 1e6 ? 2 : 0) + "M" : n >= 1000 ? (n/1000).toFixed(n >= 1e4 ? 0 : 1) + "K" : String(Math.round(n)); },
+  usd(x){ return "$" + (x >= 10 ? x.toFixed(2) : x >= 1 ? x.toFixed(3) : x.toFixed(4)); },
+  range(label, id, min, max, step, val){
+    const { h } = Edu;
+    const inp = h("input", { type:"range", id, min, max, step, value: val });
+    const out = h("output", { for: id });
+    return { wrap: h("div", { class:"range" }, h("label", { for: id }, label), inp, out), inp, out };
+  },
+  toggle(label, on){
+    const { h } = Edu;
+    const b = h("button", { type:"button", class:"btn ghost sm", "aria-pressed": on ? "true" : "false" }, label);
+    b.addEventListener("click", () => b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true"));
+    return b;
+  },
+  on(b){ return b.getAttribute("aria-pressed") === "true"; },
+  rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; },
+  MODELS: { opus:{ n:"Opus 5.5", i:4, o:20, rd:0.05 }, sonnet:{ n:"Sonnet 5.5", i:2, o:10, rd:0.05 }, fable:{ n:"Fable 5.1", i:10, o:50, rd:0.025 } },
+  ROLE: { system:["SYSTEM","var(--harness)"], tools:["TOOLS","var(--tool)"], md:["CLAUDE.md","var(--ok)"], user:["USER","var(--tool)"], asst:["ASSISTANT","var(--model)"], tool_use:["TOOL_USE","var(--model)"], tool_result:["TOOL_RESULT","var(--ctx)"], summary:["SUMMARY","var(--ctx)"], files:["FILES","var(--ctx)"] }
+};
+
+/* ---------- 1. Stateless request replay ---------- */
+Edu.widget("l2-replay", el => {
+  const { h, esc, stepper, json } = Edu;
+  const FIX = [
+    { r:"system", x:"Claude Code system prompt: role, rules, tool usage…", n:3200 },
+    { r:"tools", x:"Read, Edit, Write, Bash, Grep, Glob … (tool definitions and JSON schemas)", n:8000 },
+    { r:"md", x:"CLAUDE.md: “no DELETE on example.orders; tests use xUnit”", n:1500 }
+  ];
+  const REQ = [
+    { add:[{ r:"user", x:"Find the NullReferenceException in OrderService.", n:14, me:true }], out:{ r:"tool_use", x:"Read(src/OrderService.cs)", n:40 } },
+    { add:[{ r:"tool_result", x:"src/OrderService.cs (412 lines)…", n:5200 }], out:{ r:"asst", x:"On line 88, customer can be null: the result of GetById isn’t checked…", n:260 } },
+    { add:[{ r:"user", x:"Fix it and run the tests.", n:9, me:true }], out:{ r:"tool_use", x:"Edit(src/OrderService.cs, lines 86–90)", n:350 } },
+    { add:[{ r:"tool_result", x:"Edit applied.", n:30 }], out:{ r:"tool_use", x:"Bash(dotnet test)", n:40 } },
+    { add:[{ r:"tool_result", x:"dotnet test output: 214 tests, 214 passed…", n:3800 }], out:{ r:"asst", x:"I added a null check; all 214 tests pass. The change…", n:180 } },
+    { add:[{ r:"user", x:"Thanks, suggest a commit message.", n:11, me:true }], out:{ r:"asst", x:"fix(order): null check when the customer is not found", n:60 } }
+  ];
+  const steps = []; let msgs = [], typed = 0, total = 0;
+  REQ.forEach((q, i) => {
+    if (i > 0) msgs = msgs.concat([{ ...REQ[i-1].out, prev:true }]);
+    msgs = msgs.concat(q.add);
+    q.add.forEach(m => { if (m.me) typed += m.n; });
+    const inTok = FIX.reduce((a, b) => a + b.n, 0) + msgs.reduce((a, b) => a + b.n, 0);
+    total += inTok;
+    steps.push({ msgs: msgs.slice(), newIdx: msgs.length - q.add.length - (i > 0 ? 1 : 0), out: q.out, inTok, typed, total, i });
+  });
+  const view = h("div", { class:"seg", role:"group", "aria-label":"View" }, h("button", { type:"button", "data-v":"list", "aria-pressed":"true" }, "Blocks"), h("button", { type:"button", "data-v":"json", "aria-pressed":"false" }, "Raw JSON (abridged)"));
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, view));
+  let mode = "list", cur = steps[0];
+  const row = (m, cls) => { const [lab, col] = L2.ROLE[m.r]; return `<div class="l2-row ${cls || ""}" style="border-left-color:${col}"><span class="r" style="color:${col}">${lab}</span><span class="x" title="${esc(m.x)}">${esc(m.x)}</span><span class="n">${L2.fmt(m.n)}</span></div>`; };
+  function paint(body, s){
+    const head = `<p style="margin:0 0 .3rem"><b>Request #${s.i + 1}</b> <span class="muted">· model call</span></p>`;
+    let mid;
+    if (mode === "list"){
+      mid = `<div class="l2-rows">${FIX.map(m => row(m)).join("")}${s.msgs.map((m, k) => row(m, k >= s.newIdx ? "new" : "")).join("")}${row(s.out, "out")}</div>`;
+    } else {
+      const toMsg = m => m.r === "user" ? { role:"user", content:m.x } : m.r === "tool_result" ? { role:"user", content:[{ type:"tool_result", tool_use_id:"toolu_…", content:m.x }] } : m.r === "tool_use" ? { role:"assistant", content:[{ type:"tool_use", id:"toolu_…", name:m.x.split("(")[0], input:{ "…":"…" } }] } : { role:"assistant", content:m.x };
+      mid = `<div class="jsonv">${json({ model:"claude-opus-5-5", max_tokens:8192, system:FIX[0].x + " + " + FIX[2].x, tools:["… 12 tool definitions …"], messages:s.msgs.map(toMsg) }, { hl:["messages"] })}</div>`;
+    }
+    const stats = `<div class="stats"><span>What you typed (total)<b>${L2.fmt(s.typed)} tokens</b></span><span>Input sent in this request<b>${L2.fmt(s.inTok)} tokens</b></span><span>Sent over the session<b>${L2.fmt(s.total)} tokens</b></span><span>Model calls<b>${s.i + 1}</b></span></div>`;
+    const note = s.i === 0 ? "Even the first request starts with the fixed load: you typed 14 tokens, the model read more than 12,700." : s.i === 1 ? "The user typed nothing, yet a new request went out: the harness ran the tool, appended the result and called the model again. All the earlier blocks were sent again." : s.i === 4 ? "The test output alone is longer than the entire conversation. Tool outputs are the biggest consumer of the context." : s.i === 5 ? "Over six requests you typed about 34 tokens; more than 100K input tokens went to the API. Without caching, every one of them at full price." : "The previous output (dashed) became part of the input in this request.";
+    body.innerHTML = head + mid + stats + `<p class="hint">${note}</p>`;
+  }
+  const st = stepper(el, { steps, auto:3600, render(i, s, { body }){ cur = s; paint(body, s); } });
+  Edu.seg(view, v => { mode = v; const body = el.querySelector(".stp-body"); if (body) paint(body, cur); });
+});
+
+/* ---------- 2. Budget planner ---------- */
+Edu.widget("l2-budget", el => {
+  const { h, seg } = Edu;
+  const IT = [
+    { k:"sys", l:"System prompt (harness)", max:20000, step:500, v:4000, c:"var(--harness)" },
+    { k:"tools", l:"Tool definitions (incl. MCP)", max:80000, step:1000, v:14000, c:"var(--tool)" },
+    { k:"md", l:"Rule files", max:30000, step:500, v:3000, c:"var(--ok)" },
+    { k:"files", l:"Files read", max:500000, step:5000, v:90000, c:"var(--ctx)" },
+    { k:"out", l:"Tool outputs (tests, logs)", max:300000, step:5000, v:60000, c:"color-mix(in srgb,var(--ctx) 55%,var(--risk))" },
+    { k:"conv", l:"Conversation", max:200000, step:2000, v:20000, c:"var(--muted)" },
+    { k:"think", l:"Earlier thinking blocks", max:150000, step:2000, v:30000, c:"var(--model)" },
+    { k:"res", l:"max_tokens reserve", max:128000, step:2000, v:32000, c:"repeating-linear-gradient(135deg,var(--faint) 0 5px,transparent 5px 10px)" }
+  ];
+  let W = 1000000;
+  const sw = h("div", { class:"seg", role:"group", "aria-label":"Window" }, h("button", { type:"button", "data-v":"1000000", "aria-pressed":"true" }, "1M (current Claude)"), h("button", { type:"button", "data-v":"200000", "aria-pressed":"false" }, "200K (older generation)"));
+  const ranges = IT.map(it => { const r = L2.range(it.l, "l2-b-" + it.k, 0, it.max, it.step, it.v); r.it = it; return r; });
+  const grid = h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,300px),1fr))", gap:".3rem .9rem", marginTop:".8rem" } }, ...ranges.map(r => r.wrap));
+  const stack = h("div", { class:"l2-stack", "aria-hidden":"true" });
+  const leg = h("div", { class:"legend-row" }, ...IT.map(it => h("span", null, h("i", { class:"sw", style:{ background: it.c } }), it.l)));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const msg = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sw), grid, stack, leg, stats, msg);
+  function upd(){
+    let input = 0; const vals = {};
+    ranges.forEach(r => { const v = +r.inp.value; vals[r.it.k] = v; r.out.textContent = L2.k(v); if (r.it.k !== "res") input += v; });
+    const all = input + vals.res, scale = Math.max(W, all);
+    stack.innerHTML = IT.map(it => `<i style="width:${vals[it.k] / scale * 100}%;background:${it.c}" title="${it.l}: ${L2.fmt(vals[it.k])}"></i>`).join("") + (all > W ? "" : `<i style="flex:1;background:transparent;border:0"></i>`);
+    const fixed = vals.sys + vals.tools + vals.md;
+    stats.innerHTML = `<span>Input<b>${L2.fmt(input)}</b></span><span>Input + reserve<b>${(all / W * 100).toFixed(1)}%</b></span><span>Fixed load<b>${(fixed / Math.max(1, input) * 100).toFixed(0)}%</b></span><span>≈ English words<b>${L2.fmt(input * 0.555)}</b></span>`;
+    msg.innerHTML = input > W ? `<span class="tag r">400</span> The input alone exceeds the window: the request is rejected with a <code>prompt is too long</code> error.` :
+      all > W ? `<span class="tag c">Cut-off risk</span> The input fits, but input + max_tokens doesn’t. The request is accepted; the model stops when the window is full and <code>stop_reason</code> is <code>model_context_window_exceeded</code>. Handle a possibly unfinished answer in your code.` :
+      input > W * 0.5 ? `<span class="tag c">It fits, but</span> More than half the window is full. Technically fine; from a context rot point of view focus weakens, and this many tokens are resent every turn.` :
+      `<span class="tag ok">Comfortable</span> The input is ${(input / W * 100).toFixed(0)}% of the window. Tool outputs and files read are ${(vals.files + vals.out) / Math.max(1, fixed) >= 1 ? ((vals.files + vals.out) / Math.max(1, fixed)).toFixed(1) + " times" : "below"} the fixed load.`;
+  }
+  seg(sw, v => { W = +v; upd(); });
+  ranges.forEach(r => r.inp.addEventListener("input", upd));
+});
+
+/* ---------- 3. Needle (illustrative) ---------- */
+Edu.widget("l2-needle", el => {
+  const { h, seg } = Edu;
+  const LEN = [1000, 4000, 16000, 64000, 128000, 256000, 512000, 1000000];
+  const rPos = L2.range("Needle position", "l2-n-pos", 0, 100, 1, 50);
+  const rLen = L2.range("Context length", "l2-n-len", 0, LEN.length - 1, 1, 4);
+  let dis = 0, sim = "hi";
+  const sd = h("div", { class:"seg", role:"group", "aria-label":"Number of distractors" }, ...[0,1,4].map((d, i) => h("button", { type:"button", "data-v":d, "aria-pressed": i === 0 ? "true" : "false" }, d + (d === 1 ? " distractor" : " distractors"))));
+  const ss = h("div", { class:"seg", role:"group", "aria-label":"Similarity between question and needle" }, h("button", { type:"button", "data-v":"hi", "aria-pressed":"true" }, "High similarity"), h("button", { type:"button", "data-v":"lo", "aria-pressed":"false" }, "Low similarity"));
+  const chart = h("div");
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("p", { class:"hint" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, rPos.wrap, rLen.wrap), h("div", { class:"ctrl" }, sd, ss), chart, stats, note);
+  const acc = (pos, len) => {
+    const ln = Math.log10(len / 1000) / 3;
+    let a = 0.97 - 0.22 * ln;
+    a -= (0.06 + 0.16 * ln) * Math.pow(Math.sin(Math.PI * pos), 1.4);
+    a -= ({ 0:0, 1:0.04, 4:0.1 })[dis] * (0.5 + ln);
+    if (sim === "lo") a -= 0.03 + 0.12 * ln;
+    return Math.max(0.05, Math.min(0.99, a));
+  };
+  function upd(){
+    const pos = +rPos.inp.value / 100, len = LEN[+rLen.inp.value];
+    rPos.out.textContent = Math.round(pos * 100) + "%"; rLen.out.textContent = L2.k(len);
+    const W = 600, H = 190, X = p => 34 + p * (W - 54), Y = v => H - 24 - v * (H - 44);
+    const pts = []; for (let k = 0; k <= 50; k++) pts.push(X(k / 50) + "," + Y(acc(k / 50, len)));
+    const focus = sim === "lo" ? 0.94 : 0.97;
+    const a = acc(pos, len);
+    chart.innerHTML = `<svg class="l2-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Illustrative accuracy curve by position">${[0, .5, 1].map(v => `<line x1="34" x2="${W-20}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--line)"/><text x="28" y="${Y(v)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">${v}</text>`).join("")}<line x1="34" x2="${W-20}" y1="${Y(focus)}" y2="${Y(focus)}" style="stroke:var(--ok);stroke-dasharray:5 5"/><text x="${W-20}" y="${Y(focus)-6}" text-anchor="end" style="fill:var(--ok);font:600 11px var(--sans)">short, focused context</text><polyline points="${pts.join(" ")}" style="fill:none;stroke:var(--ctx);stroke-width:3"/><circle cx="${X(pos)}" cy="${Y(a)}" r="7" style="fill:var(--risk)"/><text x="34" y="${H-6}" style="fill:var(--muted);font:11px var(--sans)">start</text><text x="${W-20}" y="${H-6}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">end</text></svg>`;
+    stats.innerHTML = `<span>Illustrative accuracy<b>${Math.round(a * 100)}%</b></span><span>Same info, focused context<b>${Math.round(focus * 100)}%</b></span><span>Gap<b>${Math.round((focus - a) * 100)} points</b></span>`;
+    note.textContent = pos > .25 && pos < .75 ? "You’re in the middle: the bottom of the U curve. Don’t bury a critical instruction here." : "You’re at an end: information is found more reliably at the start and the end. But length and distractors pull the whole curve down.";
+  }
+  seg(sd, v => { dis = +v; upd(); });
+  seg(ss, v => { sim = v; upd(); });
+  [rPos, rLen].forEach(r => r.inp.addEventListener("input", upd));
+});
+
+/* ---------- 4. Compaction ---------- */
+Edu.widget("l2-compact", el => {
+  const { h, $ } = Edu;
+  const IT = [
+    { id:"rule", t:"Turn 2: “Don’t touch or change the example.order_items tests.”", n:30 },
+    { id:"err", t:"Turn 8: the exact error text “23503: update or delete on table orders violates foreign key constraint …”", n:180 },
+    { id:"dec", t:"Turn 12: decision: use status_code = 'ARCHIVED' instead of deleting.", n:60 },
+    { id:"line", t:"Turn 15: the workaround on line 214 of OrderService.cs is to be removed.", n:40 },
+    { id:"bug", t:"Open bug: amount can go negative in the refund flow.", n:50 },
+    { id:"logs", t:"Test outputs (6 runs)", n:38000 },
+    { id:"reads", t:"Contents of the 14 files read", n:96000 },
+    { id:"chat", t:"Chat and interim explanations", n:22000 }
+  ];
+  const tMd = L2.toggle("Write the rule into CLAUDE.md", false);
+  const tNotes = L2.toggle("Have the agent keep NOTES.md", false);
+  const tIns = L2.toggle("Instruction to /compact: “keep error texts verbatim”", false);
+  const bC = h("button", { class:"btn", type:"button" }, "Compact");
+  const b0 = h("button", { class:"btn ghost", type:"button" }, "↺ Previous state");
+  const list = h("div", { class:"l2-items", "aria-live":"polite" });
+  const stats = h("div", { class:"stats" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"l2-tog" }, tMd, tNotes, tIns), h("div", { class:"ctrl" }, bC, b0), stats, list, note);
+  let done = false;
+  function fate(id){
+    const md = L2.on(tMd), nt = L2.on(tNotes), ins = L2.on(tIns);
+    switch (id){
+      case "rule": return md ? ["kept", "Reloaded from CLAUDE.md on disk: it doesn’t depend on the summary."] : ["lost", "It was an early, short sentence; the summary didn’t consider it important. The agent now acts as if it never heard this rule."];
+      case "err": return ins ? ["kept", "Copied into the summary verbatim, thanks to the instruction."] : nt ? ["kept", "Sits verbatim in NOTES.md; read when needed."] : ["cond", "The summary says “got an FK error”; the error code and constraint name are lost."];
+      case "dec": return ["kept", "An architectural decision: exactly the kind of information the summary tries to keep."];
+      case "line": return nt ? ["kept", "Sits in NOTES.md with its line number."] : ["lost", "The exact line number isn’t in the summary."];
+      case "bug": return ["kept", "An open bug: the summary tries to keep these."];
+      case "logs": return ["lost", "Repeated tool output was dropped (deliberately). The tests are rerun if needed."];
+      case "reads": return ["cond", "The 5 most recently accessed files were reloaded (~15K tokens); the other 9 files are gone."];
+      case "chat": return ["cond", "Shrunk to a few paragraphs of summary."];
+    }
+  }
+  const LBL = { kept:"kept", cond:"summarized", lost:"lost" };
+  function draw(){
+    list.innerHTML = "";
+    const before = IT.reduce((a, b) => a + b.n, 0);
+    IT.forEach(it => {
+      let cls = "", sub = "";
+      if (done){ const [f, why] = fate(it.id); cls = f; sub = `<small>${LBL[f]}: ${why}</small>`; }
+      list.append(h("div", { class:"l2-item " + cls, html:`<div><span class="t">${Edu.esc(it.t)}</span>${sub}</div><span class="n">${L2.fmt(it.n)}</span>` }));
+    });
+    const after = 2500 + 15000 + (L2.on(tMd) ? 1500 : 0);
+    stats.innerHTML = done ? `<span>Before<b>${L2.fmt(before)}</b></span><span>After<b>≈ ${L2.fmt(after)}</b></span><span>Space freed<b>${Math.round((1 - after / before) * 100)}%</b></span>` : `<span>Context<b>${L2.fmt(before)} tokens</b></span><span>State<b>not compacted</b></span>`;
+    const lost = done ? IT.filter(it => fate(it.id)[0] === "lost" && it.id !== "logs").length : 0;
+    note.innerHTML = !done ? "First compact as is. Then turn on the three safeguards, compact again and compare." :
+      lost ? `<span class="tag r">Silent loss</span> ${lost} critical item(s) lost. The agent won’t tell you it “forgot” them. And because the message history changed, the next request will rewrite the message part of the prompt cache.` :
+      `<span class="tag ok">Critical info is safe</span> What must persist lives in a file; the summary only carries the flow. The message history still changed: on the next request the message part of the cache will be rewritten.`;
+  }
+  bC.onclick = () => { done = true; draw(); };
+  b0.onclick = () => { done = false; draw(); };
+  [tMd, tNotes, tIns].forEach(b => b.addEventListener("click", draw));
+  draw();
+});
+
+/* ---------- 5. Cache simulator ---------- */
+Edu.widget("l2-cache", el => {
+  const { h, seg } = Edu;
+  let model = "opus", ttl = 5, cacheOn = true;
+  const sm = h("div", { class:"seg", role:"group", "aria-label":"Model" }, ...Object.entries(L2.MODELS).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.n)));
+  const st = h("div", { class:"seg", role:"group", "aria-label":"TTL" }, h("button", { type:"button", "data-v":"5", "aria-pressed":"true" }, "TTL 5 min"), h("button", { type:"button", "data-v":"60", "aria-pressed":"false" }, "TTL 1 h"));
+  const sc = h("div", { class:"seg", role:"group", "aria-label":"Caching" }, h("button", { type:"button", "data-v":"on", "aria-pressed":"true" }, "Cache on"), h("button", { type:"button", "data-v":"off", "aria-pressed":"false" }, "Cache off"));
+  const rGap = L2.range("Time between turns (min)", "l2-c-gap", 0.5, 10, 0.5, 1);
+  const bNext = h("button", { class:"btn", type:"button" }, "Next turn ▶");
+  const b5 = h("button", { class:"btn ghost", type:"button" }, "5 turns ▶▶");
+  const tStamp = L2.toggle("Timestamp in system", false);
+  const bTool = h("button", { class:"btn ghost sm", type:"button" }, "Change a tool definition");
+  const bEff = h("button", { class:"btn ghost sm", type:"button" }, "Change effort");
+  const bBreak = h("button", { class:"btn ghost sm", type:"button" }, "Take a 6 min break");
+  const bComp = h("button", { class:"btn ghost sm", type:"button" }, "Compact");
+  const b0 = h("button", { class:"btn ghost sm", type:"button" }, "↺ Start over");
+  const stack = h("div", { class:"l2-stack", "aria-hidden":"true" });
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "cache read"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ctx)" } }), "cache write"), h("span", null, h("i", { class:"sw", style:{ background:"var(--risk)" } }), "uncached"), h("span", null, h("i", { class:"sw", style:{ background:"var(--tool)" } }), "output"));
+  const meter = h("div", { class:"meter", style:{ marginTop:".6rem" } }, h("i", { style:{ background:"var(--ctx)" } }));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  const tbl = h("div", { class:"tbl l2-tbl" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sm, st, sc), h("div", { class:"ctrl" }, rGap.wrap, bNext, b5),
+    h("div", { class:"l2-tog", style:{ marginTop:".7rem" } }, tStamp, bTool, bEff, bBreak, bComp, b0), stack, leg, h("p", { class:"hint", style:{ margin:".3rem 0 0" } }, "Window fill (1M):"), meter, stats, note, tbl);
+
+  let S;
+  function reset(){
+    S = { rnd:L2.rng(11), t:0, turn:0, req:0, toolVer:0, effVer:0, msgId:0, extraGap:0, pending:[],
+      blocks:[{ k:"tools", id:"tools", n:8000 }, { k:"system", id:"sys", n:3000 }, { k:"md", id:"md", n:4000 }],
+      cache:new Map(), cost:0, base:0, log:[], last:null };
+    rGap.out.textContent = (+rGap.inp.value).toFixed(1);
+    draw(); note.innerHTML = "The fixed prefix is ready: tools 8K, system 3K, CLAUDE.md 4K. Press <b>Next turn</b>.";
+  }
+  const R = (a, b) => Math.round(a + S.rnd() * (b - a));
+  const sigOf = (k, b) => { if (b.k === "tools") return "T" + S.toolVer; if (b.k === "system") return "S" + (L2.on(tStamp) ? "@" + S.req : "") ; if (b.k === "md") return "M"; return b.id + (k === 3 ? "|e" + S.effVer : ""); };
+  function prefixSigs(){ const out = []; let acc = ""; S.blocks.forEach((b, k) => { acc += "/" + sigOf(k, b); out.push(acc); }); return out; }
+  function request(outTok){
+    const M = L2.MODELS[model], sigs = prefixSigs(), n = S.blocks.length;
+    const ttlMin = ttl;
+    for (const [k, v] of S.cache) if (S.t - v > ttlMin) S.cache.delete(k);
+    let hit = -1;
+    if (cacheOn) for (let k = n - 1; k >= 0; k--){ if (S.cache.has(sigs[k])){ hit = k; break; } }
+    const cum = []; let a = 0; S.blocks.forEach(b => { a += b.n; cum.push(a); });
+    const total = a, readT = hit >= 0 ? cum[hit] : 0;
+    let writeT = 0, unc = 0;
+    if (!cacheOn || total < 512) unc = total - readT; else writeT = total - readT;
+    const st = S.blocks.map((b, k) => !cacheOn || total < 512 ? (k <= hit ? "r" : "u") : (k <= hit ? "r" : "w"));
+    if (cacheOn && total >= 512){ [0, 2, n - 1].forEach(k => { if (k < n) S.cache.set(sigs[k], S.t); }); if (hit >= 0) S.cache.set(sigs[hit], S.t); }
+    const wMul = ttl === 5 ? 1.25 : 2;
+    const c = (readT * M.i * M.rd + writeT * M.i * wMul + unc * M.i + outTok * M.o) / 1e6;
+    const base = (total * M.i + outTok * M.o) / 1e6;
+    S.req++;
+    return { total, readT, writeT, unc, outTok, c, base, st, hitIdx:hit };
+  }
+  function turn(){
+    const reasons = [];
+    if (S.extraGap){ reasons.push("break"); }
+    const gap = (+rGap.inp.value) + S.extraGap; S.extraGap = 0;
+    if (S.turn > 0) S.t += gap;
+    if (S.pending.length) reasons.push(...S.pending); S.pending = [];
+    if (S.turn > 0 && gap > ttl) reasons.push("TTL expired (" + gap + " min > " + ttl + " min)");
+    if (L2.on(tStamp)) reasons.push("timestamp in system");
+    if (S.turn === 0) reasons.push("first request: cold cache");
+    S.turn++;
+    S.blocks.push({ k:"user", id:"u" + (++S.msgId), n:R(200, 800) });
+    const r1 = request(R(80, 200));
+    S.blocks.push({ k:"tool_use", id:"a" + (++S.msgId), n:r1.outTok });
+    S.blocks.push({ k:"tool_result", id:"r" + (++S.msgId), n:R(1000, 20000) });
+    S.t += 0.1;
+    const r2 = request(R(300, 2000));
+    S.blocks.push({ k:"asst", id:"a" + (++S.msgId), n:r2.outTok });
+    const sum = (k) => r1[k] + r2[k];
+    S.cost += r1.c + r2.c; S.base += r1.base + r2.base;
+    S.last = r2; S.lastIn = r2.total;
+    S.log.push({ turn:S.turn, t:S.t, inp:r1.total + r2.total, rd:sum("readT"), wr:sum("writeT"), un:sum("unc"), out:sum("outTok"), c:r1.c + r2.c, why:reasons.join(", ") || (cacheOn ? "prefix hit" : "cache off") });
+    draw();
+    const lg = S.log[S.log.length - 1];
+    note.innerHTML = !cacheOn ? `<span class="tag r">Cache off</span> Every turn, the whole transcript is reprocessed at full price.` :
+      lg.rd === 0 ? `<span class="tag r">Full miss</span> No prefix matched (${Edu.esc(lg.why)}). Everything was rewritten: ${L2.fmt(lg.wr)} tokens × ${ttl === 5 ? "1.25" : "2"}.` :
+      lg.wr > lg.rd ? `<span class="tag c">Partial hit</span> Part of the prefix was read; most of it was rewritten (${Edu.esc(lg.why)}).` :
+      `<span class="tag ok">Hit</span> The earlier prefix was read from the cache; only the newly added ${L2.fmt(lg.wr)} tokens were written. ${lg.why && lg.why !== "prefix hit" ? "(" + Edu.esc(lg.why) + ")" : ""}`;
+  }
+  function draw(){
+    const r = S.last, tot = S.blocks.reduce((a, b) => a + b.n, 0);
+    if (!r){ stack.innerHTML = S.blocks.map(b => `<i style="width:${b.n / tot * 100}%;background:var(--soft)" title="${b.k}: ${b.n}"></i>`).join(""); }
+    else {
+      const all = r.total + r.outTok; const col = { r:"var(--ok)", w:"var(--ctx)", u:"var(--risk)" };
+      const blocks = S.blocks.slice(0, r.st.length);
+      stack.innerHTML = blocks.map((b, k) => `<i style="width:${b.n / all * 100}%;background:${col[r.st[k]]}" title="${b.k}: ${L2.fmt(b.n)} tokens"></i>`).join("") + `<i style="width:${r.outTok / all * 100}%;background:var(--tool)" title="output: ${r.outTok}"></i>`;
+    }
+    meter.firstChild.style.width = Math.min(100, tot / 1e6 * 100) + "%";
+    const sav = S.base ? (1 - S.cost / S.base) * 100 : 0;
+    stats.innerHTML = `<span>Turn<b>${S.turn}</b></span><span>Context<b>${L2.k(tot)}</b></span><span>Total cost<b>${L2.usd(S.cost)}</b></span><span>Without cache<b>${L2.usd(S.base)}</b></span><span>Savings<b>${sav.toFixed(0)}%</b></span>`;
+    const rows = S.log.slice(-8).reverse().map(l => `<tr><td>${l.turn}</td><td>${l.t.toFixed(1)} min</td><td>${L2.k(l.inp)}</td><td style="color:var(--ok)">${L2.k(l.rd)}</td><td style="color:var(--ctx)">${L2.k(l.wr)}</td><td style="color:var(--risk)">${L2.k(l.un)}</td><td style="color:var(--tool)">${L2.k(l.out)}</td><td>${L2.usd(l.c)}</td><td style="font-family:var(--body)">${Edu.esc(l.why)}</td></tr>`).join("");
+    tbl.innerHTML = `<table><thead><tr><th>Turn</th><th>Clock</th><th>Input</th><th>Read</th><th>Write</th><th>Uncached</th><th>Output</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="muted">No requests yet. Each turn consists of two requests; the rows are the sum of both.</td></tr>`}</tbody></table>`;
+  }
+  seg(sm, v => { model = v; if (S) draw(); });
+  seg(st, v => { ttl = +v; });
+  seg(sc, v => { cacheOn = v === "on"; });
+  rGap.inp.addEventListener("input", () => rGap.out.textContent = (+rGap.inp.value).toFixed(1));
+  bNext.onclick = turn;
+  b5.onclick = () => { for (let i = 0; i < 5; i++) turn(); };
+  bTool.onclick = () => { S.toolVer++; S.pending.push("tool definition changed"); note.innerHTML = "A tool definition changed. Next turn: because the tools sit at the very start of the prefix, <b>everything</b> is invalidated."; };
+  bEff.onclick = () => { S.effVer++; S.pending.push("effort changed"); note.innerHTML = "Effort changed. Next turn: the tools and system are read, <b>all the messages</b> are rewritten."; };
+  bBreak.onclick = () => { S.extraGap = 6; note.innerHTML = "A 6-minute break was added. With a 5 min TTL the cache will be empty on the next turn; with a 1 h TTL it survives."; };
+  bComp.onclick = () => {
+    const keep = S.blocks.slice(0, 3);
+    S.blocks = keep.concat([{ k:"summary", id:"sum" + (++S.msgId), n:2000 }, { k:"files", id:"f" + (++S.msgId), n:15000 }]);
+    S.pending.push("compaction"); draw();
+    note.innerHTML = "The history was replaced with a 2K summary + the last 5 files (15K). Tools and system are still in the cache; the message part will be rewritten on the next turn.";
+  };
+  b0.onclick = reset;
+  reset();
+});
+
+/* ---------- 6. Cost calculator ---------- */
+Edu.widget("l2-cost", el => {
+  const { h, seg } = Edu;
+  let model = "opus", cacheOn = true;
+  const sm = h("div", { class:"seg", role:"group", "aria-label":"Model" }, ...Object.entries(L2.MODELS).map(([k, v], i) => h("button", { type:"button", "data-v":k, "aria-pressed": i === 0 ? "true" : "false" }, v.n)));
+  const sc = h("div", { class:"seg", role:"group", "aria-label":"Caching" }, h("button", { type:"button", "data-v":"on", "aria-pressed":"true" }, "Cache on (5 min)"), h("button", { type:"button", "data-v":"off", "aria-pressed":"false" }, "Cache off"));
+  const rN = L2.range("Number of turns", "l2-k-n", 1, 100, 1, 40);
+  const rP = L2.range("Fixed prefix (tokens)", "l2-k-p", 2000, 60000, 1000, 15000);
+  const rA = L2.range("New input per turn", "l2-k-a", 500, 30000, 500, 6000);
+  const rO = L2.range("Output per turn", "l2-k-o", 100, 4000, 100, 800);
+  const rT = L2.range("Assumption: non-English multiplier (e.g. Turkish)", "l2-k-t", 1, 2, 0.05, 1);
+  const grid = h("div", { style:{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,300px),1fr))", gap:".3rem .9rem", marginTop:".8rem" } }, rN.wrap, rP.wrap, rA.wrap, rO.wrap, rT.wrap);
+  const chart = h("div");
+  const leg = h("div", { class:"legend-row" }, h("span", null, h("i", { class:"sw", style:{ background:"var(--risk)" } }), "without cache (cumulative)"), h("span", null, h("i", { class:"sw", style:{ background:"var(--ok)" } }), "with cache (cumulative)"));
+  const stats = h("div", { class:"stats", "aria-live":"polite" });
+  const note = h("div", { class:"panel live", "aria-live":"polite" });
+  el.append(h("div", { class:"ctrl", style:{ marginTop:0 } }, sm, sc), grid, chart, leg, stats, note);
+  function upd(){
+    const M = L2.MODELS[model], N = +rN.inp.value, P = +rP.inp.value, tr = +rT.inp.value, a = Math.round(+rA.inp.value * tr), o = Math.round(+rO.inp.value * tr);
+    rN.out.textContent = N; rP.out.textContent = L2.k(P); rA.out.textContent = L2.k(+rA.inp.value); rO.out.textContent = L2.k(+rO.inp.value); rT.out.textContent = tr.toFixed(2) + "×";
+    let cNo = 0, cYes = 0, sent = 0; const cn = [], cy = [];
+    for (let t = 1; t <= N; t++){
+      const prompt = P + (t - 1) * (a + o) + a;
+      sent += prompt;
+      cNo += (prompt * M.i + o * M.o) / 1e6;
+      const read = t === 1 ? 0 : P + (t - 2) * (a + o) + a, write = prompt - read;
+      cYes += (read * M.i * M.rd + write * M.i * 1.25 + o * M.o) / 1e6;
+      cn.push(cNo); cy.push(cYes);
+    }
+    const shown = cacheOn ? cYes : cNo;
+    const W = 600, H = 200, mx = Math.max(cNo, 1e-9), X = t => 40 + (t - 1) / Math.max(1, N - 1) * (W - 60), Y = v => H - 24 - v / mx * (H - 44);
+    const pl = (arr, col) => `<polyline points="${arr.map((v, i) => X(i + 1) + "," + Y(v)).join(" ")}" style="fill:none;stroke:${col};stroke-width:2.5"/>`;
+    chart.innerHTML = `<svg class="l2-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative cost chart"><line x1="40" x2="${W-20}" y1="${Y(0)}" y2="${Y(0)}" style="stroke:var(--line)"/><text x="36" y="${Y(mx)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">${L2.usd(mx)}</text><text x="36" y="${Y(0)+4}" text-anchor="end" style="fill:var(--muted);font:11px var(--mono)">0</text>${pl(cn, "var(--risk)")}${pl(cy, "var(--ok)")}<text x="${W-20}" y="${H-5}" text-anchor="end" style="fill:var(--muted);font:11px var(--sans)">turn →</text></svg>`;
+    const last = P + (N - 1) * (a + o) + a, uniq = P + N * (a + o);
+    stats.innerHTML = `<span>Total with selected setting<b>${L2.usd(shown)}</b></span><span>Without cache<b>${L2.usd(cNo)}</b></span><span>With cache<b>${L2.usd(cYes)}</b></span><span>Total input sent<b>${L2.k(sent)}</b></span><span>Unique content<b>${L2.k(uniq)}</b></span>`;
+    note.innerHTML = `Over ${N} turns, <b>${L2.k(sent)}</b> input tokens went to the API; the unique content in the session is only ${L2.k(uniq)}. So each token was reprocessed <b>${(sent / uniq).toFixed(1)} times</b> on average.` +
+      (cacheOn ? ` For ${M.n}, caching brings these repeats down to ${M.rd}× the base price: the cost is ${(cNo / cYes).toFixed(1)} times lower.` : ` With the cache off, every repeat is full price.`) +
+      (last > 1e6 ? ` <span class="tag r">Window exceeded</span> The last turn is ${L2.k(last)} tokens: past the 1M limit. In reality, compaction would have been needed before this.` : last > 5e5 ? ` <span class="tag c">Caution</span> The last turn is ${L2.k(last)} tokens: context rot territory.` : "");
+  }
+  seg(sm, v => { model = v; upd(); });
+  seg(sc, v => { cacheOn = v === "on"; upd(); });
+  [rN, rP, rA, rO, rT].forEach(r => r.inp.addEventListener("input", upd));
+});
+})();
+</script>

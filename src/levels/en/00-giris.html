@@ -1,0 +1,132 @@
+<section class="level" data-no="G" data-short="Getting started" data-title="Getting started" data-accent="tool">
+  <header class="lvl-hero" data-no="">
+    <p class="lvl-kicker">Getting started</p>
+    <div class="eq"><span>Agent</span><span class="op">=</span><span class="w-model">Model</span><span class="op">+</span><span class="w-harness">Harness</span></div>
+    <p class="lede">This whole course exists to unpack that equation. By the end, when you work with Claude Code or Codex, you will be able to tell whether a behavior comes from the model, from the harness or from the context. That distinction is the key to debugging, to writing good instructions and to building safe systems.</p>
+    <div class="lvl-meta"><span>11 levels</span><span>For software developers</span><span>At least one interactive diagram per topic</span></div>
+  </header>
+
+  <div class="lesson" data-tab="Why this course?">
+    <h2>A new piece has landed in the middle of what you already know</h2>
+    <p>If you have been building software for years, most of the concepts in this course will feel familiar: client-server, stateless APIs, sandboxes, the principle of least privilege, event-driven hooks, CI. What is new is that a <span class="m">probabilistic</span> component now sits in the middle of all of them. When you call a deterministic function, you expect the same output for the same input; here you don’t. That one difference shifts every engineering habit a little.</p>
+    <p>So the course makes the same move at every level: first it shows the mechanism, then it ties it to a concept you already know with “you already know this; here is what is different.” You will find these bridges in the blue boxes.</p>
+    <div class="callout bridge"><span class="ct">You already know this</span>An LLM API is a stateless HTTP service. You resend the entire conversation history with every request; the server keeps no session for you. In level 2 we will trace, step by step, what that means for context, cost and “forgetting.”</div>
+
+    <div class="fig" data-anim="agent-loop"></div>
+
+    <h2>Separating signal from noise</h2>
+    <p>Some of the tricks sold under the “prompt engineering” banner really do work; most are folklore left over from older models. This course tells them apart by starting from the mechanism. Claims we call myths appear in the yellow boxes, together with the evidence.</p>
+    <div class="callout myth"><span class="ct">Myth</span>“Tell the model ‘you are the best programmer in the world’ and it will write better code.” On current models the effect is either nil or inconsistent. What works is not a role but context: which repo, which constraints, what success looks like. Covered in detail in level 3.</div>
+
+    <h2>Three layers, one color code</h2>
+    <p>The colors never change throughout the course. If you see purple in a diagram, the model is speaking; if you see teal, it is the harness.</p>
+    <div class="cols">
+      <div class="card m"><h4 class="m">Model</h4>Trained, frozen weights. All it does is look at the text it is given and produce probabilities for the next token.</div>
+      <div class="card h"><h4 class="h">Harness</h4>The software around the model: the loop, tools, permissions, sandbox, hooks, context management, the interface.</div>
+      <div class="card c"><h4 class="c">Context and tokens</h4>Everything the model sees at that moment. That is the model’s entire world; it does not know what it does not see.</div>
+      <div class="card t"><h4 class="t">Practice</h4>Commands, settings files, real workflows. Things you will use tomorrow morning.</div>
+      <div class="card r"><h4 class="r">Risk</h4>Security holes, failure modes, mistakes that cost money and data.</div>
+    </div>
+
+    <div class="fig" data-widget="giris-who">
+      <p class="fig-title">Where does this behavior come from?</p>
+      <p class="fig-cap">Real situations you will run into while working with an agent. Click a card to see the responsible layer and why. Being able to make this call is the real goal of the course.</p>
+      <div class="who-grid"></div>
+      <div class="panel live who-out" aria-live="polite"><span class="muted">Click a card.</span></div>
+    </div>
+
+    <div class="keep">
+      <h3>Key takeaways</h3>
+      <ul>
+        <li>An agent is the sum of a model and the software that runs it in a loop (the harness).</li>
+        <li>To fix a problem, first find which layer it comes from: model, harness or context.</li>
+        <li>This field changes within months. The concepts last; for command names and settings, the official documentation is the authority.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="lesson" data-tab="Map and route">
+    <h2>How the levels fit together</h2>
+    <p>Levels 0–2 cover the model itself: what it is, how it was trained and what it sees. Levels 3–5 cover talking to the model and putting it in a loop. Levels 6–7 introduce the harness and compare the two big ecosystems, Claude and Codex, both as models and as tools. Levels 8–10 are practical and advanced: really using Claude Code, managing context, automation, and designing your own harness safely.</p>
+    <div class="map" id="levelMap"></div>
+
+    <h2>Where should you start?</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Who are you?</th><th>Suggested route</th><th>Pay special attention to</th></tr></thead>
+      <tbody>
+        <tr><td>Newly joined junior</td><td>Start at 0 and go in order</td><td>Everything up to level 6 is foundational</td></tr>
+        <tr><td>New to agents</td><td>0–5 quickly, 6 and 8 carefully</td><td>Permissions and hooks in 8</td></tr>
+        <tr><td>Daily user</td><td>Skim 2, 3 and 5; the core material starts at 7</td><td>The context budget in 9</td></tr>
+        <tr><td>Building your own tool</td><td>4, 5, 6, 9 and 10</td><td>The lethal trifecta in 10</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="lesson" data-tab="Using the course">
+    <h2>Don’t just read: poke at it</h2>
+    <p>Each level is split into a few topic tabs. You pick the level from the top strip and the topic from the strip below it. The buttons at the bottom of the page take you to the next topic, or to the next level if you are on the last topic. When the topic strip has focus, the <kbd>←</kbd> and <kbd>→</kbd> keys work too.</p>
+    <p>Every topic has at least one interactive diagram. Play them, step through them, drag the sliders. They are not decoration: they are usually the part of the text that sticks. The diagrams run entirely in your browser and send no data anywhere.</p>
+    <div class="cols">
+      <div class="card"><h4>Terms with a dotted underline</h4>Hover over them or focus them with Tab to see a short definition. The <b>Glossary</b> button at the top opens all terms in a searchable list.</div>
+      <div class="card"><h4>Progress ring</h4>The topics you open are remembered in your browser. You pick up where you left off; once you have opened every topic of a level, a ✓ appears on its tab.</div>
+      <div class="card"><h4>Sharing links</h4>A link like <code>#L5/3</code> in the address bar opens that topic of that level directly. Use it to point a teammate at a specific spot.</div>
+    </div>
+    <h2>What the boxes mean</h2>
+    <div class="callout bridge"><span class="ct">You already know this</span>Ties a new concept to something you know from software engineering.</div>
+    <div class="callout myth"><span class="ct">Myth</span>A popular but wrong or outdated belief, and the reality that replaces it.</div>
+    <div class="callout deep"><span class="ct">Go deeper</span>Skippable, but shows the curious reader what lies beneath the mechanism.</div>
+    <div class="callout tip"><span class="ct">In practice</span>A habit or setting you can apply right away.</div>
+    <div class="callout warn"><span class="ct">Caution</span>A situation that can cost you data, money or security.</div>
+    <div class="callout"><span class="ct">A word of caution</span>This field moves fast. This course was prepared with information current as of November 2026. Command names, hook events, model versions and prices may change; the sources at the end of each topic and the official documentation are the authority.</div>
+  </div>
+</section>
+
+<script>
+Edu.glossary({
+  "Agent": "A system in which a model runs in a loop, calling tools and seeing their results, until it reaches a goal. Agent = model + harness.",
+  "Harness": "The software around the model: the agent loop, tool definitions and executors, permissions, sandbox, hooks, context management and the interface.",
+  "Model": "A function made of trained, frozen weights. It looks at the input text and produces a probability distribution for the next token."
+});
+
+Edu.widget("giris-who", el => {
+  const { h, $ } = Edu;
+  const items = [
+    { t:"The agent confidently called a library function that does not exist in the project.", k:"m", why:"Model layer. The model produced a plausible-looking name from patterns it saw in its training data. What prevents this is not a better prompt but verifiers: the compiler, tests and type checking. Putting the verifier into the loop is the harness’s job (level 5)." },
+    { t:"The agent wanted to run ‘rm -rf build/’, but an approval dialog popped up.", k:"h", why:"Harness layer. The model ‘wanting’ something just means it produced JSON. Permission rules, the sandbox and hooks decide whether the command actually runs (levels 4 and 8)." },
+    { t:"At the end of a long session it forgot the ‘don’t delete the tests’ rule you gave at the very start.", k:"c", why:"Context layer. Either the conversation was compacted and the rule fell out of the summary, or the rule ended up in the middle of a very long context. Persistent rules belong in files loaded with every request, such as CLAUDE.md / AGENTS.md (levels 2 and 9)." },
+    { t:"You asked the same question twice and got two different answers, both reasonable.", k:"m", why:"Model layer. Generation is done by sampling; each token is drawn from a probability distribution. Even with temperature near zero, full determinism is not guaranteed in practice (level 0)." },
+    { t:"The agent always read a file before editing it.", k:"h", why:"Mostly the harness. Many coding harnesses reject editing a file that has not been read, at the tool level. The model complies not because it ‘knows’ the rule but because the tool returns an error." },
+    { t:"While summarizing a web page, it tried to run a command dictated by hidden text on the page.", k:"r", why:"Risk: prompt injection. The model cannot reliably separate data from instructions. The fix is not in the model but in the harness: restricted permissions, network isolation, human approval (level 10)." },
+    { t:"In Codex, the same task was solved along a different path than in Claude Code.", k:"h", why:"Both model and harness. Different models are trained differently; but even the same model behaves differently with a different tool set, a different system prompt and a different sandbox. Level 7 compares these two layers separately." },
+    { t:"The agent acted as if it had never read the file where you wrote the project rules.", k:"c", why:"Context. The file may be in the wrong place, have the wrong name, or sit somewhere the harness does not load. First ask the harness ‘what is in the context?’ (/context in Claude Code, level 8)." }
+  ];
+  const names = { m:["Model","m"], h:["Harness","h"], c:["Context","c"], r:["Risk","r"] };
+  const grid = $(".who-grid", el), out = $(".who-out", el);
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:.55rem";
+  items.forEach(it => {
+    const b = h("button", { type:"button", class:"btn ghost", style:{ textAlign:"left", fontWeight:"500", fontFamily:"var(--body)", lineHeight:"1.4", padding:".7rem .8rem", whiteSpace:"normal" } }, it.t);
+    b.addEventListener("click", () => {
+      Edu.$$("button", grid).forEach(x => { x.style.borderColor = ""; x.style.background = ""; });
+      b.style.borderColor = "var(--" + ({m:"model",h:"harness",c:"ctx",r:"risk"})[it.k] + ")";
+      b.style.background = "var(--" + ({m:"model",h:"harness",c:"ctx",r:"risk"})[it.k] + "-bg)";
+      out.innerHTML = "";
+      out.append(h("span", { class:"tag " + names[it.k][1] }, names[it.k][0]), " ", it.why);
+    });
+    grid.append(b);
+  });
+});
+
+/* Level map: built from the data-* attributes of the other levels. */
+document.addEventListener("DOMContentLoaded", () => {
+  const map = document.getElementById("levelMap");
+  if (!map) return;
+  const ACC = { model:"var(--model)", harness:"var(--harness)", ctx:"var(--ctx)", tool:"var(--tool)", risk:"var(--risk)" };
+  Edu.$$(".level").forEach(lv => {
+    if (lv.dataset.no === "G") return;
+    map.append(Edu.h("button", { type:"button", "data-goto": lv.dataset.no, style:{ "--mc": ACC[lv.dataset.accent] || "var(--ink)" } },
+      Edu.h("span", { class:"no" }, "Level " + lv.dataset.no),
+      Edu.h("b", null, lv.dataset.title),
+      lv.dataset.lede || ""));
+  });
+});
+</script>
